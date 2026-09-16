@@ -16,7 +16,7 @@ test-postgres:
 	cargo test --workspace --all-features --locked
 
 script-test:
-	node --test scripts/repository.test.mjs
+	node --test scripts/repository.test.mjs examples/benchmark-recall.test.mjs
 
 fmt:
 	cargo fmt --all

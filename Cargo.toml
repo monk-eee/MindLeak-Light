@@ -38,6 +38,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-util = "0.7"
 tower-http = { version = "0.6", features = ["limit", "timeout"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+unicode-segmentation = "1.12"
 webpki-roots = "1"
 wiremock = "0.6"
 

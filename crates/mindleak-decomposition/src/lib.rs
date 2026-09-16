@@ -1,3 +1,7 @@
+mod sentence;
+
+pub use sentence::SentenceDecomposer;
+
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{normalize_fragments, validate_text, MemoryDecomposer, MAX_MEMORY_BYTES};
@@ -43,7 +47,26 @@ impl MemoryDecomposer for OpenAiDecomposer {
             "stream": false,
             "temperature": 0,
             "max_tokens": 4096,
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "memory_fragments",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "fragments": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": mindleak_memory::MAX_FRAGMENTS,
+                                "items": {"type": "string", "minLength": 1}
+                            }
+                        },
+                        "required": ["fragments"],
+                        "additionalProperties": false
+                    }
+                }
+            },
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": text}
@@ -127,7 +150,24 @@ mod tests {
             .and(header("authorization", "Bearer test-key"))
             .and(body_partial_json(json!({
                 "model": "test-model", "stream": false,
-                "response_format": {"type": "json_object"},
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "memory_fragments",
+                        "strict": true,
+                        "schema": {
+                            "type": "object",
+                            "required": ["fragments"],
+                            "additionalProperties": false,
+                            "properties": {
+                                "fragments": {
+                                    "type": "array", "minItems": 1, "maxItems": 64,
+                                    "items": {"type": "string", "minLength": 1}
+                                }
+                            }
+                        }
+                    }
+                },
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": "The team requires reviews."}

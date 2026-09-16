@@ -1,10 +1,11 @@
 {
   "servers": {
     "mindleak-light": {
-      "type": "stdio",
-      "command": "cargo",
-      "args": ["run", "--quiet", "--locked", "--manifest-path", "${workspaceFolder}/Cargo.toml", "-p", "mindleak-mcp", "--bin", "mindleak-light", "--", "--transport", "stdio"],
-      "envFile": "${workspaceFolder}/.env"
+      "type": "http",
+      "url": "http://127.0.0.1:8088/mcp",
+      "headers": {
+        "Authorization": "Bearer mindleak-light-development-token-not-for-production"
+      }
     }
   }
 }

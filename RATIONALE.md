@@ -1,10 +1,12 @@
 # Why Light
 
 The useful unit is an independent fact with provenance, not another paragraph
-in a growing transcript. Decomposition is therefore part of every write.
+in a growing transcript. Decomposition is therefore part of every write. Models
+are recommended for extracting those facts, but setting up a model must not
+block someone from trying memory: sentences/lists and keyword recall work first.
 
 PostgreSQL handles concurrent agents, durability, and remote deployment from the
-start. pgvector keeps retrieval in that same database. There is no SQLite migration
+start. Full-text search and optional pgvector retrieval stay in that database. There is no SQLite migration
 waiting in the design and no separate vector service to operate.
 
 The repository keeps MindLeak's Rust setup and engineering discipline. It does

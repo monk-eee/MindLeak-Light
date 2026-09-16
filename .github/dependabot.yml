@@ -15,3 +15,7 @@ updates:
     directory: /docker
     schedule:
       interval: weekly
+  - package-ecosystem: npm
+    directory: /examples
+    schedule:
+      interval: weekly

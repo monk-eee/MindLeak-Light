@@ -83,6 +83,8 @@ async fn real_stdio_process_decomposes_writes_recalls_and_refuses_failed_writes(
     let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
     command.current_dir(directory.path()).env_clear().envs([
         ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "openai".into()),
+        ("MINDLEAK_RETRIEVAL", "vector".into()),
         ("MINDLEAK_MODEL", "test-model".into()),
         ("MINDLEAK_LLM_URL", format!("{}/v1", provider.uri())),
         ("MINDLEAK_EMBED_MODEL", "test-model".into()),
@@ -172,7 +174,7 @@ async fn real_stdio_process_decomposes_writes_recalls_and_refuses_failed_writes(
 #[tokio::test]
 async fn http_requires_auth_rejects_origins_and_serves_the_same_tools() {
     let provider = provider().await;
-    let store = PostgresMemoryStore::connect(&database_url(), "test-model", 2, 4, None)
+    let store = PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 4, None)
         .await
         .unwrap();
     let client = Client::builder()
@@ -196,7 +198,12 @@ async fn http_requires_auth_rejects_origins_and_serves_the_same_tools() {
         String::new(),
     ));
     let retriever = Arc::new(VectorMemoryRetriever::new(store.clone(), embedder.clone()));
-    let memory = MemoryService::new(Arc::new(store.clone()), decomposer, embedder, retriever);
+    let memory = MemoryService::new(
+        Arc::new(store.clone()),
+        decomposer,
+        Some(embedder),
+        retriever,
+    );
     let cancellation = CancellationToken::new();
     assert!(http_router(
         MemoryMcp::new(memory.clone()),
@@ -309,4 +316,84 @@ fn dotenv_settings_are_loaded_before_clap_resolves_transport() {
         stderr.contains("invalid value"),
         "unexpected error: {stderr}"
     );
+}
+
+#[tokio::test]
+async fn model_free_stdio_works_without_models_and_makes_zero_provider_requests() {
+    let provider = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&provider)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("model-free-{}", Uuid::new_v4());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_MODEL", "test-model".into()),
+        ("MINDLEAK_LLM_URL", format!("{}/v1", provider.uri())),
+        ("MINDLEAK_EMBED_MODEL", "test-model".into()),
+        ("MINDLEAK_EMBED_URL", format!("{}/v1", provider.uri())),
+        ("MINDLEAK_EMBED_DIMENSIONS", "2".into()),
+    ]);
+    let client = tokio::time::timeout(
+        Duration::from_secs(15),
+        ().serve(TokioChildProcess::new(command).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 3);
+    let raw = "  The user dislikes huge PRs.\nThe team requires reviews.  ";
+    let preview = client
+        .call_tool(call("decompose_memory", json!({"text": raw})))
+        .await
+        .unwrap();
+    assert_ne!(
+        preview.is_error,
+        Some(true),
+        "default decomposition must not require a model"
+    );
+    assert_eq!(
+        preview.structured_content.unwrap()["results"],
+        json!(["The user dislikes huge PRs.", "The team requires reviews."])
+    );
+    let written = client
+        .call_tool(call(
+            "write_memory",
+            json!({"agentId": agent_id, "text": raw}),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(written.is_error, Some(true));
+    let memory_id = written.structured_content.unwrap()["memoryId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let recalled = client
+        .call_tool(call(
+            "recall_memory",
+            json!({"query": "reviews", "agentId": agent_id}),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(recalled.is_error, Some(true));
+    let matches = recalled.structured_content.unwrap();
+    assert_eq!(matches["results"].as_array().unwrap().len(), 1);
+    assert_eq!(matches["results"][0]["memoryId"], memory_id);
+    assert_eq!(matches["results"][0]["text"], "The team requires reviews.");
+    let (database, connection) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let database_task = tokio::spawn(connection);
+    let row = database.query_one(
+        "SELECT raw_text, (SELECT count(*) FROM public.fragments WHERE memory_id = memories.id AND embedding IS NULL) \
+         FROM public.memories AS memories WHERE id = $1", &[&Uuid::parse_str(&memory_id).unwrap()],
+    ).await.unwrap();
+    assert_eq!(row.get::<_, String>(0), raw);
+    assert_eq!(row.get::<_, i64>(1), 2);
+    assert!(provider.received_requests().await.unwrap().is_empty());
+    client.cancel().await.unwrap();
+    drop(database);
+    database_task.await.unwrap().unwrap();
 }

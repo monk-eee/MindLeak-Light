@@ -64,7 +64,12 @@ impl MemoryRetriever for Backend {
 #[tokio::test]
 async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
     let backend = Arc::new(Backend);
-    let memory = MemoryService::new(backend.clone(), backend.clone(), backend.clone(), backend);
+    let memory = MemoryService::new(
+        backend.clone(),
+        backend.clone(),
+        Some(backend.clone()),
+        backend,
+    );
     let (client_io, server_io) = tokio::io::duplex(16_384);
     let (server, client) =
         tokio::join!(MemoryMcp::new(memory).serve(server_io), ().serve(client_io));

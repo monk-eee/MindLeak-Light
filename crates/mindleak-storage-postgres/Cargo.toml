@@ -21,6 +21,7 @@ webpki-roots.workspace = true
 [dev-dependencies]
 tokio.workspace = true
 uuid.workspace = true
+url = "2"
 
 [features]
 postgres-tests = []

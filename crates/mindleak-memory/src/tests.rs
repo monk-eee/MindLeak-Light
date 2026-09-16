@@ -24,7 +24,7 @@ impl Default for Backend {
 
 impl Backend {
     fn service(self: &Arc<Self>) -> MemoryService {
-        MemoryService::new(self.clone(), self.clone(), self.clone(), self.clone())
+        MemoryService::new(self.clone(), self.clone(), Some(self.clone()), self.clone())
     }
 }
 
@@ -96,8 +96,28 @@ async fn writes_raw_text_and_all_embedded_fragments_in_one_save() {
     assert_eq!(saved[0].raw_text, raw);
     assert_eq!(saved[0].fragments.len(), 2);
     assert_eq!(saved[0].fragments[1].text, "Reviews are required");
-    assert_eq!(saved[0].fragments[1].embedding, [0.0, 1.0]);
+    assert_eq!(saved[0].fragments[1].embedding, Some(vec![0.0, 1.0]));
     assert_ne!(saved[0].fragments[0].id, saved[0].fragments[1].id);
+}
+
+#[tokio::test]
+async fn writes_without_an_embedder_and_never_fabricates_vectors() {
+    let backend = Arc::new(Backend {
+        fail_embedding: true,
+        ..Backend::default()
+    });
+    let service = MemoryService::new(backend.clone(), backend.clone(), None, backend.clone());
+    let raw = "Keep PRs small. Reviews are required.";
+    let result = service.write_memory("claude", raw).await.unwrap();
+    assert_eq!(*backend.events.lock().unwrap(), ["decompose", "save"]);
+    let saved = backend.saved.lock().unwrap();
+    assert_eq!(saved[0].id, result.memory_id);
+    assert_eq!(saved[0].raw_text, raw);
+    assert_eq!(saved[0].fragments.len(), 2);
+    assert!(saved[0]
+        .fragments
+        .iter()
+        .all(|fragment| fragment.embedding.is_none()));
 }
 
 #[tokio::test]

@@ -7,15 +7,21 @@ pub struct Config {
     pub database_url: String,
     pub database_ca: Option<PathBuf>,
     pub pool_size: usize,
-    pub llm_endpoint: Url,
-    pub llm_model: String,
-    pub llm_api_key: String,
-    pub embed_endpoint: Url,
-    pub embed_model: String,
-    pub embed_api_key: String,
-    pub dimensions: usize,
+    pub decomposition: Option<ModelConfig>,
+    pub embeddings: Option<EmbeddingConfig>,
     pub model_timeout_secs: u64,
     pub http_token: String,
+}
+
+pub struct ModelConfig {
+    pub endpoint: Url,
+    pub model: String,
+    pub api_key: String,
+}
+
+pub struct EmbeddingConfig {
+    pub provider: ModelConfig,
+    pub dimensions: usize,
 }
 
 impl Config {
@@ -31,12 +37,61 @@ impl Config {
             !database_url.trim().is_empty(),
             "MINDLEAK_DATABASE_URL must not be blank"
         );
-        let llm_model = setting("MINDLEAK_MODEL", "glm4:9b");
-        let embed_model = setting("MINDLEAK_EMBED_MODEL", "nomic-embed-text");
-        ensure!(
-            !llm_model.trim().is_empty() && !embed_model.trim().is_empty(),
-            "model names must not be blank"
-        );
+        let model_config = |url_name: &str,
+                            model_name: &str,
+                            key_name: &str,
+                            route: &str|
+         -> Result<ModelConfig> {
+            let model = read(model_name).with_context(|| {
+                format!("{model_name} is required when its model mode is enabled")
+            })?;
+            ensure!(!model.trim().is_empty(), "{model_name} must not be blank");
+            let base = read(url_name).with_context(|| {
+                format!("{url_name} is required when its model mode is enabled")
+            })?;
+            Ok(ModelConfig {
+                endpoint: endpoint(&base, route)?,
+                model,
+                api_key: setting(key_name, ""),
+            })
+        };
+        let decomposition = match setting("MINDLEAK_DECOMPOSITION", "sentences").as_str() {
+            "sentences" => None,
+            "openai" => Some(model_config(
+                "MINDLEAK_LLM_URL",
+                "MINDLEAK_MODEL",
+                "MINDLEAK_LLM_API_KEY",
+                "chat/completions",
+            )?),
+            _ => anyhow::bail!("MINDLEAK_DECOMPOSITION must be sentences or openai"),
+        };
+        let embeddings = match setting("MINDLEAK_RETRIEVAL", "keyword").as_str() {
+            "keyword" => None,
+            "vector" => Some(EmbeddingConfig {
+                provider: model_config(
+                    "MINDLEAK_EMBED_URL",
+                    "MINDLEAK_EMBED_MODEL",
+                    "MINDLEAK_EMBED_API_KEY",
+                    "embeddings",
+                )?,
+                dimensions: positive(
+                    &read("MINDLEAK_EMBED_DIMENSIONS")
+                        .context("MINDLEAK_EMBED_DIMENSIONS is required for vector retrieval")?,
+                    "MINDLEAK_EMBED_DIMENSIONS",
+                    2000,
+                )?,
+            }),
+            _ => anyhow::bail!("MINDLEAK_RETRIEVAL must be keyword or vector"),
+        };
+        let model_timeout_secs = if decomposition.is_some() || embeddings.is_some() {
+            positive(
+                &setting("MINDLEAK_MODEL_TIMEOUT_SECS", "60"),
+                "MINDLEAK_MODEL_TIMEOUT_SECS",
+                300,
+            )? as u64
+        } else {
+            60
+        };
         Ok(Self {
             database_url,
             database_ca: read("MINDLEAK_DATABASE_CA_FILE")
@@ -47,28 +102,9 @@ impl Config {
                 "MINDLEAK_DB_POOL_SIZE",
                 64,
             )?,
-            llm_endpoint: endpoint(
-                &setting("MINDLEAK_LLM_URL", "http://localhost:11434/v1"),
-                "chat/completions",
-            )?,
-            llm_model,
-            llm_api_key: setting("MINDLEAK_LLM_API_KEY", ""),
-            embed_endpoint: endpoint(
-                &setting("MINDLEAK_EMBED_URL", "http://localhost:11434/v1"),
-                "embeddings",
-            )?,
-            embed_model,
-            embed_api_key: setting("MINDLEAK_EMBED_API_KEY", ""),
-            dimensions: positive(
-                &setting("MINDLEAK_EMBED_DIMENSIONS", "768"),
-                "MINDLEAK_EMBED_DIMENSIONS",
-                2000,
-            )?,
-            model_timeout_secs: positive(
-                &setting("MINDLEAK_MODEL_TIMEOUT_SECS", "60"),
-                "MINDLEAK_MODEL_TIMEOUT_SECS",
-                300,
-            )? as u64,
+            decomposition,
+            embeddings,
+            model_timeout_secs,
             http_token: setting("MINDLEAK_HTTP_TOKEN", ""),
         })
     }
@@ -105,18 +141,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_mindleak_model_conventions() {
+    fn defaults_need_only_postgres_and_no_model_settings() {
         let config = Config::load(|name| {
             (name == "MINDLEAK_DATABASE_URL").then(|| "postgresql://localhost/memory".into())
         })
         .unwrap();
-        assert_eq!(config.embed_model, "nomic-embed-text");
-        assert_eq!(config.llm_model, "glm4:9b");
-        assert_eq!(config.dimensions, 768);
-        assert_eq!(
-            config.embed_endpoint.as_str(),
-            "http://localhost:11434/v1/embeddings"
-        );
+        assert!(config.decomposition.is_none());
+        assert!(config.embeddings.is_none());
     }
 
     #[test]
@@ -125,10 +156,10 @@ mod tests {
         for (name, value) in [
             ("MINDLEAK_DATABASE_URL", " "),
             ("MINDLEAK_DB_POOL_SIZE", "0"),
-            ("MINDLEAK_EMBED_DIMENSIONS", "abc"),
-            ("MINDLEAK_EMBED_DIMENSIONS", "2001"),
-            ("MINDLEAK_MODEL_TIMEOUT_SECS", "-1"),
-            ("MINDLEAK_MODEL", " "),
+            ("MINDLEAK_DECOMPOSITION", "auto"),
+            ("MINDLEAK_RETRIEVAL", ""),
+            ("MINDLEAK_DECOMPOSITION", "openai"),
+            ("MINDLEAK_RETRIEVAL", "vector"),
         ] {
             assert!(Config::load(|key| {
                 if key == name {
@@ -140,6 +171,59 @@ mod tests {
                 }
             })
             .is_err());
+        }
+    }
+
+    #[test]
+    fn disabled_model_settings_are_not_parsed_or_required() {
+        let config = Config::load(|name| {
+            Some(if name == "MINDLEAK_DATABASE_URL" {
+                "postgresql://localhost/memory".into()
+            } else if name == "MINDLEAK_DECOMPOSITION" {
+                "sentences".into()
+            } else if name == "MINDLEAK_RETRIEVAL" {
+                "keyword".into()
+            } else if name == "MINDLEAK_DB_POOL_SIZE" {
+                "8".into()
+            } else {
+                "unused invalid model setting".into()
+            })
+        })
+        .unwrap();
+        assert!(config.decomposition.is_none() && config.embeddings.is_none());
+    }
+
+    #[test]
+    fn lm_studio_chat_and_embeddings_are_independently_optional() {
+        for (chat, vector) in [(true, false), (false, true), (true, true)] {
+            let config = Config::load(|name| match name {
+                "MINDLEAK_DATABASE_URL" => Some("postgresql://localhost/memory".into()),
+                "MINDLEAK_DECOMPOSITION" if chat => Some("openai".into()),
+                "MINDLEAK_RETRIEVAL" if vector => Some("vector".into()),
+                "MINDLEAK_LLM_URL" | "MINDLEAK_EMBED_URL" => {
+                    Some("http://localhost:1234/v1".into())
+                }
+                "MINDLEAK_MODEL" => Some("my-chat-model".into()),
+                "MINDLEAK_EMBED_MODEL" => Some("my-embedding-model".into()),
+                "MINDLEAK_EMBED_DIMENSIONS" => Some("768".into()),
+                _ => None,
+            })
+            .unwrap();
+            assert_eq!(config.decomposition.is_some(), chat);
+            assert_eq!(config.embeddings.is_some(), vector);
+            if let Some(model) = config.decomposition {
+                assert_eq!(
+                    model.endpoint.as_str(),
+                    "http://localhost:1234/v1/chat/completions"
+                );
+            }
+            if let Some(embedding) = config.embeddings {
+                assert_eq!(
+                    embedding.provider.endpoint.as_str(),
+                    "http://localhost:1234/v1/embeddings"
+                );
+                assert_eq!(embedding.dimensions, 768);
+            }
         }
     }
 

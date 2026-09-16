@@ -86,3 +86,17 @@ jobs:
         run: docker compose logs --no-color
       - if: always()
         run: docker compose down --volumes
+
+  all-in-one:
+    name: All-in-One Container Persistence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm ci --prefix examples --ignore-scripts
+      - run: docker build --target all-in-one -f docker/Dockerfile -t mindleak-light:all-in-one-test .
+      - run: node scripts/container-smoke.mjs
+        env:
+          MINDLEAK_IMAGE: mindleak-light:all-in-one-test

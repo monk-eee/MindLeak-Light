@@ -13,7 +13,7 @@ use crate::{
 pub struct MemoryService {
     store: Arc<dyn MemoryStore>,
     decomposer: Arc<dyn MemoryDecomposer>,
-    embedder: Arc<dyn TextEmbedder>,
+    embedder: Option<Arc<dyn TextEmbedder>>,
     retriever: Arc<dyn MemoryRetriever>,
 }
 
@@ -21,7 +21,7 @@ impl MemoryService {
     pub fn new(
         store: Arc<dyn MemoryStore>,
         decomposer: Arc<dyn MemoryDecomposer>,
-        embedder: Arc<dyn TextEmbedder>,
+        embedder: Option<Arc<dyn TextEmbedder>>,
         retriever: Arc<dyn MemoryRetriever>,
     ) -> Self {
         Self {
@@ -35,8 +35,13 @@ impl MemoryService {
     pub async fn write_memory(&self, agent_id: &str, text: &str) -> Result<WriteMemoryResult> {
         validate_text(agent_id, "agentId", 256)?;
         let fragments = self.decompose_memory(text).await?;
-        let embeddings = self.embedder.embed_batch(&fragments).await?;
-        validate_embeddings(&embeddings, fragments.len(), self.embedder.dimensions())?;
+        let embeddings: Vec<_> = if let Some(embedder) = &self.embedder {
+            let embeddings = embedder.embed_batch(&fragments).await?;
+            validate_embeddings(&embeddings, fragments.len(), embedder.dimensions())?;
+            embeddings.into_iter().map(Some).collect()
+        } else {
+            vec![None; fragments.len()]
+        };
         let memory = PreparedMemory {
             id: Uuid::new_v4(),
             agent_id: agent_id.to_owned(),

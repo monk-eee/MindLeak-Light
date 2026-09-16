@@ -2,16 +2,21 @@
 
 - One shared trust domain. `agentId` is caller-supplied provenance, not identity
   or tenant isolation. Anyone holding the HTTP token can access all memories.
-- Decomposition quality depends on the configured model. JSON validation cannot
-  prove that an LLM preserved every qualifier or extracted every fact. Automated
-  tests use controlled provider responses, not a claim of model accuracy.
-- Models are external prerequisites, not bundled processes. Chat providers must
-  support JSON-object responses and embeddings must match configured dimensions.
-- Retrieval is exact cosine search without ANN indexing, reranking, decay, RAST,
-  synthesis inside the server, or automatic relationship generation.
+- Model-free decomposition splits sentences and list items, not every semantic
+  claim. It does not resolve pronouns or rewrite facts. A model is recommended
+  for richer extraction, but JSON validation still cannot prove semantic accuracy.
+- Keyword recall uses English stemming and stop words, with no synonym inference.
+  Natural-language questions work better with the optional embedding model.
+- Models are optional external providers, not bundled processes. Enabled chat
+  providers must support JSON-schema responses; embeddings must match configured
+  dimensions. An enabled provider failure does not fall back to model-free mode.
+- Vector retrieval is exact cosine search without ANN indexing, reranking, decay,
+  RAST, synthesis inside the server, or automatic relationship generation.
 - The embedding model is fixed per database. Changing weights under the same
   provider model name cannot be detected; operators must keep it stable. There is
-  no re-embedding command or model migration in this initial version.
+  no re-embedding command or model migration in this initial version. Entries
+  written without vectors remain keyword-searchable but are not automatically
+  included in vector-only recall after enabling a model.
 - Writes are atomic but not idempotent. A timeout after commit can leave a saved
   memory without a received ID; blind retries may create duplicates.
 - No update, delete, expiry, or retention tools yet. Operators manage backups
@@ -19,6 +24,7 @@
 - HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.
-- The three-table schema is bootstrapped on startup. Future schema evolution
-  needs an explicit reviewed migration strategy, not edits hidden behind
-  `CREATE TABLE IF NOT EXISTS`. No production migration framework is claimed.
+- Startup applies the initial schema and the explicit nullable-vector/keyword
+  migration transactionally. It needs permission to alter tables and create the
+  index. This is not a general-purpose migration framework; future changes need
+  explicit reviewed migrations, and operators should back up before upgrades.

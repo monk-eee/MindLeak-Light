@@ -4,11 +4,13 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
-use mindleak_decomposition::OpenAiDecomposer;
+use mindleak_decomposition::{OpenAiDecomposer, SentenceDecomposer};
 use mindleak_embeddings::OpenAiEmbedder;
 use mindleak_mcp::{http_router, MemoryMcp};
-use mindleak_memory::MemoryService;
-use mindleak_storage_postgres::{PostgresMemoryStore, VectorMemoryRetriever};
+use mindleak_memory::{MemoryDecomposer, MemoryRetriever, MemoryService, TextEmbedder};
+use mindleak_storage_postgres::{
+    KeywordMemoryRetriever, PostgresMemoryStore, VectorMemoryRetriever,
+};
 use rmcp::{transport::stdio, ServiceExt};
 use tokio_util::sync::CancellationToken;
 
@@ -45,33 +47,46 @@ async fn main() -> Result<()> {
         .with_env_filter("warn,mindleak_mcp=info")
         .init();
     let config = config::Config::from_env()?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(config.model_timeout_secs))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+    let model_client = || {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(config.model_timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+    };
     let store = PostgresMemoryStore::connect(
         &config.database_url,
-        &config.embed_model,
-        config.dimensions,
+        config
+            .embeddings
+            .as_ref()
+            .map(|embedding| (embedding.provider.model.as_str(), embedding.dimensions)),
         config.pool_size,
         config.database_ca.as_deref(),
     )
     .await?;
-    let embedder = Arc::new(OpenAiEmbedder::new(
-        client.clone(),
-        config.embed_endpoint,
-        config.embed_model,
-        config.embed_api_key,
-        config.dimensions,
-    )?);
-    let decomposer = Arc::new(OpenAiDecomposer::new(
-        client,
-        config.llm_endpoint,
-        config.llm_model,
-        config.llm_api_key,
-    ));
-    let retriever = Arc::new(VectorMemoryRetriever::new(store.clone(), embedder.clone()));
+    let embedder: Option<Arc<dyn TextEmbedder>> = match config.embeddings {
+        Some(embedding) => Some(Arc::new(OpenAiEmbedder::new(
+            model_client()?,
+            embedding.provider.endpoint,
+            embedding.provider.model,
+            embedding.provider.api_key,
+            embedding.dimensions,
+        )?)),
+        None => None,
+    };
+    let decomposer: Arc<dyn MemoryDecomposer> = match config.decomposition {
+        Some(model) => Arc::new(OpenAiDecomposer::new(
+            model_client()?,
+            model.endpoint,
+            model.model,
+            model.api_key,
+        )),
+        None => Arc::new(SentenceDecomposer),
+    };
+    let retriever: Arc<dyn MemoryRetriever> = match &embedder {
+        Some(embedder) => Arc::new(VectorMemoryRetriever::new(store.clone(), embedder.clone())),
+        None => Arc::new(KeywordMemoryRetriever::new(store.clone())),
+    };
     let server = MemoryMcp::new(MemoryService::new(
         Arc::new(store.clone()),
         decomposer,

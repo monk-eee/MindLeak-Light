@@ -11,6 +11,7 @@ use pgvector::Vector;
 use rustls::pki_types::{pem::PemObject, CertificateDer};
 use serde::{Deserialize, Serialize};
 use tokio_postgres::config::SslMode;
+use tokio_postgres::Row;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -22,19 +23,20 @@ struct EmbeddingSpace {
 #[derive(Clone)]
 pub struct PostgresMemoryStore {
     pool: Pool,
-    space: EmbeddingSpace,
+    space: Option<EmbeddingSpace>,
 }
 
 impl PostgresMemoryStore {
     pub async fn connect(
         database_url: &str,
-        embedding_model: &str,
-        dimensions: usize,
+        embedding_space: Option<(&str, usize)>,
         pool_size: usize,
         ca_file: Option<&Path>,
     ) -> Result<Self> {
-        validate_embeddings(&[], 0, dimensions)?;
-        validate_text(embedding_model, "embedding model", 256)?;
+        if let Some((model, dimensions)) = embedding_space {
+            validate_embeddings(&[], 0, dimensions)?;
+            validate_text(model, "embedding model", 256)?;
+        }
         ensure!(
             (1..=64).contains(&pool_size),
             "database pool size must be in 1..=64"
@@ -85,10 +87,10 @@ impl PostgresMemoryStore {
             .build()?;
         let store = Self {
             pool,
-            space: EmbeddingSpace {
-                model: embedding_model.into(),
+            space: embedding_space.map(|(model, dimensions)| EmbeddingSpace {
+                model: model.into(),
                 dimensions,
-            },
+            }),
         };
         store.initialize().await?;
         Ok(store)
@@ -107,10 +109,18 @@ impl PostgresMemoryStore {
         transaction
             .batch_execute(&format!(
                 include_str!("../schema.sql"),
-                dimensions = self.space.dimensions,
+                dimensions = self.space.as_ref().map_or(768, |space| space.dimensions),
             ))
             .await
             .context("initialize the three-table memory schema")?;
+        transaction
+            .batch_execute(include_str!("../migrations/0002-optional-embeddings.sql"))
+            .await
+            .context("enable model-free storage and keyword recall")?;
+        let Some(space) = &self.space else {
+            transaction.commit().await?;
+            return Ok(());
+        };
         let actual_type: String = transaction
             .query_one(
                 "SELECT format_type(atttypid, atttypmod) FROM pg_attribute \
@@ -119,10 +129,6 @@ impl PostgresMemoryStore {
             )
             .await?
             .get(0);
-        ensure!(
-            actual_type == format!("vector({})", self.space.dimensions),
-            "stored embedding dimensions differ from configuration; use the original model or a new database"
-        );
         let metadata: Option<String> = transaction
             .query_one(
                 "SELECT obj_description('public.fragments'::regclass, 'pg_class')",
@@ -135,20 +141,31 @@ impl PostgresMemoryStore {
                 let stored: EmbeddingSpace = serde_json::from_str(&metadata)
                     .context("invalid embedding-space metadata on fragments")?;
                 ensure!(
-                    stored == self.space,
-                    "stored embedding model differs from configuration; use the original model or a new database"
+                    &stored == space && actual_type == format!("vector({})", space.dimensions),
+                    "stored embedding model or dimensions differ from configuration; use the original model or a new database"
                 );
             }
             None => {
                 let populated: bool = transaction
-                    .query_one("SELECT EXISTS(SELECT 1 FROM public.fragments)", &[])
+                    .query_one(
+                        "SELECT EXISTS(SELECT 1 FROM public.fragments WHERE embedding IS NOT NULL)",
+                        &[],
+                    )
                     .await?
                     .get(0);
                 ensure!(
                     !populated,
                     "cannot identify the model of existing fragments"
                 );
-                let metadata = serde_json::to_string(&self.space)?;
+                if actual_type != format!("vector({})", space.dimensions) {
+                    transaction
+                        .batch_execute(&format!(
+                            "ALTER TABLE public.fragments ALTER COLUMN embedding TYPE vector({})",
+                            space.dimensions,
+                        ))
+                        .await?;
+                }
+                let metadata = serde_json::to_string(space)?;
                 let statement: String = transaction
                     .query_one(
                         "SELECT format('COMMENT ON TABLE public.fragments IS %L', $1::text)",
@@ -187,24 +204,50 @@ impl PostgresMemoryStore {
                     fragments.text, 1.0 - (fragments.embedding <=> $1) AS score \
              FROM public.fragments AS fragments \
              JOIN public.memories AS memories ON memories.id = fragments.memory_id \
-             WHERE ($2::text IS NULL OR memories.agent_id = $2) \
+             WHERE fragments.embedding IS NOT NULL AND ($2::text IS NULL OR memories.agent_id = $2) \
              ORDER BY fragments.embedding <=> $1, fragments.id LIMIT $3",
                 &[&vector, &agent_id, &limit],
             )
             .await
             .context("recall fragments with pgvector")?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(RecallMatch {
-                    memory_id: row.try_get("memory_id")?,
-                    fragment_id: row.try_get("fragment_id")?,
-                    agent_id: row.try_get("agent_id")?,
-                    text: row.try_get("text")?,
-                    score: row.try_get::<_, f64>("score")?.clamp(-1.0, 1.0),
-                })
-            })
-            .collect()
+        rows.into_iter().map(recall_match).collect()
     }
+
+    async fn keyword_search(
+        &self,
+        query: &str,
+        agent_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<RecallMatch>> {
+        let connection = self
+            .pool
+            .get()
+            .await
+            .context("acquire database connection")?;
+        let limit = i64::try_from(limit)?;
+        let rows = connection.query(
+            "SELECT memories.id AS memory_id, fragments.id AS fragment_id, memories.agent_id, \
+                    fragments.text, ts_rank_cd(to_tsvector('english', fragments.text), query, 32)::double precision AS score \
+             FROM public.fragments AS fragments \
+             JOIN public.memories AS memories ON memories.id = fragments.memory_id \
+             CROSS JOIN websearch_to_tsquery('english', $1) AS query \
+             WHERE to_tsvector('english', fragments.text) @@ query \
+               AND ($2::text IS NULL OR memories.agent_id = $2) \
+             ORDER BY score DESC, fragments.id LIMIT $3",
+            &[&query, &agent_id, &limit],
+        ).await.context("recall fragments with PostgreSQL full-text search")?;
+        rows.into_iter().map(recall_match).collect()
+    }
+}
+
+fn recall_match(row: Row) -> Result<RecallMatch> {
+    Ok(RecallMatch {
+        memory_id: row.try_get("memory_id")?,
+        fragment_id: row.try_get("fragment_id")?,
+        agent_id: row.try_get("agent_id")?,
+        text: row.try_get("text")?,
+        score: row.try_get::<_, f64>("score")?.clamp(-1.0, 1.0),
+    })
 }
 
 #[async_trait]
@@ -218,11 +261,13 @@ impl MemoryStore for PostgresMemoryStore {
         );
         for fragment in &memory.fragments {
             validate_text(&fragment.text, "fragment", MAX_FRAGMENT_BYTES)?;
-            validate_embeddings(
-                std::slice::from_ref(&fragment.embedding),
-                1,
-                self.space.dimensions,
-            )?;
+            match (&self.space, &fragment.embedding) {
+                (Some(space), Some(vector)) => {
+                    validate_embeddings(std::slice::from_ref(vector), 1, space.dimensions)?;
+                }
+                (None, None) => {}
+                _ => anyhow::bail!("fragment embeddings do not match the configured storage mode"),
+            }
             ensure!(
                 (0.0..=1.0).contains(&fragment.importance),
                 "invalid fragment importance"
@@ -255,7 +300,7 @@ impl MemoryStore for PostgresMemoryStore {
                         &fragment.id,
                         &memory.id,
                         &fragment.text,
-                        &Vector::from(fragment.embedding.clone()),
+                        &fragment.embedding.clone().map(Vector::from),
                         &fragment.importance,
                     ],
                 )
@@ -294,12 +339,47 @@ impl MemoryRetriever for VectorMemoryRetriever {
             (1..=MAX_RECALL_LIMIT).contains(&limit),
             "invalid recall limit"
         );
+        let space = self
+            .store
+            .space
+            .as_ref()
+            .context("vector recall requires configured embeddings")?;
         let embeddings = self.embedder.embed_batch(&[query.to_owned()]).await?;
-        validate_embeddings(&embeddings, 1, self.store.space.dimensions)?;
+        validate_embeddings(&embeddings, 1, space.dimensions)?;
         let vector = embeddings
             .into_iter()
             .next()
             .context("missing query embedding")?;
         self.store.search(vector, agent_id, limit).await
+    }
+}
+
+pub struct KeywordMemoryRetriever {
+    store: PostgresMemoryStore,
+}
+
+impl KeywordMemoryRetriever {
+    pub fn new(store: PostgresMemoryStore) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl MemoryRetriever for KeywordMemoryRetriever {
+    async fn recall(
+        &self,
+        query: &str,
+        agent_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<RecallMatch>> {
+        validate_text(query, "query", MAX_MEMORY_BYTES)?;
+        ensure!(
+            (1..=MAX_RECALL_LIMIT).contains(&limit),
+            "invalid recall limit"
+        );
+        if let Some(agent_id) = agent_id {
+            validate_text(agent_id, "agentId", 256)?;
+        }
+        self.store.keyword_search(query, agent_id, limit).await
     }
 }

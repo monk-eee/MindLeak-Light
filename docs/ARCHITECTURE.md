@@ -7,10 +7,10 @@ Claude / GPT / agents
         v
 MindLeak Light (one executable)
   MemoryService
-    -> MemoryDecomposer -> OpenAI-compatible chat endpoint
-    -> TextEmbedder     -> OpenAI-compatible embedding endpoint
+                -> MemoryDecomposer -> sentences/lists, or optional chat endpoint
+                -> TextEmbedder     -> optional embedding endpoint
     -> MemoryStore     -> PostgreSQL transaction
-    -> MemoryRetriever -> query embedding + pgvector search
+                -> MemoryRetriever -> keyword search, or optional pgvector search
         |
         v
 PostgreSQL: memories, fragments, relationships
@@ -18,11 +18,16 @@ PostgreSQL: memories, fragments, relationships
 
 ## Write
 
-Validate input, extract atomic facts, normalize whitespace and remove exact
-duplicates, embed the batch, validate index ordering and vector shape, then open
-one transaction. Insert raw memory first, followed by all fragments and vectors.
-Commit, then return the memory ID. Model work happens before the transaction so
-slow inference does not hold database connections or leave partial records.
+Validate input and decompose it using the configured strategy. The default uses
+Unicode sentence boundaries and line/list boundaries, preserving the wording.
+Optional model mode extracts atomic facts from structured JSON output. Normalize
+whitespace and remove exact duplicates. If vector retrieval is enabled, embed
+the batch and validate ordering and vector shape before opening a transaction.
+
+Insert the exact raw memory followed by every fragment, using NULL for disabled
+embeddings. Commit, then return the memory ID. Enabled model work happens before
+the transaction so inference does not hold database connections. No failed
+provider call is replaced with another strategy.
 
 Raw text is preserved exactly. Memory text is limited to 32768 UTF-8 bytes;
 decomposition produces 1..64 fragments of at most 4096 bytes each. Empty facts,
@@ -30,11 +35,15 @@ truncated model responses, zero/non-finite vectors, and dimension mismatches fai
 
 ## Recall
 
-`MemoryRetriever` owns the query-to-results boundary. `VectorMemoryRetriever`
-embeds the query and orders fragments using PostgreSQL's cosine-distance operator.
-Filtering happens before limiting, so an agent filter cannot lose results to an
-approximate global shortlist. Exact search is deliberate for this initial size;
-it scans candidates and has no approximate-vector index yet.
+`MemoryRetriever` owns the query-to-results boundary. `KeywordMemoryRetriever`
+uses PostgreSQL's English text-search configuration, `websearch_to_tsquery`, and
+normalized `ts_rank_cd`, with a GIN expression index. It searches all fragments.
+Use short keyword queries; unrelated synonyms are not inferred.
+
+Optional `VectorMemoryRetriever` embeds the query and orders fragments with
+vectors by PostgreSQL's cosine-distance operator. NULL embeddings are excluded,
+not filled with fake vectors. Both paths filter by agent before limiting. Vector
+search is exact and has no approximate-vector index yet.
 
 The client agent performs synthesis from returned fragments and their provenance.
 Replacing the retriever does not change the MCP tools or write pipeline. RAST
@@ -44,8 +53,15 @@ is an interface extension point, not a shipped implementation.
 
 The Postgres crate owns one bounded pool, shared by all server clones. Startup
 serializes idempotent schema initialization with a transaction-scoped advisory
-lock. Embedding model and dimensions are recorded in the fragments table comment;
-incompatible configuration refuses to start rather than comparing unrelated vectors.
+lock. The original schema remains unchanged; the explicit
+[optional-embedding migration](../crates/mindleak-storage-postgres/migrations/0002-optional-embeddings.sql)
+relaxes nullability and adds the keyword index. Existing data is not rewritten.
+
+Model-free startup does not bind or require an embedding model. On first vector
+startup, model and dimensions are recorded in the fragments table comment; the
+empty vector column can adopt that dimension. Later mismatches refuse startup.
+Model-free processes can still read/write NULL-vector fragments in that database.
+There is no automatic re-embedding of earlier entries.
 
 Relationships have constrained types, foreign keys, and cascade cleanup but no
 automatic inference. `agent_id` records provenance in a shared trust domain.
@@ -56,9 +72,30 @@ The Compose file is local development, not an internet-facing production
 topology. Production uses the same binary with protected HTTP ingress and a
 TLS-verified Postgres connection. See [SECURITY.md](../SECURITY.md).
 
+## Distribution
+
+Native release archives contain the one MCP executable, connection template,
+install guides, and checksums. They use an external PostgreSQL/pgvector database.
+No host language runtime is needed to run the binary.
+
+The `all-in-one` Docker target packages the same executable with PostgreSQL and
+Supervisor. PostgreSQL is socket-only inside the container; the HTTP MCP server
+is token-authenticated. A named volume holds database data. The supervisor owns
+process startup/restarts/shutdown, not memory orchestration or agent coordination.
+The `app` target and two-service source Compose setup remain available.
+
+See [ADR-0006](../adr.d/0006-native-and-all-in-one-distribution.md) and
+[installation](INSTALL.md). Docker Hub publishing targets
+`monkeemagic/mindleak-light` and requires an explicit manual release-tag run.
+
 ## Origin
 
 Adapted from MindLeak's Cargo workspace, OpenAI-compatible consolidation and
 embedding clients, batch-vector validation, `deadpool-postgres` pool pattern,
 and knowledge-store pgvector queries. Repo processes retain its ADR, changelog,
 hook, review, and release conventions. No sibling crate is linked or required.
+
+The user-facing [quickstart](../README.md#quickstart), [integration guide](INTEGRATION.md),
+and [model setup](MODELS.md) are the supported entry points. See
+[ADR-0005](../adr.d/0005-optional-models-and-model-free-quickstart.md) for the explicit
+model-free default and optional-provider contract.

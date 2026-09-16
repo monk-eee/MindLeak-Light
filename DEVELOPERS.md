@@ -1,5 +1,8 @@
 # Developing MindLeak Light
 
+Want to use MindLeak in an agent rather than work on its source? Start with the
+[quickstart](README.md#quickstart) and [agent integration](docs/INTEGRATION.md).
+
 ## Prerequisites
 
 - Rust via rustup; `rust-toolchain.toml` pins Rust 1.88 with rustfmt and Clippy.
@@ -15,16 +18,17 @@ commands listed below. The hooks themselves do not require Make.
 ## Local Development
 
 Use [.env.example](.env.example) for a local `.env`; never commit credentials.
-Start the database with `docker compose up -d postgres`. Native model URLs default
-to `http://localhost:11434/v1`; Compose defaults to the host gateway at the same
-port. For Linux/Podman, ensure your model server listens on a host interface the
-container can reach; do not expose an unauthenticated model API publicly.
+Start the database with `docker compose up -d postgres`. By default, sentence/list
+decomposition and keyword recall need no model settings. The checked-in VS Code
+MCP configuration connects to the Compose HTTP server without invoking Cargo.
 
 Shared configuration preserves MindLeak's `MINDLEAK_LLM_URL`, `MINDLEAK_MODEL`,
 `MINDLEAK_LLM_API_KEY`, `MINDLEAK_EMBED_URL`, `MINDLEAK_EMBED_MODEL`, and
-`MINDLEAK_EMBED_API_KEY`. URLs are API bases, including `/v1`. When overriding
-models, set the correct `MINDLEAK_EMBED_DIMENSIONS` before the first start.
-Provider URLs must not include credentials, query strings, or fragments.
+`MINDLEAK_EMBED_API_KEY`. They are only used when `MINDLEAK_DECOMPOSITION=openai`
+or `MINDLEAK_RETRIEVAL=vector` explicitly enables the corresponding provider.
+Enabled providers require an API base including `/v1`, a model ID, and for
+embeddings, `MINDLEAK_EMBED_DIMENSIONS`. See [optional models](docs/MODELS.md)
+for LM Studio, Ollama, native/container addresses, and upgrade behavior.
 
 Other settings are `MINDLEAK_DATABASE_URL`, `MINDLEAK_DATABASE_CA_FILE`,
 `MINDLEAK_DB_POOL_SIZE` (1..64, default 8), `MINDLEAK_MODEL_TIMEOUT_SECS`
@@ -49,7 +53,7 @@ cargo test --workspace --locked
 node scripts/adr-index.mjs --check
 node scripts/changelog.mjs --check
 node scripts/check-docs.mjs
-node --test scripts/repository.test.mjs
+node --test scripts/repository.test.mjs examples/benchmark-recall.test.mjs
 ```
 
 `cargo test` alone does not run database tests. For the required integration gate,
@@ -65,7 +69,44 @@ On PowerShell, use `$env:MINDLEAK_TEST_DATABASE_URL = '...'` and run the command
 individually, ending with `cargo test --workspace --all-features --locked`.
 The test database must end in `_test`. The suite uses the fixed `test-model`
 embedding space, namespaced records, real pgvector, and local mock model servers.
-No external LLM calls or API keys are needed. Tests do not erase the database.
+No external LLM calls or API keys are needed. The zero-provider regression runs
+all three MCP tools while its provider mock is unavailable and checks that it
+received no requests. Upgrade tests create and remove their own UUID-named
+`*_test` databases, so the test role needs `CREATEDB`. Tests never erase the
+configured test database or a development database.
+
+The JavaScript integration example is optional and isolated from the server:
+`npm ci --prefix examples` installs its dependencies. Run it against a disposable
+test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
+`npm --prefix examples run memory`. It writes one sample memory per run.
+
+### Distribution Checks
+
+The Dockerfile has two runtime targets: `app` for an external database and
+`all-in-one` for managed PostgreSQL plus MCP. Source Compose selects `app`.
+To test the single-container package locally:
+
+```sh
+npm ci --prefix examples --ignore-scripts
+docker build --target all-in-one -f docker/Dockerfile -t mindleak-light:all-in-one-test .
+MINDLEAK_IMAGE=mindleak-light:all-in-one-test node scripts/container-smoke.mjs
+```
+
+With Podman, add `--format docker` to the build command so HEALTHCHECK is retained,
+and set `CONTAINER_ENGINE=podman` plus the exact local image tag for the script.
+PowerShell users can set those variables with `$env:NAME = 'value'` first.
+The test creates a unique Compose project with a `mindleak_light_test` database,
+checks auth and real MCP calls, recreates the container, verifies persisted rows,
+then deletes only its own volume. The same test is a CI gate.
+
+## Recall Benchmarks
+
+Use the [recall benchmark guide](docs/BENCHMARKS.md) to measure ranked retrieval
+on a labelled synthetic corpus, compare keyword and model-backed configurations,
+and export per-query JSON results. The runner uses the optional example SDK
+dependencies and a native server against an explicit disposable `*_test`
+database; it never writes to the running quickstart HTTP server. Scoring tests
+need no npm packages, model, or database and run in `make script-test` and `make ci`.
 
 ## Changes and Releases
 
@@ -84,8 +125,31 @@ To prepare a release:
 Tagging triggers the release workflow, which validates metadata, tests against
 Postgres, and packages the single executable for Linux, Windows, and both Mac
 architectures with SHA-256 checksums. Releases remain drafts until reviewed.
+Each archive includes installation/model guides and a platform-correct
+`mcp.example.json`; each build host checks the binary's `--version` before packaging.
 Ordinary pushes and PRs never publish binaries. Local packaging uses
 `node scripts/release.mjs --package <target-triple>` after a matching Cargo build.
+
+### Docker Hub Publishing
+
+The destination is **`monkeemagic/mindleak-light`**. Publishing is manual and
+independent from native draft releases; ordinary pushes and tag builds do not
+send an image to Docker Hub.
+
+1. Create that repository on Docker Hub with the visibility you intend.
+2. In this GitHub repository's Actions secrets, set `DOCKERHUB_TOKEN` to a Docker
+	Hub access token with write access to that repository. Do not paste tokens into
+	source files or chat. The login defaults to `monkeemagic`; use the Actions
+	variable `DOCKERHUB_USERNAME` if a different authorized account owns the token.
+3. Prepare and push a version tag using the release procedure above.
+4. Run **Publish Docker Hub Image** from that tag, or use
+	`gh workflow run docker-hub.yml --ref vX.Y.Z`.
+
+The workflow rejects branch runs, missing credentials, and tag/changelog mismatch.
+It runs CI, then builds the all-in-one target for `linux/amd64` and `linux/arm64`
+with image provenance and an SBOM. `vX.Y.Z` becomes image tag `X.Y.Z`.
+`latest` only moves when `publish_latest=true` is explicitly selected, and never
+for a prerelease. Review the built digest and deployment backup before upgrading.
 
 GitHub branch protection and remote publishing are repository-owner actions,
 not configured automatically by a local scaffold. Require CI checks on the

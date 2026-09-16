@@ -22,16 +22,19 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      target: app
     environment:
       MINDLEAK_DATABASE_URL: postgresql://mindleak_light:mindleak-light-development-only@postgres:5432/mindleak_light?sslmode=disable
       MINDLEAK_DB_POOL_SIZE: ${MINDLEAK_DB_POOL_SIZE:-8}
-      MINDLEAK_LLM_URL: ${MINDLEAK_LLM_URL:-http://host.docker.internal:11434/v1}
-      MINDLEAK_MODEL: ${MINDLEAK_MODEL:-glm4:9b}
+      MINDLEAK_DECOMPOSITION: ${MINDLEAK_DECOMPOSITION:-sentences}
+      MINDLEAK_RETRIEVAL: ${MINDLEAK_RETRIEVAL:-keyword}
+      MINDLEAK_LLM_URL: ${MINDLEAK_LLM_URL:-}
+      MINDLEAK_MODEL: ${MINDLEAK_MODEL:-}
       MINDLEAK_LLM_API_KEY: ${MINDLEAK_LLM_API_KEY:-}
-      MINDLEAK_EMBED_URL: ${MINDLEAK_EMBED_URL:-http://host.docker.internal:11434/v1}
-      MINDLEAK_EMBED_MODEL: ${MINDLEAK_EMBED_MODEL:-nomic-embed-text}
+      MINDLEAK_EMBED_URL: ${MINDLEAK_EMBED_URL:-}
+      MINDLEAK_EMBED_MODEL: ${MINDLEAK_EMBED_MODEL:-}
       MINDLEAK_EMBED_API_KEY: ${MINDLEAK_EMBED_API_KEY:-}
-      MINDLEAK_EMBED_DIMENSIONS: ${MINDLEAK_EMBED_DIMENSIONS:-768}
+      MINDLEAK_EMBED_DIMENSIONS: ${MINDLEAK_EMBED_DIMENSIONS:-}
       MINDLEAK_MODEL_TIMEOUT_SECS: ${MINDLEAK_MODEL_TIMEOUT_SECS:-60}
       MINDLEAK_HTTP_TOKEN: ${MINDLEAK_HTTP_TOKEN:-mindleak-light-development-token-not-for-production}
     extra_hosts:

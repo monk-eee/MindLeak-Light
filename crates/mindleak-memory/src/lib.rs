@@ -22,7 +22,7 @@ pub struct InvalidInput(pub String);
 pub struct EmbeddedFragment {
     pub id: Uuid,
     pub text: String,
-    pub embedding: Vec<f32>,
+    pub embedding: Option<Vec<f32>>,
     pub importance: f32,
 }
 

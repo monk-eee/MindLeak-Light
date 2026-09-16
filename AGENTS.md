@@ -10,11 +10,17 @@ changing module boundaries. This is not the sibling MindLeak coordination system
 
 - Only three tools: `write_memory`, `recall_memory`, `decompose_memory`.
 - Only three application tables: `memories`, `fragments`, `relationships`.
-- Every successful write stores the exact raw text and all decomposed, embedded
-  fragments atomically. Provider or database failures must not report success.
-- Decomposition extracts independent facts through a configured OpenAI-compatible
-  model. Never substitute sentence splitting or the original paragraph on failure.
-- Recall is behind `MemoryRetriever`; pgvector implements it now. Do not implement
+- Every successful write stores the exact raw text and complete fragment set
+  atomically, including validated vectors when embeddings are enabled. Provider
+  or database failures must not report success.
+- The default and quickstart need no chat or embedding model: use deterministic
+  sentence/list decomposition and PostgreSQL keyword recall. Models are
+  recommended opt-ins for richer extraction and semantic recall, not prerequisites.
+- Optional model decomposition extracts independent facts through an
+  OpenAI-compatible provider such as LM Studio. Never substitute sentence
+  splitting or the original paragraph when an enabled provider fails.
+- Recall is behind `MemoryRetriever`; PostgreSQL keyword search is the default
+  and pgvector is optional. Do not implement
   RAST, graph traversal, decay, event buses, CQRS, workers, or coordination here.
 - Do not mix embedding models or dimensions in one database. `agentId` is
   provenance and an optional filter, not an authentication or tenant boundary.
@@ -46,5 +52,7 @@ Use Conventional Commits, explicit staging, and never `--no-verify`.
 - Record fixable outstanding defects in `gaps.d/`; record deliberate boundaries
   in [known limitations](docs/KNOWN-LIMITATIONS.md). Do not claim unverified work.
 - Keep setup, tool contracts, and deployment docs current with code changes.
+- Keep the README focused on a human's first successful write and recall.
+  Put optional model setup and contributor internals in the linked guides.
 
 See [DEVELOPERS.md](DEVELOPERS.md) for commands and release procedures.

@@ -1,85 +1,130 @@
+<p align="center">
+  <img src="assets/mindleak_logo.png" alt="MindLeak logo" width="420">
+</p>
+
 # MindLeak Light
 
-Shared agent memory. One MCP server. One PostgreSQL database.
+<p align="center">
+  <a href="https://github.com/monk-eee/MindLeak-Light/actions/workflows/ci.yml"><img src="https://github.com/monk-eee/MindLeak-Light/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/monk-eee/MindLeak-Light/actions/workflows/security.yml"><img src="https://github.com/monk-eee/MindLeak-Light/actions/workflows/security.yml/badge.svg" alt="Dependency security"></a>
+  <a href="https://github.com/monk-eee/MindLeak-Light/actions/workflows/release.yml"><img src="https://github.com/monk-eee/MindLeak-Light/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88+">
+  <img src="https://img.shields.io/badge/protocol-MCP-8A2BE2.svg" alt="Model Context Protocol">
+  <img src="https://img.shields.io/badge/storage-PostgreSQL%20%2B%20pgvector-336791.svg" alt="PostgreSQL with pgvector">
+</p>
 
-Raw memory becomes independent fact fragments, each with an embedding and a
-link back to its source. Recall retrieves fragments using pgvector; the calling
-agent synthesizes the answer. No RAST, graph reasoning, event bus, or orchestration.
+**Shared agent memory. One MCP server. One PostgreSQL database.**
 
-## Run
+[Quickstart](#quickstart) | [Binary and container installs](docs/INSTALL.md) | [Connect your agent](docs/INTEGRATION.md) | [Add a model](docs/MODELS.md)
 
-Requires Docker Compose (or Podman Compose) and an existing OpenAI-compatible
-chat and embedding endpoint. Defaults use Ollama on the host with `glm4:9b`
-and `nomic-embed-text` (768 dimensions). Install those models separately; the
-server never downloads models or silently substitutes another one.
+Give your agents somewhere to remember preferences, decisions, and confirmed
+facts between sessions. Connect over MCP, save a memory, and recall it later
+from the same agent or another one. Keep your existing agent framework and model.
+
+**Models are recommended, not required.** Start with sentence/list fragments and
+keyword search, with no model calls. Add LM Studio, Ollama, or another
+OpenAI-compatible provider for richer fact extraction and semantic recall.
+
+Prefer a download to a source build? Native archives plug into MCP over stdio.
+The all-in-one image bundles the server and PostgreSQL, with publishing prepared
+for `monkeemagic/mindleak-light` on Docker Hub. See [installation options](docs/INSTALL.md)
+for availability, connection templates, persistent volumes, and local image builds.
+
+## Quickstart
+
+You need Git and Docker with Compose, or Podman with Compose. No Rust toolchain,
+API key, or model download is needed for this path.
 
 ```sh
-cp .env.example .env
-docker compose up -d --build
+git clone https://github.com/monk-eee/MindLeak-Light.git
+cd MindLeak-Light
+docker compose up --build --detach --wait
 ```
 
-The shared endpoint is `http://127.0.0.1:8088/mcp`. Send
-`Authorization: Bearer <MINDLEAK_HTTP_TOKEN>` on every HTTP request.
-The default token and database password are local-development values only.
-`/health` checks database connectivity, not model readiness. Containers are
-healthy even if the model endpoint is unavailable; memory tools then fail clearly.
+With Podman, replace `docker compose` with `podman compose`. The first build
+downloads dependencies and can take a few minutes. Later starts reuse the image.
+No `.env` file is necessary unless you want to change settings.
 
-For a native stdio server, install Rust through rustup, start only the database,
-and use the supplied [VS Code MCP configuration](.vscode/mcp.json):
+The MCP endpoint is **`http://127.0.0.1:8088/mcp`**. It is an API, not a web UI.
+The quickstart binds to your machine only and uses public development credentials.
+See [security](SECURITY.md) before sharing it over a network.
 
-```sh
-docker compose up -d postgres
-cargo run --locked -p mindleak-mcp --bin mindleak-light -- --transport stdio
+## Connect Your Agent
+
+For **VS Code / GitHub Copilot**, this repo already includes
+[.vscode/mcp.json](.vscode/mcp.json). Open the folder, run **MCP: List Servers**,
+select **mindleak-light**, and start it. Review the trust prompt if shown and
+enable its three tools in chat.
+
+To use it from your own project's VS Code workspace, add this entry to its
+`.vscode/mcp.json`, preserving any existing servers:
+
+```json
+{
+  "servers": {
+    "mindleak-light": {
+      "type": "http",
+      "url": "http://127.0.0.1:8088/mcp",
+      "headers": {
+        "Authorization": "Bearer mindleak-light-development-token-not-for-production"
+      }
+    }
+  }
+}
 ```
 
-Logs go to stderr. Do not launch a stdio server in a terminal expecting a chat
-interface: the MCP client sends its requests over stdin. Multiple stdio clients
-can share this database; HTTP lets them share one server process as well.
+For **Claude Code**, other MCP clients, or your own application, see
+[Connect Your Agent](docs/INTEGRATION.md). A [runnable JavaScript example](examples/agent-memory.mjs)
+uses the official MCP SDK and needs no agent model to verify storage and recall.
 
-## Tools
+## Try It
 
-| Tool | Input | Result |
+Ask your connected agent:
+
+> Use MindLeak Light to remember this with agentId "quickstart": The user prefers
+> pull requests under 500 LOC. The team requires reviews.
+
+Look for a successful `write_memory` call with a `memoryId`. Then start a new
+chat with the server connected and ask:
+
+> Use MindLeak Light to recall "reviews" for agentId "quickstart".
+
+You should get the review fragment with the saved memory's ID. In default keyword
+mode, use short terms such as `reviews` or `pull requests`, not a long question.
+Your agent may require approval before making tool calls.
+
+## Add Models When Ready
+
+| Setup | Decomposition | Recall |
 |---|---|---|
-| `write_memory` | `{"agentId":"claude","text":"User prefers PRs under 500 LOC"}` | `{"memoryId":"<uuid>"}` |
-| `recall_memory` | `{"query":"PR preferences?","limit":10}` | Array of fragments with `memoryId`, `fragmentId`, `agentId`, `score`, `text` |
-| `decompose_memory` | `{"text":"The user dislikes huge PRs. The team requires reviews."}` | Array of independent fact strings; preview only |
+| Quickstart, no models | Sentences and list items, wording preserved | Indexed keyword search |
+| Optional chat model | Independent facts extracted from prose | Keyword search still available |
+| Optional embedding model | Either decomposition mode | Semantic vector search |
 
-`write_memory` always decomposes, embeds, and persists the fragments. It returns
-only after the raw text and every fragment/vector commit together. A model or
-database failure leaves no partial memory. Previewing decomposition does not
-store anything.
+Chat extraction and embeddings are independent options. We recommend both for
+messy prose and natural-language recall; they add inference time and need a
+working provider. [Set up LM Studio or another provider](docs/MODELS.md).
+Existing memories stay stored when switching modes; unembedded memories remain
+keyword-searchable but are not automatically added to vector search.
 
-Recall's optional `agentId` filters provenance; omit it for shared recall.
-Scores are cosine similarity in `[-1, 1]`, not probabilities. Results are
-fragment-level, so a memory can appear more than once. Importance is stored
-with default 0.5 but does not alter ranking. Relationships accept `supports`,
-`contradicts`, and `related`; none are inferred automatically.
+## Documentation
 
-MCP text content contains the JSON shown above. For client compatibility,
-`structuredContent` contains the write object or `{"results":[...]}` for arrays.
+| I Want To... | Start Here |
+|---|---|
+| Install a pluggable binary or an all-in-one container | [Installation](docs/INSTALL.md) |
+| Connect an agent, understand the tools, or troubleshoot | [Agent integration](docs/INTEGRATION.md) |
+| Add LM Studio, Ollama, or hosted models | [Optional models](docs/MODELS.md) |
+| Measure recall quality and compare configurations | [Recall benchmarks](docs/BENCHMARKS.md) |
+| Build, test, or contribute | [Developer guide](DEVELOPERS.md) |
+| Understand storage and design decisions | [Architecture](docs/ARCHITECTURE.md), [ADRs](adr.d/README.md) |
+| Deploy beyond my laptop | [Security](SECURITY.md), [limitations](docs/KNOWN-LIMITATIONS.md) |
+| See what's changed | [Changelog](CHANGELOG.md), [unreleased notes](changelog.d/README.md) |
 
-## Repository
+Stop the stack with `docker compose down`; the database volume is retained.
+Do not add `--volumes` unless you intend to delete your memories.
 
-```text
-crates/
-  mindleak-mcp/                One deployable: mindleak-light
-  mindleak-memory/             Memory API and replaceable MemoryRetriever
-  mindleak-storage-postgres/   Three-table schema, transactions, vector search
-  mindleak-decomposition/      Atomic-fact extraction
-  mindleak-embeddings/         OpenAI-compatible embeddings
-docker/                       Container build
-tests/                        Real PostgreSQL and MCP integration tests
-adr.d/                        Numbered decisions and generated index
-changelog.d/                  Per-change release notes
-gaps.d/                       Actionable outstanding defects
-scripts/                      Repository checks and release tooling
-.github/                      CI, release, security, and review configuration
-```
-
-The layout, dependency choices, model configuration, pool design, ADR process,
-changelog fragments, and quality gates are adapted from the sibling MindLeak.
-There are no runtime or path dependencies on that repository.
-
-Read [DEVELOPERS.md](DEVELOPERS.md), [AGENTS.md](AGENTS.md),
-[architecture](docs/ARCHITECTURE.md), [security](SECURITY.md), and
-[known limitations](docs/KNOWN-LIMITATIONS.md).
+Built from [MindLeak](https://github.com/monk-eee/MindLeak)'s Rust and repository
+conventions, without its coordination runtime. The original
+[logo](assets/mindleak_logo.png) and [icon](assets/mindleak_128x128.png) are included
+in release archives.

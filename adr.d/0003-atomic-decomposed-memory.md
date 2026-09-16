@@ -1,6 +1,6 @@
 # ADR-0003: Atomic Decomposed Memory
 
-- Status: Accepted
+- Status: Superseded by [ADR-0005](0005-optional-models-and-model-free-quickstart.md)
 - Date: 2026-09-16
 
 ## Context

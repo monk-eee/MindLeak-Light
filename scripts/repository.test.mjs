@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 import test from "node:test";
 import { readAdrs, updateIndex } from "./adr-index.mjs";
 import { readFragments, releaseChangelog, render } from "./changelog.mjs";
@@ -81,6 +82,20 @@ test("repository record commands validate the actual checkout", () => {
   assert.match(readFileSync(join(root, "AGENTS.md"), "utf8"), /MemoryRetriever/);
 });
 
+test("quickstart documentation and editor config agree on a model-free setup", () => {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const readme = readFileSync(join(root, "README.md"), "utf8");
+  const configurations = [...readme.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) => JSON.parse(match[1]));
+  const editor = JSON.parse(readFileSync(join(root, ".vscode/mcp.json"), "utf8"));
+  assert.deepEqual(configurations.find((config) => config.servers), editor);
+  assert.equal(editor.servers["mindleak-light"].type, "http");
+  const defaults = parseEnv(readFileSync(join(root, ".env.example"), "utf8"));
+  assert.equal(defaults.MINDLEAK_DECOMPOSITION, "sentences");
+  assert.equal(defaults.MINDLEAK_RETRIEVAL, "keyword");
+  assert.equal(defaults.MINDLEAK_MODEL, undefined);
+  assert.equal(defaults.MINDLEAK_EMBED_MODEL, undefined);
+});
+
 test("local Markdown links are checked but URLs and code samples are excluded", (context) => {
   const directory = fixture(context);
   writeFileSync(join(directory, "target.md"), "# Target\n");
@@ -98,18 +113,44 @@ test("release metadata requires matching versions and consumed fragments", () =>
   assert.throws(() => releaseNotes("## [Unreleased]\n", "0.1.0", "v0.1.0", 0), /dated/);
 });
 
-test("release packaging includes one executable and verifiable checksums", (context) => {
+test("release packaging includes a pluggable binary, installation guide, branding, and checksums", (context) => {
   const directory = fixture(context);
   const target = "x86_64-unknown-linux-gnu";
   const release = join(directory, "target", target, "release");
   mkdirSync(release, { recursive: true });
   writeFileSync(join(release, "mindleak-light"), "test executable\n");
   for (const name of ["README.md", "LICENSE", "SECURITY.md"]) writeFileSync(join(directory, name), name);
+  const branding = ["mindleak_logo.png", "mindleak_128x128.png"];
+  mkdirSync(join(directory, "assets"));
+  for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
+  mkdirSync(join(directory, "docs"));
+  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md"]) {
+    writeFileSync(join(directory, "docs", name), `# ${name}\n`);
+  }
   const archive = packageBinary(directory, target, "0.1.0");
   const contents = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" });
   assert.match(contents, /mindleak-light/);
   assert.match(contents, /LICENSE/);
+  for (const name of branding) {
+    assert.ok(contents.includes(`assets/${name}`), `release archive is missing ${name}`);
+    const packaged = execFileSync("tar", ["-xOf", archive, `./assets/${name}`]);
+    assert.deepEqual(packaged, readFileSync(join(directory, "assets", name)));
+  }
+  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md"]) {
+    assert.ok(contents.includes(`docs/${name}`), `release archive is missing ${name}`);
+  }
+  const mcp = JSON.parse(execFileSync("tar", ["-xOf", archive, "./mcp.example.json"], { encoding: "utf8" }));
+  assert.equal(mcp.mcpServers["mindleak-light"].command, "mindleak-light");
+  assert.deepEqual(mcp.mcpServers["mindleak-light"].args, ["--transport", "stdio"]);
+  assert.ok(mcp.mcpServers["mindleak-light"].env.MINDLEAK_DATABASE_URL);
   const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
   assert.ok(readFileSync(`${archive}.sha256`, "utf8").startsWith(`${digest}  mindleak-light-0.1.0-`));
   assert.throws(() => packageBinary(directory, "../../invalid", "0.1.0"), /unsupported/);
+  const windowsTarget = "x86_64-pc-windows-msvc";
+  const windowsRelease = join(directory, "target", windowsTarget, "release");
+  mkdirSync(windowsRelease, { recursive: true });
+  writeFileSync(join(windowsRelease, "mindleak-light.exe"), "test executable\n");
+  const windowsArchive = packageBinary(directory, windowsTarget, "0.1.0");
+  const windowsConfig = JSON.parse(execFileSync("tar", ["-xOf", windowsArchive, "./mcp.example.json"], { encoding: "utf8" }));
+  assert.equal(windowsConfig.mcpServers["mindleak-light"].command, "mindleak-light.exe");
 });

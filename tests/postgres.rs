@@ -5,8 +5,11 @@ use async_trait::async_trait;
 use mindleak_memory::{
     EmbeddedFragment, MemoryRetriever, MemoryStore, PreparedMemory, TextEmbedder,
 };
-use mindleak_storage_postgres::{PostgresMemoryStore, VectorMemoryRetriever};
+use mindleak_storage_postgres::{
+    KeywordMemoryRetriever, PostgresMemoryStore, VectorMemoryRetriever,
+};
 use tokio_postgres::{Client, NoTls};
+use url::Url;
 use uuid::Uuid;
 
 fn database_url() -> String {
@@ -21,12 +24,35 @@ fn database_url() -> String {
 
 async fn setup() -> (PostgresMemoryStore, Client) {
     let url = database_url();
-    let store = PostgresMemoryStore::connect(&url, "test-model", 2, 4, None)
+    let store = PostgresMemoryStore::connect(&url, Some(("test-model", 2)), 4, None)
         .await
         .unwrap();
     let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     (store, client)
+}
+
+async fn isolated_database() -> (Client, Url, String) {
+    let mut url = Url::parse(&database_url()).unwrap();
+    let (admin, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let name = format!("mindleak_{}_test", Uuid::new_v4().simple());
+    let create: String = admin
+        .query_one("SELECT format('CREATE DATABASE %I', $1::text)", &[&name])
+        .await
+        .unwrap()
+        .get(0);
+    admin.batch_execute(&create).await.unwrap();
+    let cleanup: String = admin
+        .query_one(
+            "SELECT format('DROP DATABASE %I WITH (FORCE)', $1::text)",
+            &[&name],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    url.set_path(&name);
+    (admin, url, cleanup)
 }
 
 fn memory(agent_id: &str) -> PreparedMemory {
@@ -38,13 +64,13 @@ fn memory(agent_id: &str) -> PreparedMemory {
             EmbeddedFragment {
                 id: Uuid::new_v4(),
                 text: "User prefers small PRs".into(),
-                embedding: vec![1.0, 0.0],
+                embedding: Some(vec![1.0, 0.0]),
                 importance: 0.5,
             },
             EmbeddedFragment {
                 id: Uuid::new_v4(),
                 text: "Team requires reviews".into(),
-                embedding: vec![0.0, 1.0],
+                embedding: Some(vec![0.0, 1.0]),
                 importance: 0.5,
             },
         ],
@@ -168,16 +194,18 @@ async fn schema_has_exactly_three_tables_and_locks_the_embedding_space() {
     assert_eq!(tables, ["fragments", "memories", "relationships"]);
     let url = database_url();
     assert!(
-        PostgresMemoryStore::connect(&url, "other-model", 2, 4, None)
+        PostgresMemoryStore::connect(&url, Some(("other-model", 2)), 4, None)
             .await
             .is_err()
     );
-    assert!(PostgresMemoryStore::connect(&url, "test-model", 3, 4, None)
-        .await
-        .is_err());
+    assert!(
+        PostgresMemoryStore::connect(&url, Some(("test-model", 3)), 4, None)
+            .await
+            .is_err()
+    );
     let (first, second) = tokio::join!(
-        PostgresMemoryStore::connect(&url, "test-model", 2, 4, None),
-        PostgresMemoryStore::connect(&url, "test-model", 2, 4, None),
+        PostgresMemoryStore::connect(&url, Some(("test-model", 2)), 4, None),
+        PostgresMemoryStore::connect(&url, Some(("test-model", 2)), 4, None),
     );
     first.unwrap().health().await.unwrap();
     second.unwrap().health().await.unwrap();
@@ -218,4 +246,181 @@ async fn relationships_enforce_types_foreign_keys_and_cascading_deletion() {
         &[&source],
     ).await.unwrap().get(0);
     assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn keyword_recall_finds_unembedded_fragments_and_respects_agent_filters() {
+    let (vector_store, client) = setup().await;
+    let store = PostgresMemoryStore::connect(&database_url(), None, 4, None)
+        .await
+        .unwrap();
+    let agent_id = format!("keyword-{}", Uuid::new_v4());
+    let mut raw_memory = memory(&agent_id);
+    for fragment in &mut raw_memory.fragments {
+        fragment.embedding = None;
+    }
+    store.save(&raw_memory).await.unwrap();
+    let null_count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM public.fragments WHERE memory_id = $1 AND embedding IS NULL",
+            &[&raw_memory.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(null_count, 2);
+    let retriever = KeywordMemoryRetriever::new(store);
+    let matches = retriever
+        .recall("reviews", Some(&agent_id), 10)
+        .await
+        .unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].text, "Team requires reviews");
+    assert_eq!(matches[0].memory_id, raw_memory.id);
+    assert!((0.0..1.0).contains(&matches[0].score));
+    assert!(matches[0].score > 0.0);
+    assert!(retriever
+        .recall("reviews", Some("absent-agent"), 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(retriever
+        .recall("unfindablewordxyz", Some(&agent_id), 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!retriever
+        .recall("reviews", None, 1)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(retriever
+        .recall("the and", Some(&agent_id), 10)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let vectors = VectorMemoryRetriever::new(vector_store, Arc::new(QueryEmbedder));
+    assert!(vectors
+        .recall("PR preferences?", Some(&agent_id), 10)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn model_free_upgrade_preserves_legacy_vectors_and_model_binding() {
+    let (admin, url, cleanup) = isolated_database().await;
+    let (database, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    database
+        .batch_execute(&format!(
+            include_str!("../crates/mindleak-storage-postgres/schema.sql"),
+            dimensions = 2,
+        ))
+        .await
+        .unwrap();
+    database
+        .batch_execute(
+            "COMMENT ON TABLE public.fragments IS '{\"model\":\"test-model\",\"dimensions\":2}'",
+        )
+        .await
+        .unwrap();
+    let legacy = memory("legacy");
+    database
+        .execute(
+            "INSERT INTO public.memories(id, agent_id, raw_text) VALUES($1, $2, $3)",
+            &[&legacy.id, &legacy.agent_id, &legacy.raw_text],
+        )
+        .await
+        .unwrap();
+    let fragment = &legacy.fragments[0];
+    database
+        .execute(
+            "INSERT INTO public.fragments(id, memory_id, text, embedding) VALUES($1, $2, $3, $4)",
+            &[
+                &fragment.id,
+                &legacy.id,
+                &fragment.text,
+                &pgvector::Vector::from(fragment.embedding.clone().unwrap()),
+            ],
+        )
+        .await
+        .unwrap();
+    let store = PostgresMemoryStore::connect(url.as_str(), None, 2, None)
+        .await
+        .unwrap();
+    let mut unembedded = memory("new-agent");
+    for fragment in &mut unembedded.fragments {
+        fragment.embedding = None;
+    }
+    store.save(&unembedded).await.unwrap();
+    let original = database.query_one(
+        "SELECT raw_text, embedding FROM public.memories JOIN public.fragments ON memory_id = memories.id WHERE memories.id = $1",
+        &[&legacy.id],
+    ).await.unwrap();
+    assert_eq!(original.get::<_, String>(0), legacy.raw_text);
+    assert_eq!(
+        original.get::<_, pgvector::Vector>(1).to_vec(),
+        vec![1.0, 0.0]
+    );
+    let store = PostgresMemoryStore::connect(url.as_str(), Some(("test-model", 2)), 2, None)
+        .await
+        .unwrap();
+    assert!(
+        PostgresMemoryStore::connect(url.as_str(), Some(("other-model", 2)), 2, None)
+            .await
+            .is_err()
+    );
+    let retriever = KeywordMemoryRetriever::new(store);
+    assert_eq!(
+        retriever
+            .recall("reviews", Some("new-agent"), 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    admin.batch_execute(&cleanup).await.unwrap();
+}
+
+#[tokio::test]
+async fn vectors_can_be_enabled_after_model_free_writes_without_rewriting_them() {
+    let (admin, url, cleanup) = isolated_database().await;
+    let store = PostgresMemoryStore::connect(url.as_str(), None, 2, None)
+        .await
+        .unwrap();
+    let mut unembedded = memory("before-model");
+    for fragment in &mut unembedded.fragments {
+        fragment.embedding = None;
+    }
+    store.save(&unembedded).await.unwrap();
+    let vector_store = PostgresMemoryStore::connect(url.as_str(), Some(("test-model", 2)), 2, None)
+        .await
+        .unwrap();
+    vector_store.save(&memory("with-model")).await.unwrap();
+    let vector_retriever = VectorMemoryRetriever::new(vector_store, Arc::new(QueryEmbedder));
+    assert!(vector_retriever
+        .recall("PR preferences?", Some("before-model"), 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        vector_retriever
+            .recall("PR preferences?", Some("with-model"), 10)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let keyword_retriever = KeywordMemoryRetriever::new(store);
+    let recalled = keyword_retriever
+        .recall("reviews", Some("before-model"), 10)
+        .await
+        .unwrap();
+    assert_eq!(recalled.len(), 1);
+    assert_eq!(recalled[0].memory_id, unembedded.id);
+    admin.batch_execute(&cleanup).await.unwrap();
 }

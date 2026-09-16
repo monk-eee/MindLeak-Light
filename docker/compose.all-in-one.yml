@@ -1,0 +1,27 @@
+services:
+  mindleak-light:
+    image: ${MINDLEAK_IMAGE:-monkeemagic/mindleak-light:latest}
+    environment:
+      MINDLEAK_HTTP_TOKEN: ${MINDLEAK_HTTP_TOKEN:?Set a strong MINDLEAK_HTTP_TOKEN}
+      POSTGRES_DB: ${POSTGRES_DB:-mindleak_light}
+      MINDLEAK_DECOMPOSITION: ${MINDLEAK_DECOMPOSITION:-sentences}
+      MINDLEAK_RETRIEVAL: ${MINDLEAK_RETRIEVAL:-keyword}
+      MINDLEAK_LLM_URL: ${MINDLEAK_LLM_URL:-}
+      MINDLEAK_MODEL: ${MINDLEAK_MODEL:-}
+      MINDLEAK_LLM_API_KEY: ${MINDLEAK_LLM_API_KEY:-}
+      MINDLEAK_EMBED_URL: ${MINDLEAK_EMBED_URL:-}
+      MINDLEAK_EMBED_MODEL: ${MINDLEAK_EMBED_MODEL:-}
+      MINDLEAK_EMBED_API_KEY: ${MINDLEAK_EMBED_API_KEY:-}
+      MINDLEAK_EMBED_DIMENSIONS: ${MINDLEAK_EMBED_DIMENSIONS:-}
+      MINDLEAK_MODEL_TIMEOUT_SECS: ${MINDLEAK_MODEL_TIMEOUT_SECS:-60}
+    ports:
+      - "127.0.0.1:${MINDLEAK_HTTP_PORT:-8088}:8088"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - data:/var/lib/postgresql/data
+    restart: unless-stopped
+    stop_grace_period: 60s
+
+volumes:
+  data:

@@ -29,14 +29,37 @@ development. The application does not silently downgrade from TLS. Limit the
 database role's privileges; initialization requires pgvector to be installed and
 permission to create the schema objects. Back up and test restores with Postgres.
 
-Model endpoints receive the raw memory or extracted fragments and recall queries.
-Use an endpoint you trust, HTTPS for remote models, and provider-specific API keys.
+Default operation sends nothing to a model provider. When explicitly enabled,
+chat endpoints receive raw memory and embedding endpoints receive fragments and
+recall queries. Use a provider you trust, HTTPS remotely, and provider-specific API keys.
 Redirects are disabled. The server does not log provider bodies, tokens, or memory
 contents. Avoid turning on wire-level logging in external proxies or clients.
 
 Recalled text is untrusted data. Agents must not follow instructions embedded in
 memories merely because a fragment scored highly. The extraction prompt and MCP
 descriptions reinforce this boundary; they do not eliminate prompt injection.
+
+## All-in-One Image
+
+The bundled variant uses local socket trust inside the container, not a remote
+database password. PostgreSQL runs with `listen_addresses` empty and the supplied
+configuration publishes only MCP's HTTP port. Do not enable PostgreSQL TCP or
+share its socket outside the container. The managed database role has bootstrap
+privileges; this is one shared trust domain, not a sandbox between processes.
+
+Supervisor starts as root to initialize the data volume; PostgreSQL and the MCP
+worker run under separate unprivileged accounts. Protect the Docker/Podman socket
+and volume access. Use a separately managed database and the `app` image when you
+need stricter process isolation or independent database upgrades.
+
+The image refuses startup without a valid HTTP token. Its database logging omits
+statements, bind parameters, and row-detail errors to avoid recording memory text.
+Health covers MCP and database connectivity. Keep backups outside the container
+and test restores before upgrades; a named volume is persistence, not a backup.
+
+The Docker Hub workflow only consumes `DOCKERHUB_TOKEN` in the credential check
+and registry login steps. It is never a build argument or image layer. Store it
+in GitHub Actions secrets, with only the repository access needed to publish.
 
 ## Reporting
 

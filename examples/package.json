@@ -1,0 +1,14 @@
+{
+  "name": "mindleak-light-examples",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "memory": "node agent-memory.mjs",
+    "benchmark": "node benchmark-recall.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.5.4"
+  }
+}

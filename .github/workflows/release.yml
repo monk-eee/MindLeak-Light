@@ -34,12 +34,16 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            binary: mindleak-light
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            binary: mindleak-light.exe
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            binary: mindleak-light
           - os: macos-14
             target: aarch64-apple-darwin
+            binary: mindleak-light
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.88.0
@@ -50,6 +54,7 @@ jobs:
         with:
           node-version: 22
       - run: cargo build --release --locked -p mindleak-mcp --bin mindleak-light --target ${{ matrix.target }}
+      - run: ./target/${{ matrix.target }}/release/${{ matrix.binary }} --version
       - run: node scripts/release.mjs --package ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:

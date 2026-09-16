@@ -14,5 +14,7 @@ record when the design changes instead of silently rewriting their rationale.
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record Architecture Decisions | Accepted |
 | [0002](0002-one-server-one-database.md) | One Server, One Database | Accepted |
-| [0003](0003-atomic-decomposed-memory.md) | Atomic Decomposed Memory | Accepted |
+| [0003](0003-atomic-decomposed-memory.md) | Atomic Decomposed Memory | Superseded by [ADR-0005](0005-optional-models-and-model-free-quickstart.md) |
 | [0004](0004-repository-quality-and-releases.md) | Repository Quality and Releases | Accepted |
+| [0005](0005-optional-models-and-model-free-quickstart.md) | Optional Models and Model-Free Quickstart | Accepted |
+| [0006](0006-native-and-all-in-one-distribution.md) | Native and All-in-One Distribution | Accepted |

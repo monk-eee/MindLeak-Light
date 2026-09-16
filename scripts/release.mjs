@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFragments } from "./changelog.mjs";
 
@@ -51,7 +51,26 @@ export function packageBinary(root, target, version) {
   try {
     copyFileSync(binary, join(staging, binaryName));
     if (!target.includes("windows")) chmodSync(join(staging, binaryName), 0o755);
-    for (const name of ["README.md", "LICENSE", "SECURITY.md"]) copyFileSync(join(root, name), join(staging, name));
+    for (const name of [
+      "README.md", "LICENSE", "SECURITY.md",
+      "docs/INSTALL.md", "docs/INTEGRATION.md", "docs/MODELS.md",
+      "assets/mindleak_logo.png", "assets/mindleak_128x128.png",
+    ]) {
+      const destination = join(staging, name);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(join(root, name), destination);
+    }
+    writeFileSync(join(staging, "mcp.example.json"), `${JSON.stringify({
+      mcpServers: {
+        "mindleak-light": {
+          command: binaryName,
+          args: ["--transport", "stdio"],
+          env: {
+            MINDLEAK_DATABASE_URL: "postgresql://USER:PASSWORD@HOST:5432/mindleak_light?sslmode=require",
+          },
+        },
+      },
+    }, null, 2)}\n`);
     execFileSync("tar", ["-czf", archive, "-C", staging, "."], { stdio: "inherit" });
     const checksum = createHash("sha256").update(readFileSync(archive)).digest("hex");
     writeFileSync(`${archive}.sha256`, `${checksum}  ${basename(archive)}\n`);
