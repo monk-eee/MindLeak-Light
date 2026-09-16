@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 mindleak-memory = { path = "../mindleak-memory" }
+mindleak-provider = { path = "../mindleak-provider" }
 anyhow.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true

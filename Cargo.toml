@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
 	"crates/mindleak-memory",
+	"crates/mindleak-provider",
 	"crates/mindleak-decomposition",
 	"crates/mindleak-embeddings",
 	"crates/mindleak-storage-postgres",

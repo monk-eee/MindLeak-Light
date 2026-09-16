@@ -5,6 +5,7 @@ pub use sentence::SentenceDecomposer;
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{normalize_fragments, validate_text, MemoryDecomposer, MAX_MEMORY_BYTES};
+use mindleak_provider::read_json_response;
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use serde_json::json;
@@ -105,17 +106,17 @@ impl MemoryDecomposer for OpenAiDecomposer {
         if !self.api_key.is_empty() {
             request = request.bearer_auth(&self.api_key);
         }
-        let response: ChatResponse = request
+        let response = request
             .send()
             .await
             .map_err(reqwest::Error::without_url)
             .context("decomposition model request failed")?
             .error_for_status()
             .map_err(reqwest::Error::without_url)
-            .context("decomposition model returned an HTTP error")?
-            .json()
+            .context("decomposition model returned an HTTP error")?;
+        let response: ChatResponse = read_json_response(response)
             .await
-            .context("decomposition model returned invalid JSON")?;
+            .context("decomposition model returned an invalid response")?;
         let choice = response
             .choices
             .first()
@@ -260,6 +261,28 @@ mod tests {
         )
         .with_reasoning_effort(Some("automatic".into()))
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn oversized_provider_response_is_rejected() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"finish_reason": "stop", "message": {
+                    "content": "{\"fragments\":[\"Synthetic fact\"]}"
+                }}],
+                "metadata": "x".repeat(4 * 1024 * 1024)
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let decomposer = OpenAiDecomposer::new(
+            Client::new(),
+            Url::parse(&server.uri()).unwrap(),
+            "test-model".into(),
+            String::new(),
+        );
+        assert!(decomposer.decompose("Synthetic fact").await.is_err());
     }
 
     #[tokio::test]

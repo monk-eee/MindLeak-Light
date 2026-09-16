@@ -173,9 +173,22 @@ API key for your provider. For hosted OpenAI, the API base is
 
 Chat providers must support `response_format.type=json_schema` and non-streaming
 chat completions. Embeddings must return indexed float vectors of the configured
-dimension. Unsupported responses produce an error, not guessed fragments or
+dimension with numerically safe f32 norms. Unsupported responses produce an error, not guessed fragments or
 fake vectors. No automatic model download, provider discovery, or silent fallback
 is performed.
+
+If an embedding response includes a non-null `model`, it must exactly match
+`MINDLEAK_EMBED_MODEL`. Use the provider's canonical ID; aliases are not resolved
+automatically. A disagreement fails the operation rather than mixing embedding
+spaces. Providers that omit or return null model metadata remain supported, but
+their actual model identity cannot be checked.
+
+Chat, embedding, and relevance responses are each limited to **4 MiB
+(4,194,304 bytes)**, including metadata. The limit is enforced while reading the
+body, including chunked responses, before JSON parsing. Oversized responses fail
+without saving partial memories or returning unfiltered recall results. Reducing
+the request size or configuring the provider to omit excessive metadata may help;
+increasing the model timeout does not change this byte limit.
 
 ## Existing Memories and Switching Modes
 
