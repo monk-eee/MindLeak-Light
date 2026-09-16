@@ -1,6 +1,6 @@
 services:
   mindleak-light:
-    image: ${MINDLEAK_IMAGE:-monkeemagic/mindleak-light:latest}
+    image: ${MINDLEAK_IMAGE:-monkeemagic/mindleak-light:0.2.0}
     environment:
       MINDLEAK_HTTP_TOKEN: ${MINDLEAK_HTTP_TOKEN:?Set a strong MINDLEAK_HTTP_TOKEN}
       POSTGRES_DB: ${POSTGRES_DB:-mindleak_light}
@@ -28,6 +28,12 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --max-time 3 -H \"Authorization: Bearer $$MINDLEAK_HTTP_TOKEN\" http://127.0.0.1:8088/health"]
+      interval: 5s
+      timeout: 4s
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
     stop_grace_period: 60s
 

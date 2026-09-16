@@ -20,8 +20,16 @@ changing module boundaries. This is not the sibling MindLeak coordination system
   OpenAI-compatible provider such as LM Studio. Never substitute sentence
   splitting or the original paragraph when an enabled provider fails.
 - Recall is behind `MemoryRetriever`; PostgreSQL keyword search is the default
-  and pgvector is optional. Do not implement
-  RAST, graph traversal, decay, event buses, CQRS, workers, or coordination here.
+  and pgvector remains the semantic backend for vector and hybrid modes. Lifecycle
+  ranking must not replace vectors, change similarity scores, or bypass relevance filters.
+- Fact lifecycle follows [ADR-0010](adr.d/0010-contextual-fact-lifecycle.md):
+  logical short/long-term tiers, explicit spaced feedback, read-time activation
+  decay, and reversible archival. Recall never reinforces or promotes a fact.
+- Preserve source episodes, context, and explicit fact relationships. Similarity
+  is not evidence. Confirmation, usefulness, and salience are separate claims;
+  session and scope IDs are not proof of independence or authorization.
+- Only bounded direct relationship reads are supported. Do not implement RAST,
+  recursive graph reasoning, event buses, CQRS, workers, or coordination here.
 - Do not mix embedding models or dimensions in one database. `agentId` is
   provenance and an optional filter, not an authentication or tenant boundary.
 - Never log memory text, credentials, or provider response bodies. Stdio stdout

@@ -105,8 +105,8 @@ root cause, or reusable fix that a later session would otherwise rediscover.
 Keep each fact standalone, including its project, conditions, action, reason,
 and verification; preserve qualifiers and do not generalize beyond the evidence.
 Do not store secrets, guesses, routine progress, or conversation transcripts.
-If a memory is disproven, flag it and record a verified correction referencing
-the original; do not assume the new entry removes the old one.
+If a fact is disproven, flag it and write a verified correction with an explicit
+supersedes link to its fragmentId; plain correction text does not retire it.
 Claim persistence only after a successful write_memory response with memoryId.
 decompose_memory only previews fragments; it does not save them.
 Respect tool approvals, report failures, and never blindly retry an ambiguous write.
@@ -160,8 +160,21 @@ Semantic search returns nearest neighbours by default, even for unrelated
 queries. An optional similarity threshold filters semantic candidates, but needs
 calibration on your data and does not filter hybrid's keyword matches.
 
-Hybrid recall and similarity thresholds are **unreleased** and require a source
-build containing these changes; they are not included in v0.1.0 downloads.
+Hybrid recall and similarity thresholds are included in v0.2.0. Upgrade older
+packages before enabling them; changing settings does not upgrade an executable.
+
+## Facts, Context, and Retention
+
+The fact lifecycle keeps facts attached to their original episodes and
+lets you link support, contradictions, and corrections explicitly. New facts are
+short-term; spaced usefulness or confirmation can consolidate them into long-term
+memory. Important preferences can be retained immediately. Recall never counts as
+confirmation, and decay reduces priority rather than deleting history.
+
+**pgvector remains the semantic backend.** Promotion preserves each fact's identity,
+text, vector, and evidence links. The lifecycle also works with model-free keyword
+search. See [fact lifecycle](docs/LIFECYCLE.md) for examples and exact policies.
+These controls are included in v0.2.0; existing two-field writes remain valid.
 
 ## Documentation
 
@@ -170,6 +183,7 @@ build containing these changes; they are not included in v0.1.0 downloads.
 | Install a pluggable binary or an all-in-one container | [Installation](docs/INSTALL.md) |
 | Connect an agent, understand the tools, or troubleshoot | [Agent integration](docs/INTEGRATION.md) |
 | Teach an agent when to recall and what to retain | [Agent memory policy](#give-your-agent-a-memory-policy) |
+| Relate facts, retain preferences, or record corrections | [Fact lifecycle](docs/LIFECYCLE.md) |
 | Add LM Studio, Ollama, or hosted models | [Optional models](docs/MODELS.md) |
 | Measure recall quality and compare configurations | [Benchmark guide](docs/BENCHMARKS.md), [measured results and limits](docs/BENCHMARK-RESULTS.md) |
 | Build, test, or contribute | [Developer guide](DEVELOPERS.md) |

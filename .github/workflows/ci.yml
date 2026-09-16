@@ -119,3 +119,4 @@ jobs:
       - run: node scripts/container-smoke.mjs
         env:
           MINDLEAK_IMAGE: mindleak-light:all-in-one-test
+          MINDLEAK_UPGRADE_FROM: monkeemagic/mindleak-light@sha256:9ac382f5ac6db6c43341fa5dac42581b077a95848885aa80c4a8b6fc0815e7a8

@@ -106,7 +106,10 @@ and set `CONTAINER_ENGINE=podman` plus the exact local image tag for the script.
 PowerShell users can set those variables with `$env:NAME = 'value'` first.
 The test creates a unique Compose project with a `mindleak_light_test` database,
 checks auth and real MCP calls, recreates the container, verifies persisted rows,
-then deletes only its own volume. The same test is a CI gate.
+then deletes only its own volume. Set `MINDLEAK_UPGRADE_FROM` to an older published
+image to test replacing it with the candidate on that same volume. Required CI
+pins the published 0.1.0 image digest and checks exact raw records, IDs, vectors,
+links, embedding metadata, lifecycle defaults, and post-upgrade MCP recall.
 
 To check Compose environment forwarding before building an image:
 
@@ -165,12 +168,14 @@ send an image to Docker Hub.
 	source files or chat. The login defaults to `monkeemagic`; use the Actions
 	variable `DOCKERHUB_USERNAME` if a different authorized account owns the token.
 3. Prepare and push a version tag using the release procedure above.
-4. Run **Publish Docker Hub Image** from that tag, or use
-	`gh workflow run docker-hub.yml --ref vX.Y.Z`.
+4. Run **Publish Docker Hub Image** from `main` with `release_tag=vX.Y.Z`, or use
+	`gh workflow run docker-hub.yml --ref main -f release_tag=vX.Y.Z -f publish_latest=false`.
 
-The workflow rejects branch runs, missing credentials, and tag/changelog mismatch.
-It runs CI, then builds the all-in-one target for `linux/amd64` and `linux/arm64`
-with image provenance and an SBOM. `vX.Y.Z` becomes image tag `X.Y.Z`.
+The workflow resolves the existing release tag to one immutable commit and rejects
+missing credentials or tag/changelog mismatch. It runs CI on that commit, builds
+the all-in-one target on native `linux/amd64` and `linux/arm64` hosts, and smoke-tests
+each pushed digest before assembling the versioned image manifest. Images include
+provenance and an SBOM. `vX.Y.Z` becomes image tag `X.Y.Z`.
 `latest` only moves when `publish_latest=true` is explicitly selected, and never
 for a prerelease. Review the built digest and deployment backup before upgrading.
 

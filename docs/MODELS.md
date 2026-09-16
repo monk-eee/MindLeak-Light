@@ -29,8 +29,7 @@ New queries still incur embedding latency. Hybrid keyword lookup overlaps the
 vector work. Optional chat extraction can improve write-time fact preparation
 without adding a chat request to recall.
 
-Hybrid recall and similarity thresholds are unreleased source features, not
-part of v0.1.0. Build a revision containing them before enabling them. For the
+Hybrid recall and similarity thresholds require v0.2.0 or newer. For the
 source Compose stack, rebuild with `docker compose up --build --detach --wait`
 after upgrading source. See [installation](INSTALL.md) for package availability
 and all-in-one container configuration.
@@ -60,8 +59,8 @@ extraction benchmark to test qualifiers and atomicity before enabling it.
 ## Experimental Relevance Filter
 
 `MINDLEAK_RELEVANCE=openai` adds model-based selection after keyword, vector, or
-hybrid retrieval. It is off by default and requires a source build containing
-the filter; it is not included in v0.1.0. Its accuracy and latency are still being
+hybrid retrieval. It is off by default and available from v0.2.0.
+Its accuracy and latency are still being
 evaluated, so enabling it is not a guarantee of better recall or correct answers.
 
 For a Compose deployment, set:

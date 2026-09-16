@@ -53,7 +53,7 @@ export function packageBinary(root, target, version) {
     if (!target.includes("windows")) chmodSync(join(staging, binaryName), 0o755);
     for (const name of [
       "README.md", "LICENSE", "SECURITY.md",
-      "docs/INSTALL.md", "docs/INTEGRATION.md", "docs/MODELS.md",
+      "docs/INSTALL.md", "docs/INTEGRATION.md", "docs/MODELS.md", "docs/LIFECYCLE.md",
       "assets/mindleak_logo.png", "assets/mindleak_128x128.png",
     ]) {
       const destination = join(staging, name);

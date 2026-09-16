@@ -1,8 +1,8 @@
 # Architecture
 
-This describes the current source, including unreleased hybrid recall and
-similarity thresholds. See [installation](INSTALL.md) for release availability
-and the features included in v0.1.0.
+This describes v0.2.0, including contextual fact lifecycle, hybrid recall,
+similarity thresholds, cached query embeddings, and provider response bounds.
+See [installation](INSTALL.md) for packages and upgrade requirements.
 
 ```text
 Claude / GPT / agents
@@ -11,10 +11,10 @@ Claude / GPT / agents
         v
 MindLeak Light (one executable)
   MemoryService
-                -> MemoryDecomposer -> sentences/lists, or optional chat endpoint
-                -> TextEmbedder     -> optional embedding endpoint
+        -> MemoryDecomposer -> sentences/lists, or optional chat endpoint
+        -> TextEmbedder     -> optional embedding endpoint
     -> MemoryStore     -> PostgreSQL transaction
-                -> MemoryRetriever -> keyword, vector, or hybrid rank fusion
+        -> MemoryRetriever -> keyword, vector, or hybrid rank fusion + lifecycle priority
         |
         v
 PostgreSQL: memories, fragments, relationships
@@ -107,6 +107,31 @@ The client agent performs synthesis from returned fragments and their provenance
 Replacing the retriever does not change the MCP tools or write pipeline. RAST
 is an interface extension point, not a shipped implementation.
 
+## Contextual Fact Lifecycle
+
+The source episode stores optional scope, session ID, source, and summary as
+bounded context. Fragments have independent short/long-term retention, state,
+evidence status, salience, pin, and feedback timestamps/counters. The lifecycle
+never copies facts into another database or replaces pgvector embeddings.
+
+Writes can explicitly relate each new fragment to existing fragments in the same
+scope. SQL target locks and a feedback-session unique index protect concurrent
+updates; the episode, links, vectors, and lifecycle changes commit together.
+Confirmation and usefulness are separate feedback types. Consolidation only runs
+on new feedback with a demonstrated time span, never as a side effect of recall.
+Correction, archive, and restore are evidence-linked writes retaining history.
+
+Context, tier, agent, and state filters enter the keyword/vector SQL before
+candidate selection. Lifecycle priority is computed once after candidate search
+or hybrid fusion, discounting low activation by at most 25% while preserving the
+original score. Exact pgvector cosine remains the semantic query. Read at most
+eight direct related references per final result, with a count for truncation;
+there is no graph traversal. Optional relevance inference receives the context
+but still must quote the selected fact itself as evidence.
+
+See [ADR-0010](../adr.d/0010-contextual-fact-lifecycle.md) for precise policies
+and [the lifecycle guide](LIFECYCLE.md) for the human-facing contract.
+
 ## Storage and Deployment
 
 The Postgres crate owns one bounded pool, shared by all server clones. Startup
@@ -114,6 +139,11 @@ serializes idempotent schema initialization with a transaction-scoped advisory
 lock. The original schema remains unchanged; the explicit
 [optional-embedding migration](../crates/mindleak-storage-postgres/migrations/0002-optional-embeddings.sql)
 relaxes nullability and adds the keyword index. Existing data is not rewritten.
+
+The [lifecycle migration](../crates/mindleak-storage-postgres/migrations/0003-fact-lifecycle.sql)
+adds metadata columns, context, typed relationship actions, and feedback uniqueness.
+Existing facts default to short-term/active/unconfirmed with creation-time activation;
+their raw text, identities, relationships, and vector types/values are preserved.
 
 Model-free startup does not bind or require an embedding model. On first vector
 or hybrid startup, model and dimensions are recorded in the fragments table

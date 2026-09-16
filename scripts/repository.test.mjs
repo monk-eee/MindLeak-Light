@@ -201,7 +201,7 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md"]) {
+  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md"]) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
   const archive = packageBinary(directory, target, "0.1.0");
@@ -213,7 +213,7 @@ test("release packaging includes a pluggable binary, installation guide, brandin
     const packaged = execFileSync("tar", ["-xOf", archive, `./assets/${name}`]);
     assert.deepEqual(packaged, readFileSync(join(directory, "assets", name)));
   }
-  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md"]) {
+  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md"]) {
     assert.ok(contents.includes(`docs/${name}`), `release archive is missing ${name}`);
   }
   const mcp = JSON.parse(execFileSync("tar", ["-xOf", archive, "./mcp.example.json"], { encoding: "utf8" }));

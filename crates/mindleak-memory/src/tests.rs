@@ -63,11 +63,11 @@ impl MemoryRetriever for Backend {
     async fn recall(
         &self,
         query: &str,
-        agent_id: Option<&str>,
+        filter: &RecallFilter,
         limit: usize,
     ) -> Result<Vec<RecallMatch>> {
         assert_eq!(query, "PR preferences?");
-        assert_eq!(agent_id, Some("claude"));
+        assert_eq!(filter.agent_id.as_deref(), Some("claude"));
         assert_eq!(limit, 3);
         self.events.lock().unwrap().push("recall");
         Ok(vec![RecallMatch {
@@ -76,6 +76,7 @@ impl MemoryRetriever for Backend {
             agent_id: "claude".into(),
             text: "Keep PRs small".into(),
             score: 0.92,
+            ..Default::default()
         }])
     }
 }
@@ -84,7 +85,11 @@ impl MemoryRetriever for Backend {
 async fn writes_raw_text_and_all_embedded_fragments_in_one_save() {
     let backend = Arc::new(Backend::default());
     let raw = "  Keep PRs small.\nReviews are required.  ";
-    let result = backend.service().write_memory("claude", raw).await.unwrap();
+    let result = backend
+        .service()
+        .write_memory("claude", raw, WriteOptions::default())
+        .await
+        .unwrap();
     assert_eq!(
         *backend.events.lock().unwrap(),
         ["decompose", "embed", "save"]
@@ -108,7 +113,10 @@ async fn writes_without_an_embedder_and_never_fabricates_vectors() {
     });
     let service = MemoryService::new(backend.clone(), backend.clone(), None, backend.clone());
     let raw = "Keep PRs small. Reviews are required.";
-    let result = service.write_memory("claude", raw).await.unwrap();
+    let result = service
+        .write_memory("claude", raw, WriteOptions::default())
+        .await
+        .unwrap();
     assert_eq!(*backend.events.lock().unwrap(), ["decompose", "save"]);
     let saved = backend.saved.lock().unwrap();
     assert_eq!(saved[0].id, result.memory_id);
@@ -139,7 +147,7 @@ async fn failed_or_incomplete_embeddings_never_reach_storage() {
         let backend = Arc::new(backend);
         assert!(backend
             .service()
-            .write_memory("claude", "fact")
+            .write_memory("claude", "fact", WriteOptions::default())
             .await
             .is_err());
         assert!(backend.saved.lock().unwrap().is_empty());
@@ -154,7 +162,7 @@ async fn empty_decomposition_never_gets_embedded_or_saved() {
     });
     assert!(backend
         .service()
-        .write_memory("claude", "fact")
+        .write_memory("claude", "fact", WriteOptions::default())
         .await
         .is_err());
     assert_eq!(*backend.events.lock().unwrap(), ["decompose"]);
@@ -177,7 +185,14 @@ async fn recall_uses_only_the_replaceable_retriever() {
     let backend = Arc::new(Backend::default());
     let result = backend
         .service()
-        .recall_memory("PR preferences?", Some("claude"), 3)
+        .recall_memory(
+            "PR preferences?",
+            &RecallFilter {
+                agent_id: Some("claude".into()),
+                ..Default::default()
+            },
+            3,
+        )
         .await
         .unwrap();
     assert_eq!(result[0].text, "Keep PRs small");
@@ -189,7 +204,10 @@ async fn invalid_requests_fail_before_calling_dependencies() {
     let backend = Arc::new(Backend::default());
     let service = backend.service();
     for (agent_id, text) in [(" ", "fact"), ("claude", " ")] {
-        let error = service.write_memory(agent_id, text).await.unwrap_err();
+        let error = service
+            .write_memory(agent_id, text, WriteOptions::default())
+            .await
+            .unwrap_err();
         assert!(error.is::<InvalidInput>());
     }
     assert!(service
@@ -202,7 +220,17 @@ async fn invalid_requests_fail_before_calling_dependencies() {
         ("query", None, 0),
         ("query", None, MAX_RECALL_LIMIT + 1),
     ] {
-        assert!(service.recall_memory(query, agent_id, limit).await.is_err());
+        assert!(service
+            .recall_memory(
+                query,
+                &RecallFilter {
+                    agent_id: agent_id.map(str::to_owned),
+                    ..Default::default()
+                },
+                limit
+            )
+            .await
+            .is_err());
     }
     assert!(backend.events.lock().unwrap().is_empty());
 }
@@ -229,4 +257,93 @@ fn invalid_vectors_are_rejected_before_pgvector() {
     ] {
         assert!(validate_embeddings(&[vector], 1, 2).is_ok());
     }
+}
+
+#[tokio::test]
+async fn fact_directives_preserve_context_and_exact_source_fact_links() {
+    let backend = Arc::new(Backend::default());
+    let target = Uuid::new_v4();
+    let context = MemoryContext {
+        scope: Some("repo:light".into()),
+        session_id: Some("session-1".into()),
+        source: Some("user confirmation".into()),
+        summary: Some("PR policy".into()),
+    };
+    let result = backend
+        .service()
+        .write_memory(
+            "claude",
+            "raw episode",
+            WriteOptions {
+                context: context.clone(),
+                facts: vec![FactDirective {
+                    text: "Keep PRs small".into(),
+                    pinned: true,
+                    links: vec![FactLink {
+                        target_fragment_id: target,
+                        relationship_type: RelationshipType::Confirms,
+                    }],
+                    ..Default::default()
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let saved = backend.saved.lock().unwrap();
+    assert_eq!(saved[0].context, context);
+    assert_eq!(saved[0].fragments[0].tier, MemoryTier::LongTerm);
+    assert_eq!(saved[0].fragments[1].tier, MemoryTier::ShortTerm);
+    assert_eq!(
+        saved[0].relationships[0].source_fragment,
+        result.fragments[0].fragment_id
+    );
+    assert_eq!(saved[0].relationships[0].target_fragment, target);
+}
+
+#[tokio::test]
+async fn mismatched_fact_directives_never_attach_links_to_a_different_model_output() {
+    for text in ["Keep PRs small.", "Unknown fact"] {
+        let backend = Arc::new(Backend::default());
+        let result = backend
+            .service()
+            .write_memory(
+                "claude",
+                "raw",
+                WriteOptions {
+                    facts: vec![FactDirective {
+                        text: text.into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(result.unwrap_err().is::<InvalidInput>());
+        assert_eq!(*backend.events.lock().unwrap(), ["decompose"]);
+    }
+}
+
+#[tokio::test]
+async fn feedback_without_a_session_is_rejected_before_embedding_or_storage() {
+    let backend = Arc::new(Backend::default());
+    let result = backend
+        .service()
+        .write_memory(
+            "claude",
+            "raw",
+            WriteOptions {
+                facts: vec![FactDirective {
+                    text: "Keep PRs small".into(),
+                    links: vec![FactLink {
+                        target_fragment_id: Uuid::new_v4(),
+                        relationship_type: RelationshipType::Reinforces,
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(result.unwrap_err().is::<InvalidInput>());
+    assert_eq!(*backend.events.lock().unwrap(), ["decompose"]);
 }
