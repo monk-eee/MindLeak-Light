@@ -6,6 +6,24 @@ The integration combines recall-contract PR #13 (`716029c`), modular-storage PR
 #14 (`545ec5d`), and retry-write PR #15 (`037dbf3`, merged to main as `3703b7a`).
 Their individual test runs are not evidence that the combined revision works.
 
+## Follow-Up Repairs
+
+The six later review findings have the following source status. Cancellation and
+final snapshots shipped in v0.3.0; the other four are unreleased source changes.
+
+| Finding | Implementation and Regression |
+|---|---|
+| Cancelled preparation continued into storage | All MCP handlers observe the SDK cancellation token; blocked-operation tests prove pending work drops before storage. An already-sent commit remains potentially ambiguous. |
+| Hybrid recall mixed lifecycle snapshots | Final candidates and relationships use one read-only snapshot with refreshed state and filters. The captured-candidate/archive regression verifies exclusion and historical state. |
+| Confirmations displaced contradictions | Explicit corrective-first ordering; the eight-confirmation/one-contradiction regression retains the contradiction first. |
+| Negative evidence was rejected as no answer | Optional prompt admits explicit unknowns, constraints and false-premise corrections; a new labelled policy fixture preserves old benchmark records. No general accuracy claim follows. |
+| Raw sources could not be audited through MCP | `recall_memory.fragmentId` returns exact `rawText` and paginated direct evidence without model calls. Tests cover whitespace, scope, cursors and inactive filters. |
+| Exact counts caused work proportional to link degree | Indexed bounded directional scans, capped metadata windows, bounded payload hydration and explicit `relationshipCountExact`; high-degree and filtered-page regressions cover the limits. |
+
+See [ADR-0014](../adr.d/0014-bounded-evidence-inspection.md) and
+[source inspection](INTEGRATION.md#inspect-original-sources). Model quality,
+longitudinal learning gains and deployment capacity still require measurement.
+
 ## Review Disposition
 
 "Fixed" means code and regression coverage are present. "Covered" identifies an
@@ -44,8 +62,9 @@ and final recall refreshes primary filters/state in the same read-only snapshot
 as direct relationships. Red/green regressions cover each. Neither promises
 rollback of an already-sent commit or that results remain current after return;
 see [ADR-0013](../adr.d/0013-cancellation-and-recall-snapshots.md).
-The separate [evidence and auditability gaps](../gaps.d/recall-evidence-and-auditability.md)
-remain open, alongside model quality and scale limitations.
+The subsequent [evidence and source-inspection repairs](../adr.d/0014-bounded-evidence-inspection.md)
+address the remaining implementation gaps without claiming model quality or
+production-scale latency.
 
 Atomic **persistence** is the guarantee: raw source, complete prepared fragments,
 vectors, links, receipt, and lifecycle effects commit together. Semantic extraction

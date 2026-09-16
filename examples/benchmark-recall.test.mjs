@@ -61,6 +61,26 @@ test("unanswerable queries measure abstention separately from ranking quality", 
   }
 });
 
+test("useful negative evidence receives relevance credit without rewarding unrelated negatives", () => {
+  const corpus = validateDataset(JSON.parse(readFileSync(new URL("./fixtures/recall-evidence-v1.json", import.meta.url), "utf8")));
+  const approvedDate = corpus.queries.find((query) => query.id === "ilex-approved-date");
+  assert.deepEqual(approvedDate.relevantIds, ["ilex-approval"]);
+  for (const category of ["corrective_evidence", "explicit_unknown", "negative_evidence", "direct_answer"]) {
+    const queries = corpus.queries.filter((query) => query.category === category);
+    assert.ok(queries.length > 0);
+    for (const query of queries) {
+      const result = scoreRanking(query.relevantIds, query.relevantIds, 5);
+      assert.equal(result.recallAtK, 1);
+      assert.equal(result.noAnswerCorrect, null);
+      assert.equal(scoreRanking([], query.relevantIds, 5).recallAtK, 0);
+    }
+  }
+  for (const query of corpus.queries.filter((query) => query.category === "unanswerable")) {
+    assert.equal(scoreRanking([], query.relevantIds, 5).noAnswerCorrect, true);
+    assert.equal(scoreRanking(["ilex-approval"], query.relevantIds, 5).noAnswerCorrect, false);
+  }
+});
+
 test("invalid limits and malformed rankings are rejected", () => {
   for (const limit of [0, 51, 1.5, NaN, "5"]) {
     assert.throws(() => scoreRanking([], [], limit), /1\.\.50/);

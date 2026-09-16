@@ -86,14 +86,20 @@
 - Final primary metadata and related context share a read-only snapshot, but
   earlier candidate searches and later client actions do not. Concurrently
   filtered candidates are not refilled; recall is not a reservation of facts.
-- Bounded link ordering can omit contrary evidence, exact link totals still scan
-  all eligible links, and the tools have no original-source-by-ID read. These
-  [evidence and auditability gaps](../gaps.d/recall-evidence-and-auditability.md)
-  remain open; truncation metadata is not evidence completeness.
+- Source builds after v0.3.0 prioritize corrective links, bound scans, and expose
+  provider-free source/evidence inspection. `relationshipCountExact: false`
+  means a lower bound, not a total. Sparse filters can produce empty pages with
+  `nextCursor`; continue until null. Each page is a new snapshot, so concurrent
+  inserts before its cursor require a fresh audit. These features do not imply
+  complete evidence in a normal search result or independently verified truth.
+- The optional selector now treats explicit unknowns, prohibitions, and relevant
+  false-premise corrections as useful evidence. Prompt compliance still depends
+  on the model. Older benchmarks used stricter direct-answer labels and must not
+  be presented as measurements of this revised policy.
 - HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.
 - Startup applies the initial schema and explicit keyword, lifecycle, and
-  idempotency migrations transactionally. It needs permission to alter tables
+  idempotency/evidence-index migrations transactionally. It needs permission to alter tables
   and create indexes. This is not a general-purpose migration framework; future changes need
   explicit reviewed migrations, and operators should back up before upgrades.

@@ -1,16 +1,29 @@
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{
-    validate_embeddings, validate_text, InvalidInput, MemoryStore, MemoryTier, PreparedMemory,
-    WriteMemoryResult, WriteRequest, MAX_FRAGMENTS, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES,
+    validate_embeddings, validate_text, FragmentInspection, InvalidInput, MemoryStore, MemoryTier,
+    PreparedMemory, RecallFilter, RelationshipCursor, WriteMemoryResult, WriteRequest,
+    MAX_FRAGMENTS, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES,
 };
 use pgvector::Vector;
 use tokio_postgres::Row;
+use uuid::Uuid;
 
 use crate::PostgresMemoryStore;
 
 #[async_trait]
 impl MemoryStore for PostgresMemoryStore {
+    async fn inspect_fragment(
+        &self,
+        fragment_id: Uuid,
+        filter: &RecallFilter,
+        after: Option<&RelationshipCursor>,
+        limit: usize,
+    ) -> Result<Option<FragmentInspection>> {
+        self.inspect_fragment_in_snapshot(fragment_id, filter, after, limit)
+            .await
+    }
+
     async fn lookup_write(&self, request: &WriteRequest) -> Result<Option<WriteMemoryResult>> {
         self.pool
             .get()

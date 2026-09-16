@@ -7,11 +7,11 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::{
-    normalize_fragments, validate_embeddings, validate_text, EmbeddedFragment, InvalidInput,
-    MemoryDecomposer, MemoryRetriever, MemoryStore, MemoryTier, PreparedMemory,
-    PreparedRelationship, RecallFilter, RecallMatch, TextEmbedder, WriteMemoryResult, WriteOptions,
-    WriteRequest, MAX_FACT_LINKS, MAX_FRAGMENTS, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES,
-    MAX_MEMORY_LINKS, MAX_RECALL_LIMIT,
+    normalize_fragments, validate_embeddings, validate_text, EmbeddedFragment, FragmentInspection,
+    InvalidInput, MemoryDecomposer, MemoryRetriever, MemoryStore, MemoryTier, PreparedMemory,
+    PreparedRelationship, RecallFilter, RecallMatch, RelationshipCursor, TextEmbedder,
+    WriteMemoryResult, WriteOptions, WriteRequest, MAX_FACT_LINKS, MAX_FRAGMENTS,
+    MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES, MAX_MEMORY_LINKS, MAX_RECALL_LIMIT,
 };
 
 #[derive(Clone)]
@@ -157,6 +157,30 @@ impl MemoryService {
     pub async fn decompose_memory(&self, text: &str) -> Result<Vec<String>> {
         validate_text(text, "text", MAX_MEMORY_BYTES)?;
         normalize_fragments(self.decomposer.decompose(text).await?)
+    }
+
+    pub async fn inspect_fragment(
+        &self,
+        fragment_id: Uuid,
+        filter: &RecallFilter,
+        after: Option<&RelationshipCursor>,
+        limit: usize,
+    ) -> Result<FragmentInspection> {
+        filter.validate()?;
+        if !(1..=MAX_FACT_LINKS).contains(&limit) {
+            return Err(InvalidInput("inspection limit must be in 1..=8".into()).into());
+        }
+        if after.is_some_and(|cursor| cursor.fragment_id != fragment_id) {
+            return Err(
+                InvalidInput("inspection cursor belongs to another fragment".into()).into(),
+            );
+        }
+        self.store
+            .inspect_fragment(fragment_id, filter, after, limit)
+            .await?
+            .ok_or_else(|| {
+                InvalidInput("fragment not found in the requested filters".into()).into()
+            })
     }
 
     pub async fn recall_memory(
