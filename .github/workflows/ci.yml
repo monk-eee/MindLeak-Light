@@ -6,6 +6,11 @@ on:
   pull_request:
   merge_group:
   workflow_call:
+    inputs:
+      source_ref:
+        description: Immutable source commit to validate for a release
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +28,8 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-14]
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.0
@@ -54,6 +61,8 @@ jobs:
       MINDLEAK_TEST_DATABASE_URL: postgresql://mindleak_light:mindleak-light-test-only@127.0.0.1:5432/mindleak_light_test?sslmode=disable
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.0
@@ -65,6 +74,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.98.0
@@ -83,6 +94,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - run: docker compose config --quiet
       - run: docker compose up --build --detach --wait --wait-timeout 120
       - run: docker compose exec -T mcp mindleak-light --version
@@ -96,6 +109,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: 22
