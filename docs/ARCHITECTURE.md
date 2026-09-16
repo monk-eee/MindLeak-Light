@@ -82,13 +82,22 @@ vectors by PostgreSQL's cosine-distance operator. NULL embeddings are excluded,
 not filled with fake vectors. Both paths filter by agent before limiting. Vector
 search is exact and has no approximate-vector index yet.
 
-Vector/hybrid retrievers keep an in-process FIFO cache of at most 128 validated
-query embeddings, keyed by the exact query string. Cache hits skip embedding
-inference, not database recall: current rows and agent filters are always checked.
-Invalid vectors and provider failures are not cached. The cache belongs to one
-fixed model/dimension space and is cleared on process exit; concurrent misses
-may duplicate inference. Hybrid keyword lookup runs concurrently with the vector
-path. No mutex is held during an await. See
+Vector/hybrid retrievers keep an in-process FIFO cache of at most 128 exact-query
+slots, including unfinished initializations. Each slot uses a Tokio `OnceCell`
+to share a successful embedding calculation between overlapping callers; only
+validated vectors populate the cell. Query keys preserve case and whitespace.
+Cache hits skip embedding inference, not database recall: current rows and agent,
+scope, state, and tier filters are always checked.
+
+A failed initializer returns its error without populating the cell. A waiting or
+later caller can make its own attempt after a failure or cancellation; the failed
+call is not retried internally. Different query strings initialize independently.
+FIFO eviction uses the slot's insertion order, and an evicted in-flight slot can
+lead to another calculation if that query arrives again. Uninitialized slots
+remain bounded by the same capacity and can be retried or evicted. The cache
+belongs to one fixed model/dimension space and is cleared on process exit.
+Hybrid keyword lookup runs concurrently with the vector path. The cache mutex
+is released before inference or awaiting a cell. See
 [ADR-0009](../adr.d/0009-fast-recall-and-optional-model-controls.md).
 
 `MINDLEAK_RECALL_MIN_SIMILARITY` optionally filters vector candidates by cosine

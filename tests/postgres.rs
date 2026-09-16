@@ -115,6 +115,7 @@ struct CountingQueryEmbedder {
     calls: AtomicUsize,
     fail_first: bool,
     invalid_first: bool,
+    gate: Option<tokio::sync::Semaphore>,
 }
 
 #[async_trait]
@@ -126,11 +127,177 @@ impl TextEmbedder for CountingQueryEmbedder {
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         anyhow::ensure!(texts.len() == 1, "expected one query");
+        if let Some(gate) = &self.gate {
+            let _permit = gate.acquire().await?;
+        }
         anyhow::ensure!(call != 0 || !self.fail_first, "provider unavailable");
         if call == 0 && self.invalid_first {
             return Ok(vec![vec![0.0, 0.0]]);
         }
         Ok(vec![vec![1.0, 0.0]])
+    }
+}
+
+#[tokio::test]
+async fn concurrent_identical_queries_share_embeddings_but_keep_their_filters() {
+    use std::{future::Future, task::Poll, time::Duration};
+
+    let (store, client) = setup().await;
+    for hybrid in [false, true] {
+        let agents = [
+            format!("shared-query-first-{}", Uuid::new_v4()),
+            format!("shared-query-second-{}", Uuid::new_v4()),
+        ];
+        for agent in &agents {
+            store.save(&memory(agent)).await.unwrap();
+        }
+        let filters = [filter(Some(&agents[0])), filter(Some(&agents[1]))];
+        let embedder = Arc::new(CountingQueryEmbedder {
+            gate: Some(tokio::sync::Semaphore::new(0)),
+            ..Default::default()
+        });
+        let retriever: Arc<dyn MemoryRetriever> = if hybrid {
+            Arc::new(HybridMemoryRetriever::new(store.clone(), embedder.clone()))
+        } else {
+            Arc::new(VectorMemoryRetriever::new(store.clone(), embedder.clone()))
+        };
+        let mut requests: Vec<_> = (0..8)
+            .map(|index| {
+                let retriever = retriever.clone();
+                let filter = filters[index % 2].clone();
+                Box::pin(
+                    async move { (index, retriever.recall("PR preferences?", &filter, 5).await) },
+                )
+            })
+            .collect();
+        std::future::poll_fn(|context| {
+            for request in &mut requests {
+                assert!(request.as_mut().poll(context).is_pending());
+            }
+            Poll::Ready(())
+        })
+        .await;
+        let overlapping_calls = embedder.calls.load(Ordering::SeqCst);
+        embedder.gate.as_ref().unwrap().add_permits(8);
+        let mut running = tokio::task::JoinSet::new();
+        for request in requests {
+            running.spawn(request);
+        }
+        while let Some(completed) =
+            tokio::time::timeout(Duration::from_secs(5), running.join_next())
+                .await
+                .unwrap()
+        {
+            let (index, results) = completed.unwrap();
+            let results = results.unwrap();
+            assert_eq!(results.len(), 2);
+            assert!(results
+                .iter()
+                .all(|result| result.agent_id == agents[index % 2]));
+        }
+        client
+            .execute(
+                "DELETE FROM public.memories WHERE agent_id = ANY($1)",
+                &[&agents.as_slice()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            overlapping_calls, 1,
+            "identical concurrent queries should share one embedding request"
+        );
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn cancelled_query_initializer_releases_waiters_without_serializing_other_queries() {
+    use std::{future::Future, task::Poll, time::Duration};
+
+    let (store, _) = setup().await;
+    let agent_id = format!("cancelled-query-{}", Uuid::new_v4());
+    let filter = filter(Some(&agent_id));
+    let embedder = Arc::new(CountingQueryEmbedder {
+        gate: Some(tokio::sync::Semaphore::new(0)),
+        ..Default::default()
+    });
+    let retriever = VectorMemoryRetriever::new(store, embedder.clone());
+    let mut initializer = Box::pin(retriever.recall("PR preferences?", &filter, 5));
+    let mut waiting = Box::pin(retriever.recall("PR preferences?", &filter, 5));
+    let mut different = Box::pin(retriever.recall("pr preferences?", &filter, 5));
+    std::future::poll_fn(|context| {
+        assert!(initializer.as_mut().poll(context).is_pending());
+        assert!(waiting.as_mut().poll(context).is_pending());
+        assert!(different.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(embedder.calls.load(Ordering::SeqCst), 2);
+    drop(initializer);
+    embedder.gate.as_ref().unwrap().add_permits(2);
+    let (waiting, different) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(waiting, different)
+    })
+    .await
+    .unwrap();
+    assert!(waiting.unwrap().is_empty());
+    assert!(different.unwrap().is_empty());
+    assert_eq!(embedder.calls.load(Ordering::SeqCst), 3);
+    assert!(retriever
+        .recall("PR preferences?", &filter, 5)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(embedder.calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn failed_query_initializers_return_errors_and_allow_a_waiting_caller_to_recover() {
+    use std::{future::Future, task::Poll, time::Duration};
+
+    let (store, _) = setup().await;
+    let agent_id = format!("failed-shared-query-{}", Uuid::new_v4());
+    let filter = filter(Some(&agent_id));
+    for invalid_first in [false, true] {
+        let embedder = Arc::new(CountingQueryEmbedder {
+            fail_first: !invalid_first,
+            invalid_first,
+            gate: Some(tokio::sync::Semaphore::new(0)),
+            ..Default::default()
+        });
+        let retriever = VectorMemoryRetriever::new(store.clone(), embedder.clone());
+        let mut initializer = Box::pin(retriever.recall("PR preferences?", &filter, 5));
+        let mut waiting = Box::pin(retriever.recall("PR preferences?", &filter, 5));
+        std::future::poll_fn(|context| {
+            assert!(initializer.as_mut().poll(context).is_pending());
+            assert!(waiting.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 1);
+        embedder.gate.as_ref().unwrap().add_permits(2);
+        let (failed, recovered) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(initializer, waiting)
+        })
+        .await
+        .unwrap();
+        let error = failed.unwrap_err().to_string();
+        if invalid_first {
+            assert_eq!(
+                error,
+                "embedding squared norm must be finite and normal in f32"
+            );
+        } else {
+            assert_eq!(error, "provider unavailable");
+        }
+        assert!(recovered.unwrap().is_empty());
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 2);
+        assert!(retriever
+            .recall("PR preferences?", &filter, 5)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 2);
     }
 }
 
