@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,12 +12,254 @@ import { readAdrs, updateIndex } from "./adr-index.mjs";
 import { readFragments, releaseChangelog, render } from "./changelog.mjs";
 import { checkDocs } from "./check-docs.mjs";
 import { packageBinary, releaseNotes } from "./release.mjs";
+import { captureBenchmark, regressionPlan, runRegression } from "./regression-check.mjs";
+import { cleanupProjects } from "./container-projects.mjs";
+
+const nativeBaselineAvailable = Object.hasOwn(
+  JSON.parse(readFileSync(new URL("./regression-baseline.json", import.meta.url), "utf8")).archives,
+  `${process.platform}-${process.arch}`,
+);
 
 function fixture(context) {
   const directory = mkdtempSync(join(tmpdir(), "mindleak-light-records-"));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("release regression plans pin corpora and require independent disposable databases", (context) => {
+  const environment = {
+    MINDLEAK_BASELINE_DATABASE_URL: "postgresql://localhost/baseline_test",
+    MINDLEAK_TEST_DATABASE_URL: "postgresql://localhost/candidate_test",
+  };
+  const plan = regressionPlan(environment);
+  assert.equal(plan.definition.release, "v0.4.0");
+  assert.equal(plan.corpora.reduce((count, corpus) => count + corpus.evaluationQueries, 0), 100);
+  assert.equal(plan.settings.configuration.retrieval, "keyword");
+  assert.deepEqual(plan.workloads, [{ concurrency: 1, passes: 1 }]);
+  assert.equal(plan.deadlineMs, 600000);
+  assert.deepEqual(regressionPlan(environment, { profile: "load" }).workloads, [{ concurrency: 1, passes: 3 }, { concurrency: 4, passes: 3 }]);
+  assert.equal(regressionPlan(environment, { profile: "load" }).deadlineMs, 900000);
+  assert.equal(regressionPlan(environment, { "deadline-seconds": "1" }).deadlineMs, 1000);
+  assert.equal(regressionPlan(environment, { profile: "load", "deadline-seconds": "7200" }).deadlineMs, 7200000);
+  for (const value of ["0", "-1", "1.5", "", "NaN", "601"]) {
+    assert.throws(() => regressionPlan(environment, { "deadline-seconds": value }), /deadline/i);
+  }
+  assert.throws(() => regressionPlan(environment, { profile: "load", "deadline-seconds": "7201" }), /deadline/i);
+  assert.throws(() => regressionPlan({ ...environment, MINDLEAK_BASELINE_DATABASE_URL: environment.MINDLEAK_TEST_DATABASE_URL }), /different disposable/);
+  assert.throws(() => regressionPlan({
+    ...environment,
+    MINDLEAK_BASELINE_DATABASE_URL: "postgresql://localhost/candidate%5Ftest",
+  }), /different disposable/, "URL escaping must not hide that both runs use the same database");
+  assert.throws(() => regressionPlan({ ...environment, MINDLEAK_TEST_DATABASE_URL: "postgresql://localhost/production" }), /_test/);
+  assert.throws(() => regressionPlan(environment, { profile: "unknown" }), /profile/);
+  assert.throws(() => regressionPlan(environment, { "max-warm-p95-ms": "100" }), /two passes/);
+  const directory = fixture(context);
+  mkdirSync(join(directory, "scripts"));
+  mkdirSync(join(directory, "examples/fixtures"), { recursive: true });
+  writeFileSync(join(directory, "scripts/regression-baseline.json"), JSON.stringify(plan.definition));
+  for (const corpus of plan.corpora) writeFileSync(join(directory, corpus.path), "{}");
+  assert.throws(() => regressionPlan(environment, {}, directory), /Frozen corpus changed/);
+});
+
+test("release regression failure preserves incomplete evidence without connecting to a database", {
+  skip: !nativeBaselineAvailable && "No native release archive is pinned for this platform.",
+}, async (context) => {
+  const directory = fixture(context);
+  const archive = join(directory, "invalid.tar.gz");
+  const output = join(directory, "reports");
+  writeFileSync(archive, "deliberately-invalid-archive");
+  const environment = {
+    MINDLEAK_BASELINE_DATABASE_URL: "postgresql://fixture-private-value@localhost/baseline_test",
+    MINDLEAK_TEST_DATABASE_URL: "postgresql://fixture-private-value@localhost/candidate_test",
+  };
+  await assert.rejects(runRegression(environment, {
+    candidate: process.execPath, output, "baseline-archive": archive,
+  }), /checksum/);
+  const source = readFileSync(join(output, "summary.json"), "utf8");
+  const summary = JSON.parse(source);
+  assert.equal(summary.complete, false);
+  assert.equal(summary.passed, false);
+  assert.deepEqual(summary.runs, []);
+  assert.match(summary.error, /checksum/);
+  assert.ok(!source.includes("fixture-private-value"));
+  await assert.rejects(runRegression(environment, {
+    candidate: process.execPath, output, "baseline-archive": archive,
+  }), /EEXIST/);
+  assert.equal(readFileSync(join(output, "summary.json"), "utf8"), source);
+});
+
+test("runner deadline covers a stalled download and retains a failed summary", {
+  skip: !nativeBaselineAvailable && "No native release archive is pinned for this platform.",
+}, async (context) => {
+  const output = join(fixture(context), "deadline-reports");
+  let downloadCancelled = false;
+  context.mock.method(globalThis, "fetch", async (_url, options) => new Promise((resolve, reject) => {
+    const fallback = setTimeout(() => reject(new Error("fixture fallback expired")), 2000);
+    const abort = () => {
+      clearTimeout(fallback);
+      downloadCancelled = true;
+      reject(options.signal.reason);
+    };
+    options.signal.addEventListener("abort", abort, { once: true });
+    if (options.signal.aborted) abort();
+  }));
+  await assert.rejects(runRegression({
+    MINDLEAK_BASELINE_DATABASE_URL: "postgresql://localhost/deadline_baseline_test",
+    MINDLEAK_TEST_DATABASE_URL: "postgresql://localhost/deadline_candidate_test",
+  }, { candidate: process.execPath, output, "deadline-seconds": "1" }));
+  const summary = JSON.parse(readFileSync(join(output, "summary.json"), "utf8"));
+  assert.equal(downloadCancelled, true, "the runner-wide deadline must cancel its pending download");
+  assert.equal(summary.complete, false);
+  assert.equal(summary.passed, false);
+  assert.equal(summary.limits.deadlineSeconds, 1);
+  assert.match(summary.error, /deadline/i);
+  assert.deepEqual(summary.runs, []);
+});
+
+test("benchmark deadlines terminate children that ignore graceful shutdown", async () => {
+  const result = await captureBenchmark(["-e", `
+    process.on("SIGTERM", () => {});
+    process.stdout.write("fixture started");
+    setTimeout(() => process.exit(0), 2500);
+  `], { timeout: 1000, env: { ...process.env, NODE_OPTIONS: "" } });
+  assert.match(result.stdout, /fixture started/);
+  assert.equal(result.error?.code, "ETIMEDOUT");
+  if (process.platform !== "win32") assert.equal(result.signal, "SIGKILL");
+  else assert.notEqual(result.status, 0, "deadline must not wait for a child that ignores SIGTERM");
+});
+
+test("benchmark timeout owns descendant termination and child temporary files", async (context) => {
+  const directory = fixture(context);
+  let descendant;
+  try {
+    const result = await captureBenchmark(["-e", `
+      const { spawn } = require("node:child_process");
+      const { mkdtempSync, writeFileSync } = require("node:fs");
+      const { tmpdir } = require("node:os");
+      const { join } = require("node:path");
+      const temporary = mkdtempSync(join(tmpdir(), "mindleak-recall-"));
+      writeFileSync(join(temporary, "temporary-executable"), "test-owned data");
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 5000)"], { stdio: "ignore" });
+      child.once("spawn", () => process.stdout.write(JSON.stringify({ pid: child.pid, temporary })));
+      setTimeout(() => {}, 5000);
+    `], { timeout: 1000, env: { ...process.env, NODE_OPTIONS: "", TMPDIR: directory, TMP: directory, TEMP: directory } });
+    const info = JSON.parse(result.stdout);
+    descendant = info.pid;
+    assert.ok(Number.isInteger(descendant) && descendant > 1);
+    assert.equal(result.error?.code, "ETIMEDOUT");
+    let running = false;
+    try {
+      process.kill(descendant, 0);
+      if (process.platform === "linux") {
+        running = !/^State:\s+Z/m.test(readFileSync(`/proc/${descendant}/status`, "utf8"));
+      } else {
+        running = process.platform === "win32" || !execFileSync("ps", ["-o", "stat=", "-p", String(descendant)], {
+          encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+        }).trim().startsWith("Z");
+      }
+    } catch (error) {
+      if (!["ESRCH", "ENOENT"].includes(error.code) && error.status !== 1) throw error;
+    }
+    assert.equal(running, false, "a timed-out wrapper must not leave its descendant running");
+    assert.equal(existsSync(info.temporary), false, "parent cleanup must remove child-owned temporary executables");
+  } finally {
+    if (descendant) {
+      try { process.kill(descendant, "SIGKILL"); }
+      catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
+  }
+});
+
+test("benchmark capture cleans normal runs and refuses cancelled or oversized output", async () => {
+  const normal = await captureBenchmark(["-e", `
+    const { writeFileSync } = require("node:fs");
+    const { tmpdir } = require("node:os");
+    const { join } = require("node:path");
+    writeFileSync(join(tmpdir(), "test-output"), "fixture");
+    process.stdout.write(JSON.stringify({ temporary: tmpdir() }));
+  `], { timeout: 2000 });
+  assert.equal(normal.status, 0);
+  assert.equal(normal.error, undefined);
+  assert.equal(existsSync(JSON.parse(normal.stdout).temporary), false);
+  const reason = new Error("already cancelled");
+  await assert.rejects(captureBenchmark(["-e", "throw new Error('must not start')"], {
+    signal: AbortSignal.abort(reason),
+  }), error => error === reason);
+  const oversized = await captureBenchmark(["-e", `
+    process.stdout.write("x".repeat(65536));
+    setTimeout(() => {}, 5000);
+  `], { timeout: 2000, maxBuffer: 32 });
+  assert.equal(oversized.error?.code, "ENOBUFS");
+  assert.equal(Buffer.byteLength(oversized.stdout), 32);
+  assert.notEqual(oversized.status, 0);
+});
+
+test("runner cancellation interrupts a pending capture and removes its temporary files", async () => {
+  const result = await captureBenchmark(["-e", `
+    process.stdout.write(JSON.stringify({ temporary: require("node:os").tmpdir() }));
+    process.on("SIGTERM", () => {});
+    setTimeout(() => {}, 5000);
+  `], { timeout: 4000, signal: AbortSignal.timeout(1000) });
+  assert.equal(result.error?.code, "ABORT_ERR");
+  assert.notEqual(result.status, 0);
+  assert.equal(existsSync(JSON.parse(result.stdout).temporary), false);
+});
+
+test("required CI includes release comparisons and a fresh-volume restore with retained evidence", () => {
+  const read = path => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+  const workflow = read(".github/workflows/ci.yml");
+  const integration = workflow.slice(workflow.indexOf("  postgres:"), workflow.indexOf("  hygiene:"));
+  assert.match(integration, /name: Postgres and MCP Integration/);
+  assert.match(integration, /scripts\/regression-check\.mjs --candidate target\/release\/mindleak-light/);
+  assert.match(integration, /--deadline-seconds 600/);
+  assert.match(integration, /name: Compare with the pinned released baseline\n\s+timeout-minutes: 12/);
+  assert.match(integration, /MINDLEAK_BASELINE_DATABASE_URL:/);
+  assert.match(integration, /if: always\(\)[\s\S]*actions\/upload-artifact/);
+  const container = workflow.slice(workflow.indexOf("  all-in-one:"));
+  assert.match(container, /regression-baseline\.json/);
+  assert.match(container, /shell: bash[\s\S]*container-smoke\.mjs --restore/);
+  assert.match(container, /scripts\/container-smoke\.mjs --restore/);
+  assert.match(container, /if: always\(\)[\s\S]*baseline-restore/);
+  const load = read(".github/workflows/regression-load.yml");
+  assert.match(load, /workflow_dispatch:/);
+  assert.ok(!load.includes("pull_request:"));
+  assert.match(load, /--profile load/);
+  assert.match(load, /--deadline-seconds 900/);
+  assert.match(load, /name: Compare first and repeat passes at concurrency one and four\n\s+timeout-minutes: 17/);
+  assert.match(load, /timeout-minutes: 45/);
+  assert.match(load, /cargo build[^\n]*\n\s+timeout-minutes: 15/);
+  assert.ok(!load.includes("--max-warm-p95-ms"));
+});
+
+test("container cleanup attempts every owned project and reports all failures", () => {
+  const projects = new Set(["smoke-test", "restore-test", "third-test"]);
+  const attempted = [];
+  const first = new Error("first removal failed");
+  const last = new Error("last removal failed");
+  let failure;
+  try {
+    cleanupProjects(projects, project => {
+      attempted.push(project);
+      if (project === "smoke-test") throw first;
+      if (project === "third-test") throw last;
+    });
+  } catch (error) { failure = error; }
+  assert.deepEqual(attempted, [...projects], "one failed removal must not strand another owned volume");
+  assert.ok(failure instanceof AggregateError);
+  assert.deepEqual(failure.errors.map(error => error.cause), [first, last]);
+  assert.ok(failure.errors[0].message.includes("smoke-test"));
+  assert.ok(failure.errors[1].message.includes("third-test"));
+  const removed = [];
+  cleanupProjects(projects, project => removed.push(project));
+  assert.deepEqual(removed, [...projects]);
+  assert.doesNotThrow(() => cleanupProjects([], () => assert.fail("no project to remove")));
+  const original = new Error("restore assertion failed");
+  assert.throws(() => cleanupProjects(projects, () => {}, original), error => error === original);
+  assert.throws(() => cleanupProjects(projects, project => {
+    if (project === "restore-test") throw first;
+  }, original), error => error instanceof AggregateError
+    && error.errors[0] === original && error.errors[1].cause === first);
+});
 
 const record = "# ADR-0001: Example\n\n- Status: Accepted\n- Date: 2026-09-16\n\n## Context\n\nText\n\n## Decision\n\nText\n\n## Consequences\n\nText\n\n## Verification\n\nTest\n";
 
