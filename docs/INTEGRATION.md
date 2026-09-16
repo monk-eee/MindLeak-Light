@@ -298,6 +298,15 @@ failures and timeouts remain errors, not successful replays without a stored
 receipt. The key and receipt persist with the memory; deleting that row also
 removes retry protection. No automatic client retry loop is added.
 
+### Cancellation
+
+Version 0.3.0 observes the official MCP request cancellation token for all three
+tools and drops pending work. Cancelling a blocked preparation step stops that
+request from continuing into storage. This cannot undo a commit already sent to
+PostgreSQL, and dropping a local provider request does not prove the provider
+stopped its own computation. After cancellation near commit, reconcile with the
+original `requestId` and payload; do not assume the write was rolled back.
+
 ### Bounded Recall Context
 
 Version 0.3.0 adds `rankingPriority` and `relationshipsTruncated` to
@@ -305,6 +314,14 @@ each recall match. `score` is unchanged; `rankingPriority` exposes the actual
 lifecycle-adjusted ordering signal. Both are ranking values, not confidence.
 `relationshipCount` counts eligible direct links before limits; truncation is
 explicit when the result includes only some of them.
+
+Before final ranking, the bounded candidates are refreshed and their state,
+agent, scope, and tier filters are checked again. Primary metadata and direct
+relationships use one short read-only snapshot after query embedding. A fact
+archived since candidate search is excluded from normal recall; historical
+recall sees its refreshed state. Results describe that snapshot, not a promise
+that another writer cannot change facts before the client uses them. Candidates
+removed at final validation are not replaced by an unbounded search.
 
 Each result retains at most eight links, with a shared 32 KiB budget for serialized
 relationship arrays across the response. Primary results are reserved first; a

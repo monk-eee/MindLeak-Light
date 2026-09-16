@@ -50,6 +50,11 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
   records, vectors, links, lifecycle metadata, and committed retry receipts.
 
 ### Fixed
+- Observe official MCP cancellation notifications and drop pending write,
+  decomposition, and recall work; retain request-ID reconciliation for commit races.
+- Revalidate primary facts and filters in a final read-only database snapshot
+  shared with related context, so a concurrent archive cannot appear as an active
+  primary beside its newer archive link. Preserve raw retrieval scores.
 - Avoid redundant column and index DDL when opening an already-migrated
   database, preventing startup lock timeouts and conflicting lock acquisition
   with active readers or writers. Preserve fresh-install and upgrade schema

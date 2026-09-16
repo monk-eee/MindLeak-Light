@@ -80,6 +80,16 @@
   links; original episodes/text remain immutable. There is no destructive delete
   or automatic expiry tool. Operators manage backups and data erasure in Postgres;
   memories are not encrypted at the application layer.
+- MCP cancellation drops pending work but cannot undo a commit already sent to
+  PostgreSQL or guarantee that a remote model stops computing. Reconcile an
+  ambiguous keyed write with its original request ID and payload.
+- Final primary metadata and related context share a read-only snapshot, but
+  earlier candidate searches and later client actions do not. Concurrently
+  filtered candidates are not refilled; recall is not a reservation of facts.
+- Bounded link ordering can omit contrary evidence, exact link totals still scan
+  all eligible links, and the tools have no original-source-by-ID read. These
+  [evidence and auditability gaps](../gaps.d/recall-evidence-and-auditability.md)
+  remain open; truncation metadata is not evidence completeness.
 - HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.

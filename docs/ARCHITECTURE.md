@@ -70,6 +70,12 @@ are errors rather than successful results with a null score.
 
 ## Provider Responses
 
+All three MCP handlers consume the SDK `RequestContext` cancellation token.
+A cancellation-aware future drops pending service work rather than merely
+stopping the client wait. This is cooperative cancellation, not rollback of an
+already-sent commit or a guarantee about remote provider execution. See
+[ADR-0013](../adr.d/0013-cancellation-and-recall-snapshots.md).
+
 The `mindleak-provider` crate owns the shared `read_json_response` boundary used
 by the decomposition, embedding, and relevance clients. It caps each provider
 body at 4 MiB before JSON parsing, checking the declared length when available
@@ -133,6 +139,15 @@ can survive without an embedding or below the cosine floor; the floor gates the
 semantic branch only. Different facts from one memory remain distinct. Enabled
 provider failures are propagated, never hidden behind keyword results.
 See [ADR-0007](../adr.d/0007-hybrid-recall-and-calibrated-relevance.md).
+
+Finalization refreshes the bounded candidate IDs and their lifecycle metadata in
+a short read-only `REPEATABLE READ` transaction, reapplies agent/scope/tier/state
+filters, then ranks and loads direct relationships from that same snapshot.
+Original keyword/cosine/fused scores remain intact. This prevents mixed primary
+and relationship states when a concurrent archive commits between candidate
+lookup and finalization. It does not refill missing candidates or establish one
+snapshot for all earlier search signals. No transaction is held during query
+embedding or optional relevance inference.
 
 `MINDLEAK_RELEVANCE=openai` optionally wraps any candidate retriever with
 `OpenAiRelevanceRetriever`. It asks a configured model to select existing

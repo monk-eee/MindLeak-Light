@@ -24,3 +24,4 @@ record when the design changes instead of silently rewriting their rationale.
 | [0010](0010-contextual-fact-lifecycle.md) | Contextual Fact Lifecycle | Accepted |
 | [0011](0011-idempotent-memory-writes.md) | Idempotent Memory Writes | Accepted |
 | [0012](0012-bounded-recall-context.md) | Bounded Recall Context | Accepted |
+| [0013](0013-cancellation-and-recall-snapshots.md) | Cancellation and Final Recall Snapshots | Accepted |
