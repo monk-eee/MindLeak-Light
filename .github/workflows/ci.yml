@@ -126,3 +126,8 @@ jobs:
         env:
           MINDLEAK_IMAGE: mindleak-light:all-in-one-test
           MINDLEAK_UPGRADE_FROM: monkeemagic/mindleak-light@sha256:393e710d65d802d66a0e023945312c365f14a1f88b085871f14ee5e219d43735
+      - name: Upgrade from published 0.3.0
+        run: node scripts/container-smoke.mjs
+        env:
+          MINDLEAK_IMAGE: mindleak-light:all-in-one-test
+          MINDLEAK_UPGRADE_FROM: monkeemagic/mindleak-light@sha256:a4d90454229a414c588a88ee5bf920973063fd34473ddc4b9548d8f751515cbf

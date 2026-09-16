@@ -1,12 +1,12 @@
 # Architecture
 
-This describes v0.3.0 plus unreleased bounded evidence/source inspection and document recall:
+This describes v0.4.0, including bounded evidence, original-source inspection, and document recall:
 contextual fact lifecycle, hybrid recall, shared query
 embeddings, provider safeguards, retry-safe writes, modular storage, response
 budgets, and ranking diagnostics.
-The diagrams include evidence/source inspection. The explicitly marked
-document-recall extensions below are not yet diagrammed. Neither unreleased
-extension is part of the v0.3.0 packages.
+The diagrams include evidence/source inspection. The document-recall extensions
+are described below but are not yet diagrammed. Both are included in v0.4.0;
+older packages do not gain these features from updated documentation.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
 All four diagrams are editable frames in the
@@ -32,7 +32,7 @@ existing store rather than a parallel persistence path:
 | [retrieval.rs](../crates/mindleak-storage-postgres/src/retrieval.rs) | Keyword/vector/hybrid strategies, query cache, and rank fusion |
 | [lifecycle.rs](../crates/mindleak-storage-postgres/src/lifecycle.rs) | Explicit feedback updates, final snapshot, activation priority, and context allocation |
 | [relationships.rs](../crates/mindleak-storage-postgres/src/relationships.rs) | Shared indexed evidence windows, exact raw-source inspection, and keyset pagination |
-| [documents.rs](../crates/mindleak-storage-postgres/src/documents.rs) | Unreleased bounded same-episode context and shared context-budget allocation |
+| [documents.rs](../crates/mindleak-storage-postgres/src/documents.rs) | Bounded same-episode context and shared context-budget allocation |
 
 ## Write
 
@@ -172,7 +172,7 @@ The client agent performs synthesis from returned fragments and their provenance
 Replacing the retriever does not change the MCP tools or write pipeline. RAST
 is an interface extension point, not a shipped implementation.
 
-### Unreleased Document Recall
+### Document Recall
 
 The existing three-table design now stores a derived `fragments.search_vector`
 combining fragment text with lower-weight `context.source` and `context.summary`

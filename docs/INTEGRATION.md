@@ -204,13 +204,13 @@ context. Do not bypass client approvals to make the policy appear automatic.
 | Tool | Arguments | Successful Result |
 |---|---|---|
 | `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (v0.3.0+) | `memoryId` and `fragments` with IDs, text, and tier after commit |
-| `recall_memory` | Either `query` for search or `fragmentId` for inspection; optional `agentId`, `scope`, `tier`, `includeInactive`, `limit`; inspection accepts `after`; search accepts `matchMode`, `diagnostics`, `contextLimit`, `groupDuplicates` (unreleased) | Search: matches with optional diagnostics, document context, and grouped provenance. Inspection (unreleased): original source, selected fact, current lifecycle, and paged direct evidence |
+| `recall_memory` | Either `query` for search or `fragmentId` for inspection; optional `agentId`, `scope`, `tier`, `includeInactive`, `limit`; inspection accepts `after`; search accepts `matchMode`, `diagnostics`, `contextLimit`, `groupDuplicates` (v0.4.0+) | Search: matches with optional diagnostics, document context, and grouped provenance. Inspection (v0.4.0+): original source, selected fact, current lifecycle, and paged direct evidence |
 | `decompose_memory` | `text` | Array of strings; preview only, no database write |
 
 MCP text content contains that JSON. `structuredContent` holds write/inspection
 objects directly and wraps search/preview arrays in `{"results":[...]}`. Search returns fragments, so
 several results may reference one memory. `[]` means no matches, not failure.
-With the unreleased `diagnostics: true` option, recall text content instead holds
+With `diagnostics: true` (v0.4.0+), recall text content instead holds
 an object with `results` and `diagnostics`; `structuredContent` holds that same
 object. The default text-array response is unchanged.
 
@@ -243,7 +243,7 @@ interchangeable. A configured cosine floor filters semantic candidates; hybrid
 can still return keyword matches without vectors. See [model setup](MODELS.md)
 and [calibration](BENCHMARKS.md) before choosing a floor.
 
-**Unreleased:** keyword indexing searches fragment text, `context.source`, and
+**From v0.4.0:** keyword indexing searches fragment text, `context.source`, and
 `context.summary` together. An all-terms query can span those fields. Metadata
 terms receive one quarter of the per-term weight of fragment text; this is a
 ranking policy, not calibrated confidence. Source paths additionally contribute
@@ -269,7 +269,7 @@ call, or embedding backfill is required.
 
 ### Document Recall Controls
 
-These controls are **unreleased**. Check the server's `recall_memory` input schema;
+These controls are available from **v0.4.0**. Check the server's `recall_memory` input schema;
 v0.3.0 and older packages do not accept these arguments.
 They apply to `query` search. Exact-source inspection with `fragmentId` rejects
 non-default search controls rather than silently ignoring them.
@@ -412,7 +412,7 @@ original `requestId` and payload; do not assume the write was rolled back.
 Version 0.3.0 adds `rankingPriority` and `relationshipsTruncated` to
 each recall match. `score` is unchanged; `rankingPriority` exposes the actual
 lifecycle-adjusted ordering signal. Both are ranking values, not confidence.
-Version 0.3.0 counts all eligible direct links. New source builds additionally
+Version 0.3.0 counts all eligible direct links. Version 0.4.0 adds bounded scans and
 return `relationshipCountExact`: a false value means `relationshipCount` is a
 lower bound from at most 128 examined links, not a full total. There can be zero
 eligible links in a filtered window while more remain. `relationshipsTruncated`
@@ -435,7 +435,7 @@ MCP envelope and dual representations add separate overhead. See
 
 ### Inspect Original Sources
 
-This is an **unreleased source feature**, not part of v0.3.0. Check that the
+Available from **v0.4.0**; older packages do not support inspection. Check that the
 server advertises `fragmentId` and `after` in the `recall_memory` input schema.
 Use a `fragmentId` returned by search or a successful write, omitting `query`:
 

@@ -5,6 +5,54 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-16
+
+### Added
+- Search lower-weight source and summary metadata, including source path terms,
+  alongside fragment text through one trigger-maintained PostgreSQL GIN index.
+- Add explicit websearch/all/any keyword matching and opt-in PostgreSQL query
+  diagnostics without adding model calls or changing vector similarity.
+- Add opt-in bounded same-episode context with source provenance, fragment order,
+  visibility filters, snapshot consistency, and explicit byte/limit truncation.
+- Group exact duplicate text within the returned working set while preserving
+  every included source's IDs, context, scores, lifecycle, links, and document
+  context. Stored records and evidence counts are never merged.
+
+### Changed
+- Emit benchmark report v5 with a planned-query manifest and exact query hashes,
+  and reject incomplete new comparison or calibration evidence. Add original
+  dataset/background audits that detect shared missing queries and changed labels.
+- Measure UTF-8 JSON result-array bytes, including related context and escaping,
+  alongside primary-fragment text size. Add per-pass size distributions and
+  all-pass byte-budget gates that fail closed on missing legacy measurements.
+- Require runtime changes to be declared in paired comparisons and expose audit
+  flags distinguishing checked provenance from unavailable legacy data. Preserve
+  existing gold corpora and first-pass quality semantics.
+- Prepare versioned v0.4.0 native packages and standalone containers with
+  original-source inspection, corrective evidence, and benchmark-evidence audits.
+- Pin installation commands to 0.4.0, document bounded-count compatibility and
+  backup-first upgrades, and require an upgrade from the published 0.3.0 image
+  in addition to the existing 0.1.0 and 0.2.0 checks. Leave Docker Hub latest unchanged.
+
+### Fixed
+- Index dot-separated components alongside qualified PostgreSQL keyword tokens,
+  so `TargetInvocationException` finds stored
+  `System.Reflection.TargetInvocationException` facts in keyword and hybrid
+  recall without rewriting source text, IDs, or embeddings. Fully qualified
+  queries retain their qualified token requirement; numeric literals and email
+  tokens are unchanged.
+- Build one combined fragment/metadata GIN index for existing rows during the
+  next startup, with no model calls or re-ingestion. The one-time backfill and
+  build can block writes and need disk space; later startups skip migration DDL.
+- Prioritize correction and contradiction links before confirmation history in
+  recalled context. Bound directional relationship scans and report lower-bound
+  counts explicitly with `relationshipCountExact`.
+- Add provider-free `recall_memory` inspection by `fragmentId`, preserving exact
+  raw source text and paginating direct evidence with `after`/`nextCursor`.
+- Retain useful negative, unknown, and corrective evidence in the optional
+  relevance policy; add a separate policy fixture without changing historical
+  benchmark labels or results.
+
 ## [0.3.0] - 2026-09-16
 
 ### Added
