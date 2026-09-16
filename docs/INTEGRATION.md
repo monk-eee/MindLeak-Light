@@ -203,7 +203,7 @@ context. Do not bypass client approvals to make the policy appear automatic.
 
 | Tool | Arguments | Successful Result |
 |---|---|---|
-| `write_memory` | `agentId`, `text`, optional `context`, optional per-fragment `facts` | `memoryId` and `fragments` with IDs, text, and tier after commit |
+| `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (unreleased) | `memoryId` and `fragments` with IDs, text, and tier after commit |
 | `recall_memory` | `query`, optional `agentId`, `scope`, `tier`, `includeInactive`, `limit` | Array of matched facts with IDs, text, score, context, lifecycle, activation, and direct relationships |
 | `decompose_memory` | `text` | Array of strings; preview only, no database write |
 
@@ -246,8 +246,48 @@ timeout for query embedding plus selection. The combined query/candidate text
 budget is 32768 UTF-8 bytes, and overflow is an error rather than truncation.
 The default remains `off`; see [model setup](MODELS.md#experimental-relevance-filter).
 
-Writes are not idempotent. A network failure after commit can hide a successful
-write's ID; reconcile before retrying rather than blindly duplicating memories.
+Writes without `requestId` are not idempotent. A network failure after commit can
+hide a successful write's ID; reconcile before retrying an unkeyed write.
+
+### Retry-Safe Writes
+
+This is an **unreleased source feature**, not part of the published v0.2.0
+packages. A server that supports it advertises `requestId` in the `write_memory`
+input schema. It does not add another MCP tool or application table.
+
+Generate a UUID once per logical write and retain it with the original arguments
+before sending the request. For example:
+
+```json
+{
+  "agentId": "review-agent",
+  "requestId": "7e0d9973-84db-4941-807c-c504b97e7931",
+  "text": "The team requires reviews.",
+  "context": {"scope": "project:light", "sessionId": "review-2026-09-16"}
+}
+```
+
+After a timeout, reconnect and resend the same arguments with the same
+`requestId` and `agentId`. A committed write returns its original `memoryId`
+and ordered fragment IDs, text, and tiers, even after a server restart. It does
+not call models again, add an episode, repeat feedback, or reapply an archive or
+correction. The returned tier is the original write receipt; use recall to inspect
+current lifecycle state.
+
+Reusing that agent/request pair with different text, context, or facts returns
+an invalid-parameters error without changing the original memory. Preserve raw
+text whitespace, fact order, and link order. Omitted optional fields and their
+normal defaults are equivalent; JSON object property order does not matter.
+Use a new UUID for a genuinely new write, including a corrected request payload.
+Neither the key nor `agentId` is authentication or a tenant boundary.
+
+Provider failures before storage and rolled-back transactions leave no receipt,
+so the same request can be retried after the cause is fixed. Concurrent first
+attempts can perform duplicate inference before one wins the database insert;
+the key guarantees one committed episode, not one provider invocation. Database
+failures and timeouts remain errors, not successful replays without a stored
+receipt. The key and receipt persist with the memory; deleting that row also
+removes retry protection. No automatic client retry loop is added.
 
 ## Clients That Need Stdio
 

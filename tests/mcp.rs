@@ -84,6 +84,106 @@ fn call(name: &'static str, arguments: Value) -> CallToolRequestParams {
 }
 
 #[tokio::test]
+async fn write_request_replays_committed_result_after_restart_without_model_calls() {
+    let provider = provider().await;
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("retry-write-{}", Uuid::new_v4());
+    let arguments = json!({
+        "agentId": agent_id,
+        "text": FACTS.join(". "),
+        "requestId": Uuid::new_v4(),
+        "context": {"scope": "retry-test", "sessionId": "original-session"}
+    });
+    let mut original = None;
+    for attempt in 0..2 {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+        command.current_dir(directory.path()).env_clear().envs([
+            ("MINDLEAK_DATABASE_URL", database_url()),
+            ("MINDLEAK_DECOMPOSITION", "openai".into()),
+            ("MINDLEAK_RETRIEVAL", "vector".into()),
+            ("MINDLEAK_RELEVANCE", "off".into()),
+            ("MINDLEAK_MODEL", "test-model".into()),
+            ("MINDLEAK_LLM_URL", format!("{}/v1", provider.uri())),
+            ("MINDLEAK_EMBED_MODEL", "test-model".into()),
+            ("MINDLEAK_EMBED_URL", format!("{}/v1", provider.uri())),
+            ("MINDLEAK_EMBED_DIMENSIONS", "2".into()),
+        ]);
+        let client = tokio::time::timeout(
+            Duration::from_secs(15),
+            ().serve(TokioChildProcess::new(command).unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let written = client
+            .call_tool(call("write_memory", arguments.clone()))
+            .await
+            .expect("write_memory must accept an optional requestId");
+        assert_ne!(written.is_error, Some(true));
+        let result = written.structured_content.unwrap();
+        if let Some(original) = &original {
+            assert_eq!(&result, original, "retry must replay the committed receipt");
+        } else {
+            assert_eq!(result["fragments"].as_array().unwrap().len(), FACTS.len());
+            original = Some(result);
+        }
+        if attempt == 1 {
+            for field in ["text", "context", "facts"] {
+                let mut conflict = arguments.clone();
+                conflict[field] = match field {
+                    "text" => json!("A different write."),
+                    "context" => json!({"scope": "another-project"}),
+                    _ => json!([{"text": FACTS[0], "pinned": true}]),
+                };
+                assert!(client
+                    .call_tool(call("write_memory", conflict))
+                    .await
+                    .is_err());
+            }
+            let mut invalid = arguments.clone();
+            invalid["requestId"] = json!("not-a-uuid");
+            assert_eq!(
+                client
+                    .call_tool(call("write_memory", invalid))
+                    .await
+                    .unwrap()
+                    .is_error,
+                Some(true)
+            );
+            let repeated = client
+                .call_tool(call("write_memory", arguments.clone()))
+                .await
+                .unwrap();
+            assert_ne!(repeated.is_error, Some(true));
+            assert_eq!(repeated.structured_content, original);
+        }
+        client.cancel().await.unwrap();
+        if attempt == 0 {
+            provider.reset().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(503))
+                .expect(0)
+                .mount(&provider)
+                .await;
+        }
+    }
+    assert!(provider.received_requests().await.unwrap().is_empty());
+    let (database, connection) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let count: i64 = database
+        .query_one(
+            "SELECT count(*) FROM public.memories WHERE agent_id = $1",
+            &[&agent_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 1, "retry must not create a second episode");
+}
+
+#[tokio::test]
 async fn invalid_provider_data_never_reports_success_or_leaves_partial_memories() {
     let provider = MockServer::start().await;
     let scenario = Arc::new(AtomicUsize::new(0));

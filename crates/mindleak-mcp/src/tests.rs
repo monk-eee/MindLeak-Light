@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use mindleak_memory::{
     MemoryDecomposer, MemoryRetriever, MemoryStore, PreparedMemory, RecallMatch, TextEmbedder,
+    WriteMemoryResult, WriteRequest,
 };
 use rmcp::{model::CallToolRequestParams, ServiceExt};
 use uuid::Uuid;
@@ -35,10 +36,14 @@ impl TextEmbedder for Backend {
 
 #[async_trait]
 impl MemoryStore for Backend {
-    async fn save(&self, memory: &PreparedMemory) -> Result<()> {
+    async fn lookup_write(&self, _: &WriteRequest) -> Result<Option<WriteMemoryResult>> {
+        Ok(None)
+    }
+
+    async fn save(&self, memory: &PreparedMemory) -> Result<WriteMemoryResult> {
         assert_eq!(memory.agent_id, "claude");
         assert_eq!(memory.fragments.len(), 1);
-        Ok(())
+        Ok(memory.write_result())
     }
 }
 

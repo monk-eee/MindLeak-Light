@@ -13,6 +13,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct MemoryMcp {
@@ -28,6 +29,10 @@ pub struct WriteMemoryInput {
         description = "Raw memory to split into fragments and store atomically; at most 32768 bytes."
     )]
     text: String,
+    #[schemars(
+        description = "Optional client-generated UUID for retry safety, scoped by agentId. Reuse it only with the same text, context, and facts to replay the original committed result. Omit it for a new write on every call."
+    )]
+    request_id: Option<Uuid>,
     #[serde(default)]
     #[schemars(
         description = "Source context. Use scope for the project/topic and a stable sessionId for distinct feedback episodes; neither is authentication."
@@ -92,6 +97,7 @@ impl MemoryMcp {
                     &input.agent_id,
                     &input.text,
                     WriteOptions {
+                        request_id: input.request_id,
                         context: input.context,
                         facts: input.facts,
                     },

@@ -42,16 +42,44 @@ pub struct PreparedMemory {
     pub context: MemoryContext,
     pub fragments: Vec<EmbeddedFragment>,
     pub relationships: Vec<PreparedRelationship>,
+    pub request: Option<WriteRequest>,
 }
 
-#[derive(Debug, Serialize)]
+impl PreparedMemory {
+    pub fn write_result(&self) -> WriteMemoryResult {
+        WriteMemoryResult {
+            memory_id: self.id,
+            fragments: self
+                .fragments
+                .iter()
+                .map(|fragment| WrittenFragment {
+                    fragment_id: fragment.id,
+                    text: fragment.text.clone(),
+                    tier: fragment.tier,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteRequest {
+    pub request_id: Uuid,
+    pub agent_id: String,
+    pub text: String,
+    pub context: MemoryContext,
+    pub facts: Vec<FactDirective>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteMemoryResult {
     pub memory_id: Uuid,
     pub fragments: Vec<WrittenFragment>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WrittenFragment {
     pub fragment_id: Uuid,
@@ -129,13 +157,14 @@ pub struct PreparedRelationship {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WriteOptions {
+    pub request_id: Option<Uuid>,
     #[serde(default)]
     pub context: MemoryContext,
     #[serde(default)]
     pub facts: Vec<FactDirective>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactDirective {
     #[schemars(
@@ -151,7 +180,7 @@ pub struct FactDirective {
     pub links: Vec<FactLink>,
 }
 
-#[derive(Clone, Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactLink {
     pub target_fragment_id: Uuid,
@@ -171,7 +200,8 @@ pub trait TextEmbedder: Send + Sync {
 
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
-    async fn save(&self, memory: &PreparedMemory) -> Result<()>;
+    async fn lookup_write(&self, request: &WriteRequest) -> Result<Option<WriteMemoryResult>>;
+    async fn save(&self, memory: &PreparedMemory) -> Result<WriteMemoryResult>;
 }
 
 #[async_trait]
