@@ -20,7 +20,7 @@ jobs:
     name: Validate Release and Registry Setup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Require an explicit release tag and configured token
@@ -59,7 +59,7 @@ jobs:
     needs: [metadata, verify]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: docker/setup-qemu-action@v3
