@@ -1,0 +1,48 @@
+[package]
+name = "mindleak-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mindleak-light"
+path = "src/main.rs"
+
+[dependencies]
+mindleak-memory = { path = "../mindleak-memory" }
+mindleak-decomposition = { path = "../mindleak-decomposition" }
+mindleak-embeddings = { path = "../mindleak-embeddings" }
+mindleak-storage-postgres = { path = "../mindleak-storage-postgres" }
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+reqwest.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+subtle.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower-http.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+reqwest-mcp = { package = "reqwest", version = "0.13", default-features = false }
+tempfile = "3"
+tokio.workspace = true
+tokio-postgres.workspace = true
+uuid.workspace = true
+wiremock.workspace = true
+
+[features]
+postgres-tests = []
+
+[[test]]
+name = "mcp"
+path = "../../tests/mcp.rs"
+required-features = ["postgres-tests"]

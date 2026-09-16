@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "MindLeak Light: Debug HTTP MCP",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "--locked", "--bin=mindleak-light", "--package=mindleak-mcp"],
+        "filter": { "name": "mindleak-light", "kind": "bin" }
+      },
+      "args": ["--transport", "http", "--listen", "127.0.0.1:8089"],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

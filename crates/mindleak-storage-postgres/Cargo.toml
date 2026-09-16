@@ -1,0 +1,31 @@
+[package]
+name = "mindleak-storage-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+mindleak-memory = { path = "../mindleak-memory" }
+anyhow.workspace = true
+async-trait.workspace = true
+deadpool-postgres.workspace = true
+pgvector.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio-postgres.workspace = true
+tokio-postgres-rustls.workspace = true
+webpki-roots.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+uuid.workspace = true
+
+[features]
+postgres-tests = []
+
+[[test]]
+name = "postgres"
+path = "../../tests/postgres.rs"
+required-features = ["postgres-tests"]

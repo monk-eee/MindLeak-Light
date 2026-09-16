@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build MindLeak Light",
+      "type": "process",
+      "command": "cargo",
+      "args": ["build", "--workspace", "--locked"],
+      "group": "build",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Test MindLeak Light",
+      "type": "process",
+      "command": "cargo",
+      "args": ["test", "--workspace", "--locked"],
+      "group": "test",
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "mindleak-light": {
+      "type": "stdio",
+      "command": "cargo",
+      "args": ["run", "--quiet", "--locked", "--manifest-path", "${workspaceFolder}/Cargo.toml", "-p", "mindleak-mcp", "--bin", "mindleak-light", "--", "--transport", "stdio"],
+      "envFile": "${workspaceFolder}/.env"
+    }
+  }
+}

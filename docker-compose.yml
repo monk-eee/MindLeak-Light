@@ -1,0 +1,57 @@
+name: mindleak-light
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    environment:
+      POSTGRES_USER: mindleak_light
+      POSTGRES_PASSWORD: mindleak-light-development-only
+      POSTGRES_DB: mindleak_light
+    ports:
+      - "127.0.0.1:${MINDLEAK_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mindleak_light -d mindleak_light"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  mcp:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      MINDLEAK_DATABASE_URL: postgresql://mindleak_light:mindleak-light-development-only@postgres:5432/mindleak_light?sslmode=disable
+      MINDLEAK_DB_POOL_SIZE: ${MINDLEAK_DB_POOL_SIZE:-8}
+      MINDLEAK_LLM_URL: ${MINDLEAK_LLM_URL:-http://host.docker.internal:11434/v1}
+      MINDLEAK_MODEL: ${MINDLEAK_MODEL:-glm4:9b}
+      MINDLEAK_LLM_API_KEY: ${MINDLEAK_LLM_API_KEY:-}
+      MINDLEAK_EMBED_URL: ${MINDLEAK_EMBED_URL:-http://host.docker.internal:11434/v1}
+      MINDLEAK_EMBED_MODEL: ${MINDLEAK_EMBED_MODEL:-nomic-embed-text}
+      MINDLEAK_EMBED_API_KEY: ${MINDLEAK_EMBED_API_KEY:-}
+      MINDLEAK_EMBED_DIMENSIONS: ${MINDLEAK_EMBED_DIMENSIONS:-768}
+      MINDLEAK_MODEL_TIMEOUT_SECS: ${MINDLEAK_MODEL_TIMEOUT_SECS:-60}
+      MINDLEAK_HTTP_TOKEN: ${MINDLEAK_HTTP_TOKEN:-mindleak-light-development-token-not-for-production}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${MINDLEAK_HTTP_PORT:-8088}:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --max-time 3 -H \"Authorization: Bearer $$MINDLEAK_HTTP_TOKEN\" http://127.0.0.1:8088/health"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

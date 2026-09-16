@@ -1,0 +1,44 @@
+minimum_pre_commit_version: "3.5.0"
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: Rust formatting
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: clippy
+        name: Rust lint
+        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        language: system
+        files: '(\.rs$|Cargo\.(toml|lock)$)'
+        pass_filenames: false
+      - id: repository-records
+        name: ADRs, changelog, links, and repository script tests
+        entry: node scripts/check-repo.mjs
+        language: system
+        always_run: true
+        pass_filenames: false
+      - id: rust-tests
+        name: Rust unit and protocol tests
+        entry: cargo test --workspace --locked
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false

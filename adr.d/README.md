@@ -1,0 +1,18 @@
+# Architecture Decision Records
+
+MindLeak Light carries over MindLeak's numbered ADR convention, using `adr.d/`
+in this repository. Start new decisions from [the template](TEMPLATE.md).
+Choose the next unused four-digit number and a descriptive kebab-case name.
+CI rejects duplicate numbers. Parallel branches must resolve numbering collisions
+before merge; do not treat a local next number as a reservation.
+
+Generate this index with `node scripts/adr-index.mjs`. Check it with `--check`.
+Accepted records are historical decisions; supersede them with a linked new
+record when the design changes instead of silently rewriting their rationale.
+
+| ADR | Title | Status |
+|---|---|---|
+| [0001](0001-record-architecture-decisions.md) | Record Architecture Decisions | Accepted |
+| [0002](0002-one-server-one-database.md) | One Server, One Database | Accepted |
+| [0003](0003-atomic-decomposed-memory.md) | Atomic Decomposed Memory | Accepted |
+| [0004](0004-repository-quality-and-releases.md) | Repository Quality and Releases | Accepted |

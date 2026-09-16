@@ -1,0 +1,85 @@
+name: Release Binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node scripts/release.mjs --check "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+
+  build:
+    name: Package (${{ matrix.target }})
+    needs: [verify, metadata]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: cargo build --release --locked -p mindleak-mcp --bin mindleak-light --target ${{ matrix.target }}
+      - run: node scripts/release.mjs --package ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mindleak-light-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Draft GitHub Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: node scripts/release.mjs --notes "$RELEASE_TAG" > RELEASE_NOTES.md
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          body_path: RELEASE_NOTES.md
+          files: dist/*
+          fail_on_unmatched_files: true

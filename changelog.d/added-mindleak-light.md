@@ -1,0 +1,4 @@
+- Add one Rust MCP server with write, recall, and decomposition tools backed by PostgreSQL and pgvector.
+- Extract atomic facts with OpenAI-compatible models and commit each memory with all fragments and vectors atomically.
+- Preserve replaceable retrieval and keep RAST, orchestration, and graph reasoning out of the initial runtime.
+- Add ADRs, changelog fragments, contributor guidance, hooks, CI, container setup, and release packaging adapted from MindLeak.

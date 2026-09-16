@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: node scripts/check-repo.mjs
+
+  postgres:
+    name: Postgres and MCP Integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: mindleak_light
+          POSTGRES_PASSWORD: mindleak-light-test-only
+          POSTGRES_DB: mindleak_light_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U mindleak_light -d mindleak_light_test"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    env:
+      MINDLEAK_TEST_DATABASE_URL: postgresql://mindleak_light:mindleak-light-test-only@127.0.0.1:5432/mindleak_light_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features --locked
+
+  hygiene:
+    name: Repository Hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pre-commit/action@v3.0.1
+
+  container:
+    name: Two-Service Compose Startup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker compose config --quiet
+      - run: docker compose up --build --detach --wait --wait-timeout 120
+      - run: docker compose exec -T mcp mindleak-light --version
+      - if: failure()
+        run: docker compose logs --no-color
+      - if: always()
+        run: docker compose down --volumes
