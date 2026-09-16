@@ -1,4 +1,10 @@
-use std::sync::Arc;
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -6,16 +12,38 @@ use mindleak_memory::{
     MemoryDecomposer, MemoryRetriever, MemoryStore, PreparedMemory, RecallMatch, TextEmbedder,
     WriteMemoryResult, WriteRequest,
 };
-use rmcp::{model::CallToolRequestParams, ServiceExt};
+use rmcp::{
+    model::{CallToolRequest, CallToolRequestParams},
+    service::PeerRequestOptions,
+    ServiceExt,
+};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::*;
 
-struct Backend;
+#[derive(Default)]
+struct Backend {
+    started: CancellationToken,
+    dropped: CancellationToken,
+    proceed: CancellationToken,
+    saved: AtomicUsize,
+}
+
+impl Backend {
+    async fn block(&self) {
+        let _guard = self.dropped.clone().drop_guard();
+        self.started.cancel();
+        self.proceed.cancelled().await;
+    }
+}
 
 #[async_trait]
 impl MemoryDecomposer for Backend {
     async fn decompose(&self, text: &str) -> Result<Vec<String>> {
+        if text == "blocked" {
+            self.block().await;
+        }
         anyhow::ensure!(
             text != "provider failure",
             "decomposition provider unavailable"
@@ -41,6 +69,7 @@ impl MemoryStore for Backend {
     }
 
     async fn save(&self, memory: &PreparedMemory) -> Result<WriteMemoryResult> {
+        self.saved.fetch_add(1, Ordering::SeqCst);
         assert_eq!(memory.agent_id, "claude");
         assert_eq!(memory.fragments.len(), 1);
         Ok(memory.write_result())
@@ -51,10 +80,13 @@ impl MemoryStore for Backend {
 impl MemoryRetriever for Backend {
     async fn recall(
         &self,
-        _query: &str,
+        query: &str,
         _filter: &RecallFilter,
         limit: usize,
     ) -> Result<Vec<RecallMatch>> {
+        if query == "blocked" {
+            self.block().await;
+        }
         assert_eq!(limit, 10);
         Ok(vec![RecallMatch {
             memory_id: Uuid::nil(),
@@ -69,7 +101,7 @@ impl MemoryRetriever for Backend {
 
 #[tokio::test]
 async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
-    let backend = Arc::new(Backend);
+    let backend = Arc::new(Backend::default());
     let memory = MemoryService::new(
         backend.clone(),
         backend.clone(),
@@ -140,4 +172,64 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
         .is_err());
     client.cancel().await.unwrap();
     server.waiting().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_drops_pending_operations_before_storage() {
+    for (name, arguments) in [
+        (
+            "write_memory",
+            json!({"agentId": "claude", "text": "blocked"}),
+        ),
+        ("decompose_memory", json!({"text": "blocked"})),
+        ("recall_memory", json!({"query": "blocked"})),
+    ] {
+        let backend = Arc::new(Backend::default());
+        let memory = MemoryService::new(backend.clone(), backend.clone(), None, backend.clone());
+        let (client_io, server_io) = tokio::io::duplex(16_384);
+        let (server, client) =
+            tokio::join!(MemoryMcp::new(memory).serve(server_io), ().serve(client_io));
+        let server = server.unwrap();
+        let client = client.unwrap();
+        let request = client
+            .send_cancellable_request(
+                CallToolRequest::new(
+                    CallToolRequestParams::new(name)
+                        .with_arguments(arguments.as_object().unwrap().clone()),
+                )
+                .into(),
+                PeerRequestOptions::no_options(),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), backend.started.cancelled())
+            .await
+            .unwrap();
+        request
+            .cancel(Some("regression cancellation".into()))
+            .await
+            .unwrap();
+        client
+            .send_request(
+                rmcp::model::PingRequest {
+                    method: Default::default(),
+                    extensions: Default::default(),
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        let stopped = tokio::time::timeout(Duration::from_secs(1), backend.dropped.cancelled())
+            .await
+            .is_ok();
+        backend.proceed.cancel();
+        client.cancel().await.unwrap();
+        server.waiting().await.unwrap();
+        assert!(stopped, "{name} kept running after SDK cancellation");
+        assert_eq!(
+            backend.saved.load(Ordering::SeqCst),
+            0,
+            "cancelled preparation must not reach storage"
+        );
+    }
 }

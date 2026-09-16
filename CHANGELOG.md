@@ -5,6 +5,75 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-16
+
+### Added
+- Add an optional UUID requestId to write_memory for durable, agent-scoped retry
+  protection. Matching requests replay the original committed memory and fragment
+  result across process restarts without repeat model calls or lifecycle effects.
+- Reject conflicting payloads, preserve unkeyed write behaviour, and arbitrate
+  concurrent writers through the existing memories table. Failed transactions
+  leave no request receipt. Document client obligations and concurrent inference
+  limits, with service, PostgreSQL, and real MCP regression coverage.
+- Skip redundant idempotency column/index DDL on an already-current schema, with
+  a regression proving that this migration can rerun while an active reader holds
+  a transaction open.
+
+### Changed
+- Score headline recall quality on distinct first-pass queries instead of
+  inflating the sample with repeat passes. Keep per-pass quality and latency.
+- Add offline paired comparisons with declared configuration changes, corpus
+  and query integrity checks, grouped bootstrap intervals, per-query/category
+  regressions, and observed quality-loss gates.
+- Add bounded concurrent recall workloads, reproducible per-pass query ordering,
+  throughput and tail-latency reporting, and executable snapshots tied to the
+  reported binary hash. Emit report version 4 with workload/runtime provenance.
+- Require full fifty-candidate captures for cosine calibration at a separate
+  deployment cutoff, and reject calibration/evaluation target or family leakage.
+- Replace the four architecture diagrams with an editable Excalidraw board and
+  self-contained SVG previews covering the system, writes, recall, and lifecycle.
+- Centre bound labels using the actual handwritten font metrics, preserve
+  connector bindings, and check preview consistency and text padding.
+- Share successful embedding calculations across overlapping vector/hybrid
+  recalls of the same exact query, using bounded async-initialized cache slots.
+  Preserve per-call database reads, provenance/context filters, and original
+  retrieval scores; keep model-free defaults unchanged.
+- Cover concurrent agent-filtered recalls, independent query strings,
+  cancellation handoff, and failed or invalid initializer recovery without
+  caching errors or introducing an internal retry loop.
+- Prepare versioned v0.3.0 native packages and standalone containers, update
+  feature-availability and backup-first upgrade guidance, and leave Docker Hub's
+  latest alias unchanged.
+- Include the editable Excalidraw architecture board, all four self-contained
+  previews, and the architecture guide in native archives, with package regressions.
+- Require upgrades from both published 0.1.0 and 0.2.0 images to preserve existing
+  records, vectors, links, lifecycle metadata, and committed retry receipts.
+
+### Fixed
+- Observe official MCP cancellation notifications and drop pending write,
+  decomposition, and recall work; retain request-ID reconciliation for commit races.
+- Revalidate primary facts and filters in a final read-only database snapshot
+  shared with related context, so a concurrent archive cannot appear as an active
+  primary beside its newer archive link. Preserve raw retrieval scores.
+- Avoid redundant column and index DDL when opening an already-migrated
+  database, preventing startup lock timeouts and conflicting lock acquisition
+  with active readers or writers. Preserve fresh-install and upgrade schema
+  behaviour and add a PostgreSQL regression for both transaction lock modes.
+- Integrate retry-safe writes with modular PostgreSQL storage and bounded recall,
+  with cross-feature replay, concurrent feedback, lock-order, directive-binding,
+  and rank-fusion boundary coverage.
+- Identify unmatched fact directives by array index without exposing memory text.
+- Reconcile write, recall, lifecycle, trust, and release-availability documentation;
+  add architecture diagrams and an explicit review disposition ledger.
+- Extend container persistence checks to verify ranking metadata and committed
+  write receipts after container recreation.
+- Bound related context across recall results, preserve primary facts, and expose
+  omitted relationships with `relationshipsTruncated`. Return `rankingPriority`
+  separately from unchanged retrieval scores so lifecycle ordering is explainable.
+- Clarify atomic persistence versus model-assisted semantic extraction, preserve
+  causal and attributed statements in extraction guidance, and add semantic-loss
+  regression cases. Document current lifecycle, shared-trust, and scale boundaries.
+
 ## [0.2.0] - 2026-09-16
 
 ### Added

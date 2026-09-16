@@ -43,7 +43,7 @@ It includes the MCP server, PostgreSQL, and pgvector in **one container**, for
 Linux amd64 and arm64. No Git checkout, build, separate database, or model is needed.
 
 ```sh
-docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.2.0
+docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.3.0
 ```
 
 Connect your MCP client to **`http://127.0.0.1:8088/mcp`** with the bearer token
@@ -193,10 +193,12 @@ calibration on your data and does not filter hybrid's keyword matches.
 Hybrid recall and similarity thresholds are included in v0.2.0. Upgrade older
 packages before enabling them; changing settings does not upgrade an executable.
 
-The subsequent hardening changes are not in the published v0.2.0 image: optional
+In v0.3.0, optional
 `write_memory.requestId` provides retry-safe committed-result replay, and recall
 adds `rankingPriority` and `relationshipsTruncated` with shared context budgets.
-Use a source build containing the changes and the [current tool contract](docs/INTEGRATION.md#tool-contract).
+Overlapping identical recalls share query-embedding work while reading fresh
+database results. Upgrade v0.2.0 packages to use these changes; see the
+[current tool contract](docs/INTEGRATION.md#tool-contract).
 The [architecture diagrams](docs/ARCHITECTURE.md) show the complete write, recall,
 and lifecycle paths; the [review status](docs/REVIEW-STATUS.md) separates fixes,
 existing safeguards, deliberate boundaries, and open quality questions. Do not
