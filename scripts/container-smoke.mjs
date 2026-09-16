@@ -7,8 +7,9 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { cleanupProjects } from "./container-projects.mjs";
 
-const { values } = parseArgs({ options: { "config-only": { type: "boolean" } } });
+const { values } = parseArgs({ options: { "config-only": { type: "boolean" }, restore: { type: "boolean" } } });
 const root = fileURLToPath(new URL("../", import.meta.url));
 const engine = process.env.CONTAINER_ENGINE ?? "docker";
 assert.ok(["docker", "podman"].includes(engine), "CONTAINER_ENGINE must be docker or podman");
@@ -16,6 +17,9 @@ const image = process.env.MINDLEAK_IMAGE;
 assert.ok(image, "Set MINDLEAK_IMAGE to a locally built all-in-one image");
 const upgradeFrom = process.env.MINDLEAK_UPGRADE_FROM;
 const project = `mindleak-light-smoke-${randomUUID()}`;
+let activeProject = project;
+let composeFiles = ["docker/compose.all-in-one.yml"];
+const ownedProjects = new Set([project]);
 const token = "mindleak-light-container-test-token";
 const database = "mindleak_light_test";
 const env = {
@@ -30,14 +34,19 @@ const env = {
 };
 
 function run(args, options = {}) {
-  return execFileSync(engine, args, {
+  const output = execFileSync(engine, args, {
     cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"],
     timeout: 180_000, ...options,
-  }).trim();
+  });
+  return typeof output === "string" ? output.trim() : output;
+}
+
+function composeArguments(args) {
+  return ["compose", "--project-name", activeProject, ...composeFiles.flatMap(file => ["--file", file]), ...args];
 }
 
 function compose(...args) {
-  return run(["compose", "--project-name", project, "--file", "docker/compose.all-in-one.yml", ...args]);
+  return run(composeArguments(args));
 }
 
 function sql(query) {
@@ -228,6 +237,7 @@ const refused = spawnSync(engine, ["run", "--rm", "--network", "none", image], {
 assert.equal(refused.status, 64, "Container must refuse to start without an HTTP token");
 assert.match(refused.stderr, /Set MINDLEAK_HTTP_TOKEN/);
 
+let smokeFailure;
 try {
   if (upgradeFrom) env.MINDLEAK_IMAGE = upgradeFrom;
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
@@ -284,6 +294,11 @@ try {
   const before = persistedRecords();
   const lifecycleBefore = hadLifecycle ? lifecycleRecords() : null;
   const counts = snapshot();
+  const backup = values.restore ? run(composeArguments([
+    "exec", "-T", "mindleak-light", "pg_dump", "--format=custom", "--no-owner", "--no-acl",
+    "--username=mindleak_light", `--dbname=${database}`,
+  ]), { encoding: "buffer", maxBuffer: 16 * 1024 * 1024 }) : null;
+  if (backup) assert.equal(backup.subarray(0, 5).toString("ascii"), "PGDMP", "A real custom-format backup is required");
   compose("down");
   env.MINDLEAK_IMAGE = image;
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
@@ -322,11 +337,57 @@ try {
   assert.deepEqual(persistedRecords(), keyedRecords, "A keyed retry changed persisted data");
   assert.deepEqual(lifecycleRecords(), keyedLifecycle, "A keyed retry changed lifecycle metadata");
   assert.deepEqual(requestReceipts(), keyedReceipts, "A keyed retry changed stored request receipts");
+  if (backup) {
+    const restoreDirectory = mkdtempSync(join(tmpdir(), "mindleak-restore-"));
+    const override = join(restoreDirectory, "postgres-only.json");
+    writeFileSync(override, JSON.stringify({ services: { "mindleak-light": {
+      entrypoint: ["docker-entrypoint.sh"],
+      command: ["postgres", "-c", "listen_addresses=", "-c", "unix_socket_directories=/var/run/postgresql",
+        "-c", "log_statement=none", "-c", "log_min_error_statement=panic", "-c", "log_error_verbosity=terse"],
+      environment: { POSTGRES_HOST_AUTH_METHOD: "trust" },
+      healthcheck: { test: ["CMD-SHELL", `pg_isready -U mindleak_light -d ${database}`],
+        interval: "2s", timeout: "3s", start_period: "0s", retries: 30 },
+    } } }));
+    activeProject = `${project}-restore`;
+    ownedProjects.add(activeProject);
+    composeFiles.push(override);
+    try {
+      compose("up", "--detach", "--wait", "--wait-timeout", "120");
+      assert.equal(sql("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"),
+        "0", "Restoration must start in a fresh volume without application tables");
+      run(composeArguments(["exec", "-T", "mindleak-light", "pg_restore", "--exit-on-error",
+        "--no-owner", "--no-acl", "--username=mindleak_light", `--dbname=${database}`]),
+      { input: backup, stdio: ["pipe", "pipe", "inherit"] });
+      assert.deepEqual(snapshot(), counts, "Restoring the backup changed counts or database settings");
+      assert.deepEqual(persistedRecords(), before, "Restoration changed raw text, IDs, vectors, links or model binding");
+      if (lifecycleBefore) assert.deepEqual(lifecycleRecords(), lifecycleBefore);
+      if (receiptsBefore) assert.deepEqual(requestReceipts(), receiptsBefore);
+      composeFiles = ["docker/compose.all-in-one.yml"];
+      compose("up", "--detach", "--force-recreate", "--wait", "--wait-timeout", "120");
+      assert.deepEqual(persistedRecords(), before, "Starting the candidate after restore changed original data");
+      const restoredReceipt = await recallPersisted(
+        `http://${compose("port", "mindleak-light", "8088")}`, originalMemory.id, retryRequest, originalMemory.raw_text);
+      if (legacyReceipt) {
+        assert.deepEqual(restoredReceipt, legacyReceipt, "Restored keyed write did not replay its original receipt");
+        assert.deepEqual(snapshot(), counts, "Replaying a restored request created rows");
+        assert.deepEqual(requestReceipts(), receiptsBefore);
+      }
+      if (lifecycleBefore && legacyReceipt) assert.deepEqual(lifecycleRecords(), lifecycleBefore);
+      console.log("Backup restoration: real pg_dump restored into a fresh volume; exact data, lifecycle, receipts and MCP source/document recall verified.");
+    } finally {
+      composeFiles = ["docker/compose.all-in-one.yml"];
+      rmSync(restoreDirectory, { recursive: true, force: true });
+    }
+  }
   console.log("Integrated contracts: bounded evidence, exact source inspection, document search/context/grouping, ranking metadata and keyed replay verified.");
   console.log("All-in-one image: auth, MCP write/recall, socket-only Postgres, and volume persistence verified.");
 } catch (error) {
-  console.error(compose("logs", "--no-color", "--tail", "80"));
-  throw error;
+  smokeFailure = error;
+  try { console.error(compose("logs", "--no-color", "--tail", "80")); }
+  catch { console.error("Container logs unavailable; preserving the original smoke-test failure."); }
 } finally {
-  compose("down", "--volumes");
+  cleanupProjects(ownedProjects, owned => {
+    activeProject = owned;
+    compose("down", "--volumes");
+  }, smokeFailure);
 }

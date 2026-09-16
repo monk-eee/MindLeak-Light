@@ -12,12 +12,127 @@ import { readAdrs, updateIndex } from "./adr-index.mjs";
 import { readFragments, releaseChangelog, render } from "./changelog.mjs";
 import { checkDocs } from "./check-docs.mjs";
 import { packageBinary, releaseNotes } from "./release.mjs";
+import { captureBenchmark, regressionPlan, runRegression } from "./regression-check.mjs";
+import { cleanupProjects } from "./container-projects.mjs";
 
 function fixture(context) {
   const directory = mkdtempSync(join(tmpdir(), "mindleak-light-records-"));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("release regression plans pin corpora and require independent disposable databases", (context) => {
+  const environment = {
+    MINDLEAK_BASELINE_DATABASE_URL: "postgresql://localhost/baseline_test",
+    MINDLEAK_TEST_DATABASE_URL: "postgresql://localhost/candidate_test",
+  };
+  const plan = regressionPlan(environment);
+  assert.equal(plan.definition.release, "v0.4.0");
+  assert.equal(plan.corpora.reduce((count, corpus) => count + corpus.evaluationQueries, 0), 100);
+  assert.equal(plan.settings.configuration.retrieval, "keyword");
+  assert.deepEqual(plan.workloads, [{ concurrency: 1, passes: 1 }]);
+  assert.deepEqual(regressionPlan(environment, { profile: "load" }).workloads, [{ concurrency: 1, passes: 3 }, { concurrency: 4, passes: 3 }]);
+  assert.throws(() => regressionPlan({ ...environment, MINDLEAK_BASELINE_DATABASE_URL: environment.MINDLEAK_TEST_DATABASE_URL }), /different disposable/);
+  assert.throws(() => regressionPlan({
+    ...environment,
+    MINDLEAK_BASELINE_DATABASE_URL: "postgresql://localhost/candidate%5Ftest",
+  }), /different disposable/, "URL escaping must not hide that both runs use the same database");
+  assert.throws(() => regressionPlan({ ...environment, MINDLEAK_TEST_DATABASE_URL: "postgresql://localhost/production" }), /_test/);
+  assert.throws(() => regressionPlan(environment, { profile: "unknown" }), /profile/);
+  assert.throws(() => regressionPlan(environment, { "max-warm-p95-ms": "100" }), /two passes/);
+  const directory = fixture(context);
+  mkdirSync(join(directory, "scripts"));
+  mkdirSync(join(directory, "examples/fixtures"), { recursive: true });
+  writeFileSync(join(directory, "scripts/regression-baseline.json"), JSON.stringify(plan.definition));
+  for (const corpus of plan.corpora) writeFileSync(join(directory, corpus.path), "{}");
+  assert.throws(() => regressionPlan(environment, {}, directory), /Frozen corpus changed/);
+});
+
+test("release regression failure preserves incomplete evidence without connecting to a database", async (context) => {
+  const directory = fixture(context);
+  const archive = join(directory, "invalid.tar.gz");
+  const output = join(directory, "reports");
+  writeFileSync(archive, "deliberately-invalid-archive");
+  const environment = {
+    MINDLEAK_BASELINE_DATABASE_URL: "postgresql://fixture-private-value@localhost/baseline_test",
+    MINDLEAK_TEST_DATABASE_URL: "postgresql://fixture-private-value@localhost/candidate_test",
+  };
+  await assert.rejects(runRegression(environment, {
+    candidate: process.execPath, output, "baseline-archive": archive,
+  }), /checksum/);
+  const source = readFileSync(join(output, "summary.json"), "utf8");
+  const summary = JSON.parse(source);
+  assert.equal(summary.complete, false);
+  assert.equal(summary.passed, false);
+  assert.deepEqual(summary.runs, []);
+  assert.match(summary.error, /checksum/);
+  assert.ok(!source.includes("fixture-private-value"));
+  await assert.rejects(runRegression(environment, {
+    candidate: process.execPath, output, "baseline-archive": archive,
+  }), /EEXIST/);
+  assert.equal(readFileSync(join(output, "summary.json"), "utf8"), source);
+});
+
+test("benchmark deadlines terminate children that ignore graceful shutdown", () => {
+  const result = captureBenchmark(["-e", `
+    process.on("SIGTERM", () => {});
+    process.stdout.write("fixture started");
+    setTimeout(() => process.exit(0), 2500);
+  `], { timeout: 1000, env: { ...process.env, NODE_OPTIONS: "" } });
+  assert.match(result.stdout, /fixture started/);
+  assert.equal(result.error?.code, "ETIMEDOUT");
+  assert.equal(result.signal, "SIGKILL", "deadline must not wait for a child that ignores SIGTERM");
+});
+
+test("required CI includes release comparisons and a fresh-volume restore with retained evidence", () => {
+  const read = path => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+  const workflow = read(".github/workflows/ci.yml");
+  const integration = workflow.slice(workflow.indexOf("  postgres:"), workflow.indexOf("  hygiene:"));
+  assert.match(integration, /name: Postgres and MCP Integration/);
+  assert.match(integration, /scripts\/regression-check\.mjs --candidate target\/release\/mindleak-light/);
+  assert.match(integration, /MINDLEAK_BASELINE_DATABASE_URL:/);
+  assert.match(integration, /if: always\(\)[\s\S]*actions\/upload-artifact/);
+  const container = workflow.slice(workflow.indexOf("  all-in-one:"));
+  assert.match(container, /regression-baseline\.json/);
+  assert.match(container, /shell: bash[\s\S]*container-smoke\.mjs --restore/);
+  assert.match(container, /scripts\/container-smoke\.mjs --restore/);
+  assert.match(container, /if: always\(\)[\s\S]*baseline-restore/);
+  const load = read(".github/workflows/regression-load.yml");
+  assert.match(load, /workflow_dispatch:/);
+  assert.ok(!load.includes("pull_request:"));
+  assert.match(load, /--profile load/);
+  assert.ok(!load.includes("--max-warm-p95-ms"));
+});
+
+test("container cleanup attempts every owned project and reports all failures", () => {
+  const projects = new Set(["smoke-test", "restore-test", "third-test"]);
+  const attempted = [];
+  const first = new Error("first removal failed");
+  const last = new Error("last removal failed");
+  let failure;
+  try {
+    cleanupProjects(projects, project => {
+      attempted.push(project);
+      if (project === "smoke-test") throw first;
+      if (project === "third-test") throw last;
+    });
+  } catch (error) { failure = error; }
+  assert.deepEqual(attempted, [...projects], "one failed removal must not strand another owned volume");
+  assert.ok(failure instanceof AggregateError);
+  assert.deepEqual(failure.errors.map(error => error.cause), [first, last]);
+  assert.ok(failure.errors[0].message.includes("smoke-test"));
+  assert.ok(failure.errors[1].message.includes("third-test"));
+  const removed = [];
+  cleanupProjects(projects, project => removed.push(project));
+  assert.deepEqual(removed, [...projects]);
+  assert.doesNotThrow(() => cleanupProjects([], () => assert.fail("no project to remove")));
+  const original = new Error("restore assertion failed");
+  assert.throws(() => cleanupProjects(projects, () => {}, original), error => error === original);
+  assert.throws(() => cleanupProjects(projects, project => {
+    if (project === "restore-test") throw first;
+  }, original), error => error instanceof AggregateError
+    && error.errors[0] === original && error.errors[1].cause === first);
+});
 
 const record = "# ADR-0001: Example\n\n- Status: Accepted\n- Date: 2026-09-16\n\n## Context\n\nText\n\n## Decision\n\nText\n\n## Consequences\n\nText\n\n## Verification\n\nTest\n";
 

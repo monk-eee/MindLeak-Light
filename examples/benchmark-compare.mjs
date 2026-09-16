@@ -187,7 +187,8 @@ function passDiagnostics(indexed) {
 }
 
 export function compareReports(baseline, candidate, { allowChanges = [], resamples = 2000,
-  seed = 20260916, maxRecallDrop = null, maxNoAnswerDrop = null, maxResultBytes = null, corpus = null } = {}) {
+  seed = 20260916, maxRecallDrop = null, maxNoAnswerDrop = null, maxResultBytes = null,
+  maxRegressedQueries = null, corpus = null } = {}) {
   if (!Number.isInteger(resamples) || resamples < 200 || resamples > 10000
     || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff
     || !Array.isArray(allowChanges) || allowChanges.some((key) => !changeKeys.includes(key))) {
@@ -197,6 +198,9 @@ export function compareReports(baseline, candidate, { allowChanges = [], resampl
     if (threshold !== null && (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)) {
       throw new Error("Maximum quality drops must be finite numbers in 0..1.");
     }
+  }
+  if (maxRegressedQueries !== null && (!Number.isSafeInteger(maxRegressedQueries) || maxRegressedQueries < 0)) {
+    throw new Error("Maximum regressed queries must be a nonnegative safe integer.");
   }
   const before = observations(baseline);
   if (maxResultBytes !== null && (!Number.isSafeInteger(maxResultBytes) || maxResultBytes < 0 || maxResultBytes > 64 * 1024 * 1024)) {
@@ -226,6 +230,26 @@ export function compareReports(baseline, candidate, { allowChanges = [], resampl
   }
   const measured = Object.fromEntries(Object.entries(metrics).map(([name, field]) =>
     [name, pairedMetric(pairs, field, resamples, seed)]));
+  const queries = pairs.map((pair) => {
+    const passes = after.passes.map((observed, index) => {
+      const baselinePass = before.passes[index] ? index + 1 : 1;
+      const baselineQuery = before.passes[baselinePass - 1].get(pair.baseline.id);
+      const candidateQuery = observed.get(pair.baseline.id);
+      const deltas = Object.fromEntries(Object.entries(metrics).map(([name, field]) => [name,
+        baselineQuery.metrics[field] === null ? null : Number(candidateQuery.metrics[field]) - Number(baselineQuery.metrics[field])]));
+      const lostRelevantIds = baselineQuery.relevantIds.filter(id =>
+        baselineQuery.rankedIds.includes(id) && !candidateQuery.rankedIds.includes(id));
+      return { pass: index + 1, baselinePass, deltas, lostRelevantIds,
+        regressed: lostRelevantIds.length > 0 || Object.values(deltas).some(delta => delta !== null && delta < -1e-12) };
+    });
+    const { deltas, lostRelevantIds } = passes[0];
+    const regressedPasses = passes.filter(pass => pass.regressed);
+    return { id: pair.baseline.id, category: pair.baseline.category, group: pair.baseline.group,
+      deltas, lostRelevantIds, regressedPasses, regressed: regressedPasses.length > 0,
+      missingBefore: pair.baseline.relevantIds.filter(id => !pair.baseline.rankedIds.includes(id)),
+      missingAfter: pair.candidate.relevantIds.filter(id => !pair.candidate.rankedIds.includes(id)),
+      returnedBefore: pair.baseline.rankedIds.length, returnedAfter: pair.candidate.rankedIds.length };
+  });
   const categories = [...new Set(pairs.map((pair) => pair.baseline.category))].sort();
   const gates = [["recallAtK", maxRecallDrop], ["noAnswerAccuracy", maxNoAnswerDrop]]
     .filter(([, maximumDrop]) => maximumDrop !== null)
@@ -237,6 +261,11 @@ export function compareReports(baseline, candidate, { allowChanges = [], resampl
       ? rows.reduce((largest, query) => Math.max(largest, query.resultBytes), 0) : null;
     gates.push({ metric: "resultBytes", maximumBytes: maxResultBytes, observedBytes: observed,
       passed: observed !== null && observed <= maxResultBytes });
+  }
+  if (maxRegressedQueries !== null) {
+    const queryIds = queries.filter(query => query.regressed).map(query => query.id);
+    gates.push({ metric: "regressedQueries", maximumQueries: maxRegressedQueries,
+      observedQueries: queryIds.length, queryIds, passed: queryIds.length <= maxRegressedQueries });
   }
   return {
     comparisonVersion: 2, scoring: baseline.scoring, datasetSha256: baseline.dataset.sha256,
@@ -255,12 +284,7 @@ export function compareReports(baseline, candidate, { allowChanges = [], resampl
         pairedMetric(pairs.filter((pair) => pair.baseline.category === category), field, resamples, seed)]))])),
     latency: { baseline: passDiagnostics(before), candidate: passDiagnostics(after),
       caveat: "Descriptive timings only; compare identical hosts, provider settings, query order, and cache state. p99 on small populations is effectively the maximum." },
-    queries: pairs.map((pair) => ({ id: pair.baseline.id, category: pair.baseline.category, group: pair.baseline.group,
-      deltas: Object.fromEntries(Object.entries(metrics).map(([name, field]) => [name,
-        pair.baseline.metrics[field] === null ? null : Number(pair.candidate.metrics[field]) - Number(pair.baseline.metrics[field])])),
-      missingBefore: pair.baseline.relevantIds.filter((id) => !pair.baseline.rankedIds.includes(id)),
-      missingAfter: pair.candidate.relevantIds.filter((id) => !pair.candidate.rankedIds.includes(id)),
-      returnedBefore: pair.baseline.rankedIds.length, returnedAfter: pair.candidate.rankedIds.length })),
+    queries,
     gates: { passed: gates.every((gate) => gate.passed), checks: gates },
   };
 }
@@ -271,7 +295,7 @@ async function main() {
     dataset: { type: "string" }, background: { type: "string" },
     "allow-change": { type: "string", multiple: true }, resamples: { type: "string" }, seed: { type: "string" },
     "max-recall-drop": { type: "string" }, "max-no-answer-drop": { type: "string" },
-    "max-result-bytes": { type: "string" },
+    "max-result-bytes": { type: "string" }, "max-regressed-queries": { type: "string" },
   } });
   if (values.help) {
     console.log(`Usage: node examples/benchmark-compare.mjs --baseline REPORT --candidate REPORT [options]
@@ -285,6 +309,7 @@ Offline paired comparison. No server, model, or database is required.
   --max-recall-drop N          Fail on a first-pass macro recall drop larger than N
   --max-no-answer-drop N       Fail on an abstention-accuracy drop larger than N
   --max-result-bytes N         Fail if any candidate result exceeds this byte budget; missing measurements fail
+  --max-regressed-queries N    Fail if more than N distinct queries regress on any pass (matched baseline pass, otherwise baseline pass 1)
 Allowed changes: ${changeKeys.join(", ")}.
 JSON goes to stdout. Gates use observed deltas, not a statistical guarantee.`);
     return;
@@ -316,7 +341,7 @@ JSON goes to stdout. Gates use observed deltas, not a statistical guarantee.`);
   const result = compareReports(...reports, { corpus, allowChanges: values["allow-change"] ?? [],
     resamples: number("resamples", 2000), seed: number("seed", 20260916),
     maxRecallDrop: number("max-recall-drop", null), maxNoAnswerDrop: number("max-no-answer-drop", null),
-    maxResultBytes: number("max-result-bytes", null) });
+    maxResultBytes: number("max-result-bytes", null), maxRegressedQueries: number("max-regressed-queries", null) });
   console.log(JSON.stringify(result, null, 2));
   if (!result.gates.passed) { console.error("Comparison quality regression gate failed."); process.exitCode = 1; }
 }

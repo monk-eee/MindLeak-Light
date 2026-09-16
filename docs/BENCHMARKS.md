@@ -252,9 +252,57 @@ nonzero on a loss greater than the declared tolerance:
 node examples/benchmark-compare.mjs --baseline target/before.json --candidate target/after.json --allow-change binary --max-recall-drop 0 --max-no-answer-drop 0 > target/regression.json
 ```
 
+Add `--max-regressed-queries 0` to reject any executed query with a worse
+ranking/abstention metric or loss of a previously found gold fact. This catches
+offsetting gains and losses hidden by macro averages, including a different
+missing fact when Recall@k happens to stay unchanged. `queries` records
+`regressed` and `lostRelevantIds`; the gate names its affected query IDs. A
+nonnegative integer permits an explicit count tolerance. It does not decide
+whether an unseen paraphrase is semantically equivalent or change existing gold
+labels. The option is off unless supplied. Every candidate pass is compared with
+the corresponding baseline pass, or baseline pass 1 when that pass is absent.
+The gate counts distinct affected query IDs, not the number of failed executions;
+`regressedPasses` records each failing pass, its baseline pass, metric deltas and
+lost facts. The top-level metrics and each query's `deltas`/`lostRelevantIds`
+still describe pass 1 only. Later failures cannot be hidden by a good first pass,
+but repeats do not inflate the accuracy population or its confidence intervals.
+
 Missing metric populations cannot pass their gates. These gates use observed
 deltas, not an assertion of statistical equivalence. A passing benchmark still
 does not measure the correctness of a final agent answer or its real task value.
+
+### Automated Release Comparison
+
+PR CI runs [the regression orchestrator](../scripts/regression-check.mjs) inside
+the already-required PostgreSQL integration job. It verifies the public v0.4.0
+native archive checksum and frozen corpus hashes from
+[the baseline definition](../scripts/regression-baseline.json), then benchmarks
+both binaries in separate disposable databases with identical settings. The
+candidate is snapshotted once; reports must identify those same bytes, planned
+passes, concurrency, seed, and full query population.
+
+The engineering and useful-negative corpora cover 100 evaluated queries. Gates
+allow no macro recall/abstention drop, no regressed query, and at most 32768 bytes
+per candidate result. This fixed-fixture byte budget is not the server's general
+response cap. Corpus-audited baseline, candidate, and comparison reports are
+uploaded on success or failure. `summary.json` distinguishes incomplete execution
+from a completed comparison that failed; local output directories cannot be
+overwritten. Advance the pinned release or fixture budgets only with explicit
+review and retained before/after evidence, not to erase a failing result.
+
+The runner checks decoded database names rather than their URL spelling and
+forcibly terminates benchmark processes at their deadlines. A timed-out or
+incomplete run cannot produce a successful comparison. Container cleanup attempts
+all test-owned projects and reports all failures, even when a previous cleanup or
+log collection failed.
+
+The separate manual load workflow uses three passes at concurrency one and four,
+recording first/repeat p50/p95/p99, throughput, result bytes, and ranking changes.
+Those timings are descriptive on shared GitHub hosts. The local `--profile load`
+supports an optional warm-p95 threshold and explicit models on controlled hosts;
+provider weights and host conditions still require independent recording.
+Neither extra passes nor this frozen, exposed suite establish fresh accuracy.
+See [local commands](../DEVELOPERS.md#released-baseline-gate).
 
 ## Corpus and Metrics
 

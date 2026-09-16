@@ -89,6 +89,50 @@ The JavaScript integration example is optional and isolated from the server:
 test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 `npm --prefix examples run memory`. It writes one sample memory per run.
 
+### Released-Baseline Gate
+
+The required PostgreSQL CI job also runs
+[regression-check.mjs](scripts/regression-check.mjs) against the published native
+release pinned in [regression-baseline.json](scripts/regression-baseline.json).
+Both corpus hashes are frozen. The default model-free run evaluates 100 queries,
+fails individual regressions even when averages improve, and applies a 32 KiB
+result budget for these fixtures. No production latency target is inferred.
+
+Database names are compared after URL decoding, so differently escaped names
+cannot send both runs to the same database. Subprocess deadlines force termination
+of the benchmark process; timeout reports remain incomplete and cannot pass.
+
+For a local run, create two independent disposable databases, then:
+
+```sh
+cargo build --release --locked -p mindleak-mcp --bin mindleak-light
+npm ci --prefix examples --ignore-scripts
+export MINDLEAK_BASELINE_DATABASE_URL='postgresql://mindleak_light:mindleak-light-development-only@127.0.0.1:55432/mindleak_baseline_regression_test?sslmode=disable'
+export MINDLEAK_TEST_DATABASE_URL='postgresql://mindleak_light:mindleak-light-development-only@127.0.0.1:55432/mindleak_candidate_regression_test?sslmode=disable'
+node scripts/regression-check.mjs --candidate target/release/mindleak-light --output target/regression-local
+```
+
+The output directory must not already exist. The runner downloads and verifies
+the pinned native archive, or accepts the same verified archive through
+`--baseline-archive PATH`. It does not delete databases; remove only those you
+created after preserving reports. Ordinary `make ci` remains the core local
+gate; this additional published-baseline check runs automatically in PR CI.
+CI uploads JSON comparisons and logs even when a gate fails, for 30 days.
+
+Use `--profile load` for three passes at concurrency one and four. The **Release
+Regression Load Report** workflow is manual, not a PR timing gate. On a controlled
+host only, add `--max-warm-p95-ms N` with a justified budget. Model modes require
+explicit `--decomposition`, `--retrieval`, or `--relevance` flags in this profile
+and matching provider settings; the dispatched GitHub workflow remains model-free.
+Pin model weights/provider versions separately. See [benchmark guidance](docs/BENCHMARKS.md)
+and [ADR-0016](adr.d/0016-release-regression-gates.md).
+
+The per-query gate checks every executed candidate pass, comparing the matching
+baseline pass when present and baseline pass 1 otherwise. An affected query is
+counted once even if it fails repeatedly; `regressedPasses` identifies the failing
+passes and lost facts. Headline quality and confidence intervals still use only
+pass 1, so repeated runs are not additional accuracy observations.
+
 ### Architecture Diagrams
 
 The [architecture board](assets/architecture.excalidraw) contains four editable
@@ -142,6 +186,25 @@ same-episode context, and the migrated combined fragment/metadata search index.
 A second recreation replays a keyed write and verifies its original
 receipt and unchanged row counts. See [review status](docs/REVIEW-STATUS.md) for
 the integrated contracts and remaining quality questions.
+
+CI additionally tests the pinned v0.4.0 image and restores its real pre-upgrade
+backup into a fresh volume. To run that drill locally after building the image:
+
+```sh
+export MINDLEAK_UPGRADE_FROM="$(node -p 'require("./scripts/regression-baseline.json").image')"
+MINDLEAK_IMAGE=mindleak-light:all-in-one-test node scripts/container-smoke.mjs --restore
+```
+
+The restore target starts with PostgreSQL alone and no application tables. After
+`pg_restore`, the normal candidate starts and must recall the exact original
+source and replay the pre-upgrade keyed receipt. The test checks lifecycle and
+vector metadata, then deletes only its two own projects/volumes. This does not
+replace testing your deployment's off-machine backup storage, retention, or
+recovery time. The dump is not logged or uploaded.
+Cleanup attempts every owned project even if one removal fails. Test, log, or
+cleanup failures cannot turn the drill into a pass; the original test error and
+any failed removals are retained together. A stopped local process does not
+guarantee a remote provider stopped computing.
 
 To check Compose environment forwarding before building an image:
 
