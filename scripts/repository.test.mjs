@@ -98,6 +98,24 @@ test("quickstart documentation and editor config agree on a model-free setup", (
   assert.equal(defaults.MINDLEAK_RELEVANCE_MODEL, undefined);
 });
 
+test("README teaches the agent memory policy before the explicit tool smoke test", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const policyStart = readme.indexOf("\n## Give Your Agent a Memory Policy\n");
+  const smokeTestStart = readme.indexOf("\n## Try It\n");
+  assert.ok(policyStart > 0 && smokeTestStart > policyStart, "the agent policy must be a visible setup step before Try It");
+  const section = readme.slice(policyStart, smokeTestStart);
+  const policy = /```text\n([\s\S]*?)\n```/.exec(section)?.[1];
+  assert.ok(policy, "the README needs a ready-to-use agent policy, not only a link");
+  for (const term of ["recall_memory", "write_memory", "memoryId", "agentId"]) {
+    assert.ok(policy.includes(term), `the policy must explain ${term}`);
+  }
+  assert.match(policy, /verify/i);
+  assert.match(policy, /secrets/i);
+  assert.match(policy, /save nothing/i);
+  assert.ok(section.includes("docs/INTEGRATION.md#put-memory-into-the-agents-routine"));
+  assert.ok(readme.slice(0, policyStart).includes("#give-your-agent-a-memory-policy"));
+});
+
 for (const operation of ["write_memory", "recall_memory"]) {
   test(`agent example budgets ${operation} for sequential model requests`, (context) => {
     const directory = fixture(context);
