@@ -130,8 +130,10 @@ The test creates a unique Compose project with a `mindleak_light_test` database,
 checks auth and real MCP calls, recreates the container, verifies persisted rows,
 then deletes only its own volume. Set `MINDLEAK_UPGRADE_FROM` to an older published
 image to test replacing it with the candidate on that same volume. Required CI
-pins the published 0.1.0 image digest and checks exact raw records, IDs, vectors,
-links, embedding metadata, lifecycle defaults, and post-upgrade MCP recall.
+pins both published 0.1.0 and 0.2.0 image digests and checks exact raw records,
+IDs, vectors, links, embedding metadata, and post-upgrade MCP recall. The 0.1.0
+path checks lifecycle defaults; the 0.2.0 path also preserves existing context,
+pins, archival state, tiers, and feedback counters/timestamps.
 The candidate must also advertise retry-safe writes and return ranking/truncation
 metadata. A second recreation replays a keyed write and verifies its original
 receipt and unchanged row counts. See [review status](docs/REVIEW-STATUS.md) for

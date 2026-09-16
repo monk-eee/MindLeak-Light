@@ -56,12 +56,12 @@
   resolution is not supported. Providers may omit model metadata, so identity
   cannot always be verified from their response.
 - Unkeyed writes are atomic but not idempotent; blind retries can duplicate a
-  committed memory. The unreleased `requestId` option protects matching retries
+  committed memory. The `requestId` option, available from v0.3.0, protects matching retries
   only when the client retains its original ID, agent ID, and payload. Receipts
   live with their memory rows and report original write-time tiers, not current
   lifecycle state. Concurrent first attempts can duplicate provider work even
   though only one episode commits. This is not a general exactly-once guarantee.
-- Lifecycle retention, evidence links, and read-time decay are source features,
+- Lifecycle retention, evidence links, and read-time decay are implemented features,
   not a biological simulation or a measured longitudinal quality improvement.
   The half-lives, spaced-feedback thresholds, and priority discount are explicit
   initial policies. No automatic episodic replay, summary generation, or deletion.
@@ -69,14 +69,14 @@
   prove independent evidence, and trusted clients can submit mistaken feedback.
   Long-term/pinned means retained, not true; confirmed means a confirmation was
   recorded. Superseding a disputed fact requires an explicit correction.
-- Direct related-fact context is bounded to eight links per result and, in new
-  source builds, 32 KiB across serialized relationship arrays. A 512 KiB result-array
+- Direct related-fact context is bounded to eight links per result and, from
+  v0.3.0, 32 KiB across serialized relationship arrays. A 512 KiB result-array
   budget preserves primary facts or rejects an oversized request; it is not a
   token limit or a limit on the enclosing MCP wire message. Omitted context is
   reported by `relationshipsTruncated` and `relationshipCount`. This is not a
   recursive graph. Lifecycle cannot rescue facts outside the retrieval candidate
   pool. No automatic deduplication or re-embedding accompanies consolidation.
-- Source writes can archive, restore, or supersede existing facts through explicit
+- Writes can archive, restore, or supersede existing facts through explicit
   links; original episodes/text remain immutable. There is no destructive delete
   or automatic expiry tool. Operators manage backups and data erasure in Postgres;
   memories are not encrypted at the application layer.

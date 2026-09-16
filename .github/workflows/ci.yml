@@ -116,7 +116,13 @@ jobs:
           node-version: 22
       - run: npm ci --prefix examples --ignore-scripts
       - run: docker build --target all-in-one -f docker/Dockerfile -t mindleak-light:all-in-one-test .
-      - run: node scripts/container-smoke.mjs
+      - name: Upgrade from published 0.1.0
+        run: node scripts/container-smoke.mjs
         env:
           MINDLEAK_IMAGE: mindleak-light:all-in-one-test
           MINDLEAK_UPGRADE_FROM: monkeemagic/mindleak-light@sha256:9ac382f5ac6db6c43341fa5dac42581b077a95848885aa80c4a8b6fc0815e7a8
+      - name: Upgrade from published 0.2.0
+        run: node scripts/container-smoke.mjs
+        env:
+          MINDLEAK_IMAGE: mindleak-light:all-in-one-test
+          MINDLEAK_UPGRADE_FROM: monkeemagic/mindleak-light@sha256:393e710d65d802d66a0e023945312c365f14a1f88b085871f14ee5e219d43735

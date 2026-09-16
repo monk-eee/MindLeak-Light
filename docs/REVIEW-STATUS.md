@@ -1,7 +1,7 @@
 # Hardening Review Status
 
 This records the disposition of the 21-item review and the subsequent conceptual
-critique. It describes the integrated source, not the published v0.2.0 packages.
+critique. It describes the hardening included in v0.3.0, not the older v0.2.0 packages.
 The integration combines recall-contract PR #13 (`716029c`), modular-storage PR
 #14 (`545ec5d`), and retry-write PR #15 (`037dbf3`, merged to main as `3703b7a`).
 Their individual test runs are not evidence that the combined revision works.

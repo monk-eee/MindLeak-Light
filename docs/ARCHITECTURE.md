@@ -1,8 +1,8 @@
 # Architecture
 
-This describes the integrated source: v0.2.0 contextual fact lifecycle, hybrid
-recall, cached query embeddings, and provider safeguards, plus unreleased
-retry-safe writes, modular storage, response budgets, and ranking diagnostics.
+This describes v0.3.0: contextual fact lifecycle, hybrid recall, shared query
+embeddings, provider safeguards, retry-safe writes, modular storage, response
+budgets, and ranking diagnostics.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
 All four diagrams are editable frames in the
