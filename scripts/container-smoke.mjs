@@ -373,6 +373,51 @@ try {
         assert.deepEqual(requestReceipts(), receiptsBefore);
       }
       if (lifecycleBefore && legacyReceipt) assert.deepEqual(lifecycleRecords(), lifecycleBefore);
+      const freshRequest = {
+        agentId: `${project}-fresh`, requestId: randomUUID(),
+        text: "  FreshRestoreTextMarker persists a newly written episode.  ",
+        context: { scope: activeProject, source: "FreshRestoreSourceMarker" },
+      };
+      const verifyFreshWrite = async expected => withClient(
+        `http://${compose("port", "mindleak-light", "8088")}`, async client => {
+          const written = await writeReceipt(client, freshRequest);
+          assert.notEqual(written.memoryId, restoredReceipt.memoryId, "Fresh write must not replay the historical episode");
+          if (expected) assert.deepEqual(written, expected, "New post-restore receipt changed after restart");
+          const recalled = await client.callTool({
+            name: "recall_memory", arguments: {
+              query: "FreshRestoreTextMarker FreshRestoreSourceMarker", matchMode: "all",
+              agentId: freshRequest.agentId, scope: freshRequest.context.scope, limit: 5,
+            },
+          });
+          assert.ok(!recalled.isError, "Post-restore keyword search failed");
+          const matches = recalled.structuredContent?.results;
+          assert.equal(matches?.length, 1, "Fresh post-restore text and metadata must both be indexed");
+          assert.equal(matches[0].memoryId, written.memoryId);
+          assert.equal(matches[0].fragmentId, written.fragments[0].fragmentId);
+          const inspected = await client.callTool({
+            name: "recall_memory", arguments: {
+              fragmentId: matches[0].fragmentId, agentId: freshRequest.agentId, scope: freshRequest.context.scope,
+            },
+          });
+          assert.ok(!inspected.isError, "Fresh post-restore source inspection failed");
+          assert.equal(inspected.structuredContent?.rawText, freshRequest.text);
+          assert.equal(inspected.structuredContent?.context.source, freshRequest.context.source);
+          return written;
+        });
+      const beforeFresh = snapshot();
+      const freshReceipt = await verifyFreshWrite();
+      assert.deepEqual(snapshot(), { ...beforeFresh, memories: beforeFresh.memories + 1, fragments: beforeFresh.fragments + 1 });
+      const afterFresh = { counts: snapshot(), records: persistedRecords(), lifecycle: lifecycleRecords(), receipts: requestReceipts() };
+      compose("down");
+      compose("up", "--detach", "--wait", "--wait-timeout", "120");
+      await verifyFreshWrite(freshReceipt);
+      assert.deepEqual(snapshot(), afterFresh.counts, "Fresh post-restore retry created extra rows");
+      assert.deepEqual(persistedRecords(), afterFresh.records, "Restart changed fresh or restored data");
+      assert.deepEqual(lifecycleRecords(), afterFresh.lifecycle);
+      assert.deepEqual(requestReceipts(), afterFresh.receipts);
+      assert.equal(sql("SELECT count(*) FROM public.memories WHERE context->>'source' = 'FreshRestoreSourceMarker'"),
+        "1", "Restoration must verify a fresh indexed write, not only replay an old receipt");
+      console.log("Fresh restored write: text/metadata indexing, exact source, restart persistence and duplicate-free keyed replay verified.");
       console.log("Backup restoration: real pg_dump restored into a fresh volume; exact data, lifecycle, receipts and MCP source/document recall verified.");
     } finally {
       composeFiles = ["docker/compose.all-in-one.yml"];

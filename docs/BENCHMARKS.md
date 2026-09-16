@@ -291,10 +291,22 @@ overwritten. Advance the pinned release or fixture budgets only with explicit
 review and retained before/after evidence, not to erase a failing result.
 
 The runner checks decoded database names rather than their URL spelling and
-forcibly terminates benchmark processes at their deadlines. A timed-out or
-incomplete run cannot produce a successful comparison. Container cleanup attempts
+owns an isolated process group/tree and temporary root for each benchmark.
+Forced termination also stops descendants in that group/tree; the parent removes
+the child-created MCP executable rather than relying on a killed child's `finally`
+block. Output capture is bounded. A timed-out or incomplete run cannot produce
+a successful comparison, and cleanup failure invalidates the final summary.
+Container cleanup attempts
 all test-owned projects and reports all failures, even when a previous cleanup or
 log collection failed.
+
+The whole run has a monotonic execution deadline: 600 seconds for PR checks,
+900 seconds for load reports by default. Downloads and subprocesses share its
+remaining budget; it is not restarted for every query or corpus. Override with
+integer `--deadline-seconds` (PR 1..600, load 1..7200). CI step timeouts are longer
+than runner deadlines so failure summaries, cleanup and artifact upload can finish.
+Longer model evaluations belong on controlled hosts with explicit settings and
+budgets, not the shared-runner PR gate.
 
 The separate manual load workflow uses three passes at concurrency one and four,
 recording first/repeat p50/p95/p99, throughput, result bytes, and ranking changes.

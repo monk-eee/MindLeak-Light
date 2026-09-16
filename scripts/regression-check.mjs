@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -13,10 +13,80 @@ import { compareReports } from "../examples/benchmark-compare.mjs";
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 
-export function captureBenchmark(args, options) {
-  return spawnSync(process.execPath, args, {
-    encoding: "utf8", maxBuffer: 16 * 1024 * 1024, ...options, killSignal: "SIGKILL",
-  });
+export async function captureBenchmark(args, { cwd, env = process.env, timeout = 600000,
+  maxBuffer = 16 * 1024 * 1024, signal } = {}) {
+  assert.ok(Number.isSafeInteger(timeout) && timeout > 0, "Benchmark timeout must be a positive integer.");
+  assert.ok(Number.isSafeInteger(maxBuffer) && maxBuffer > 0, "Capture buffer must be a positive integer.");
+  signal?.throwIfAborted();
+  const temporary = await mkdtemp(join(tmpdir(), "mindleak-benchmark-run-"));
+  try {
+    return await new Promise((resolve) => {
+      const child = spawn(process.execPath, args, {
+        cwd, env: { ...env, TMPDIR: temporary, TMP: temporary, TEMP: temporary },
+        detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+      });
+      const output = { stdout: [], stderr: [] };
+      const sizes = { stdout: 0, stderr: 0 };
+      let failure;
+      let termination;
+      const terminate = () => {
+        if (termination) return termination;
+        termination = (async () => {
+          if (!child.pid) return;
+          if (process.platform !== "win32") {
+            try { process.kill(-child.pid, "SIGKILL"); }
+            catch (error) { if (error.code !== "ESRCH") throw error; }
+            return;
+          }
+          await new Promise((complete, reject) => {
+            const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+              windowsHide: true, stdio: "ignore",
+            });
+            const deadline = setTimeout(() => killer.kill("SIGKILL"), 5000);
+            killer.once("error", reject);
+            killer.once("close", code => {
+              clearTimeout(deadline);
+              if (code === 0) complete();
+              else reject(new Error("Could not terminate the owned benchmark process tree."));
+            });
+          });
+        })().catch(error => {
+          failure = new Error("Benchmark process-tree cleanup failed.", { cause: error });
+          child.kill("SIGKILL");
+        });
+        return termination;
+      };
+      const stop = error => {
+        failure ??= error;
+        void terminate();
+      };
+      const abort = () => stop(Object.assign(new Error("Benchmark execution cancelled."), { code: "ABORT_ERR" }));
+      const deadline = setTimeout(() => stop(Object.assign(new Error("Benchmark execution timed out."), { code: "ETIMEDOUT" })), timeout);
+      for (const stream of ["stdout", "stderr"]) {
+        child[stream].on("data", chunk => {
+          const available = maxBuffer - sizes[stream];
+          if (available > 0) output[stream].push(chunk.subarray(0, available));
+          sizes[stream] += chunk.length;
+          if (sizes[stream] > maxBuffer) stop(Object.assign(new Error("Benchmark output exceeded its capture bound."), { code: "ENOBUFS" }));
+        });
+      }
+      child.once("error", error => { failure ??= error; });
+      child.once("exit", () => {
+        if (process.platform !== "win32") void terminate();
+      });
+      child.once("close", async (status, exitSignal) => {
+        clearTimeout(deadline);
+        signal?.removeEventListener("abort", abort);
+        await termination;
+        resolve({ status, signal: exitSignal, error: failure,
+          stdout: Buffer.concat(output.stdout).toString("utf8"), stderr: Buffer.concat(output.stderr).toString("utf8") });
+      });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    });
+  } finally {
+    await rm(temporary, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
 }
 
 export function regressionPlan(environment, options = {}, root = repository) {
@@ -27,6 +97,13 @@ export function regressionPlan(environment, options = {}, root = repository) {
   assert.match(definition.image, /^monkeemagic\/mindleak-light@sha256:[a-f0-9]{64}$/);
   assert.ok(["pr", "load"].includes(options.profile ?? "pr"), "Choose profile pr or load.");
   const profile = options.profile ?? "pr";
+  const deadlineSeconds = options["deadline-seconds"] === undefined
+    ? (profile === "pr" ? 600 : 900) : Number(options["deadline-seconds"]);
+  assert.ok((options["deadline-seconds"] === undefined
+    || (typeof options["deadline-seconds"] === "string" && options["deadline-seconds"].trim()))
+    && Number.isSafeInteger(deadlineSeconds) && deadlineSeconds >= 1
+    && deadlineSeconds <= (profile === "pr" ? 600 : 7200),
+  "Runner deadline must be integer seconds in 1..600 for pr or 1..7200 for load.");
   const baseEnvironment = { ...environment, MINDLEAK_TEST_DATABASE_URL: environment.MINDLEAK_BASELINE_DATABASE_URL };
   const configurations = [baseEnvironment, environment].map(env => benchmarkSettings(env, {
     k: String(definition.limit), split: "evaluation", "query-seed": String(definition.querySeed),
@@ -57,20 +134,20 @@ export function regressionPlan(environment, options = {}, root = repository) {
     assert.equal(dataset.queries.filter(query => query.split === "evaluation").length, entry.evaluationQueries);
     return { ...entry, dataset };
   });
-  return { definition, profile, settings, corpora,
+  return { definition, profile, settings, corpora, deadlineMs: deadlineSeconds * 1000,
     workloads: profile === "pr" ? [{ concurrency: 1, passes: 1 }] : [{ concurrency: 1, passes: 3 }, { concurrency: 4, passes: 3 }] };
 }
 
-async function releaseArchive(definition, path) {
+async function releaseArchive(definition, path, signal, timeout) {
   const archive = definition.archives[`${process.platform}-${process.arch}`];
   assert.ok(archive, "This host has no pinned native baseline archive.");
   assert.match(archive.name, /^mindleak-light-\d+\.\d+\.\d+-[a-z0-9_-]+\.tar\.gz$/);
   assert.match(archive.sha256, /^[a-f0-9]{64}$/);
   let bytes;
-  if (path) bytes = await readFile(path);
+  if (path) bytes = await readFile(path, { signal });
   else {
     const response = await fetch(`https://github.com/monk-eee/MindLeak-Light/releases/download/${definition.release}/${archive.name}`,
-      { signal: AbortSignal.timeout(120000) });
+      { signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]) });
     assert.ok(response.ok && response.body, `Baseline archive download failed: HTTP ${response.status}`);
     const chunks = [];
     let size = 0;
@@ -95,18 +172,29 @@ export async function runRegression(environment, options = {}) {
   const save = (name, value) => writeFile(join(output, `${name}.json`), JSON.stringify(value, null, 2) + "\n");
   const summary = { regressionVersion: 1, baseline: { release: plan.definition.release, source: plan.definition.source },
     candidateSha256: hash(candidateBytes), profile: plan.profile, complete: false, passed: false, runs: [],
-    limits: { maxRegressedQueries: plan.definition.maxRegressedQueries, maxResultBytes: plan.definition.maxResultBytes },
+    limits: { maxRegressedQueries: plan.definition.maxRegressedQueries, maxResultBytes: plan.definition.maxResultBytes,
+      deadlineSeconds: plan.deadlineMs / 1000 },
     caveat: "Frozen, exposed fixtures detect regressions; they do not establish population accuracy. Timings on shared runners are descriptive, not a production guarantee." };
   await save("summary", summary);
   const directory = await mkdtemp(join(tmpdir(), "mindleak-release-regression-"));
+  const started = performance.now();
+  const expires = started + plan.deadlineMs;
+  const cancellation = new AbortController();
+  const deadlineError = () => Object.assign(new Error("Regression runner deadline exceeded."), { code: "ETIMEDOUT" });
+  const deadline = setTimeout(() => cancellation.abort(deadlineError()), plan.deadlineMs);
+  const remaining = maximum => {
+    if (cancellation.signal.aborted || performance.now() >= expires) throw deadlineError();
+    return Math.max(1, Math.min(maximum, Math.ceil(expires - performance.now())));
+  };
+  let failure;
   try {
-    const { archive, bytes } = await releaseArchive(plan.definition, options["baseline-archive"]);
+    const { archive, bytes } = await releaseArchive(plan.definition, options["baseline-archive"], cancellation.signal, remaining(120000));
     await writeFile(join(directory, "baseline.tar.gz"), bytes, { flag: "wx", mode: 0o600 });
     const binaryName = process.platform === "win32" ? "mindleak-light.exe" : "mindleak-light";
     execFileSync("tar", ["-xzf", join(directory, "baseline.tar.gz"), "-C", directory, `./${binaryName}`],
-      { stdio: ["ignore", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" });
+      { stdio: ["ignore", "pipe", "pipe"], timeout: remaining(30000), killSignal: "SIGKILL" });
     const baseline = join(directory, binaryName);
-    assert.equal(execFileSync(baseline, ["--version"], { cwd: directory, encoding: "utf8", timeout: 10000, killSignal: "SIGKILL" }).trim(),
+    assert.equal(execFileSync(baseline, ["--version"], { cwd: directory, encoding: "utf8", timeout: remaining(10000), killSignal: "SIGKILL" }).trim(),
       `mindleak-light ${plan.definition.release.slice(1)}`, "Baseline version does not match its pinned release.");
     const snapshot = join(directory, process.platform === "win32" ? "candidate.exe" : "candidate");
     await writeFile(snapshot, candidateBytes, { mode: 0o700, flag: "wx" });
@@ -125,8 +213,8 @@ export async function runRegression(environment, options = {}) {
             "--query-seed", String(plan.definition.querySeed), "--passes", String(workload.passes), "--concurrency", String(workload.concurrency),
             "--decomposition", plan.settings.configuration.decomposition, "--retrieval", plan.settings.configuration.retrieval,
             "--relevance", plan.settings.configuration.relevance, "--label", `${name}-${role}`];
-          const execution = captureBenchmark(args, { cwd: repository,
-            timeout: plan.profile === "pr" ? 600000 : 7200000,
+          const execution = await captureBenchmark(args, { cwd: repository,
+            timeout: remaining(plan.profile === "pr" ? 600000 : 7200000), signal: cancellation.signal,
             env: { ...environment, NODE_OPTIONS: "", MINDLEAK_TEST_DATABASE_URL: role === "baseline"
               ? environment.MINDLEAK_BASELINE_DATABASE_URL : environment.MINDLEAK_TEST_DATABASE_URL } });
           await writeFile(join(output, `${name}-${role}.stderr.log`), execution.stderr ?? "");
@@ -138,6 +226,7 @@ export async function runRegression(environment, options = {}) {
           assert.equal(reports[role].workload.concurrency, workload.concurrency, "The runner changed the planned concurrency.");
           assert.equal(reports[role].workload.querySeed, plan.definition.querySeed, "The runner changed the planned query seed.");
         }
+        remaining(1);
         const comparison = compareReports(reports.baseline, reports.candidate, {
           corpus: { dataset: corpus.dataset, sha256: corpus.sha256 }, allowChanges: ["binary"],
           maxRecallDrop: 0, maxNoAnswerDrop: 0, maxRegressedQueries: plan.definition.maxRegressedQueries,
@@ -158,17 +247,30 @@ export async function runRegression(environment, options = {}) {
         console.log(`${name}: ${comparison.gates.passed ? "PASS" : "FAIL"}, ${comparison.uniqueQueries} paired queries; reports in ${output}`);
       }
     }
+    remaining(1);
     summary.complete = true;
     summary.passed = summary.runs.every(run => run.passed);
-    await save("summary", summary);
-    return summary;
   } catch (error) {
-    summary.error = error instanceof assert.AssertionError ? error.message : "Regression execution failed before all comparisons completed.";
-    await save("summary", summary);
-    throw error;
+    failure = error;
+    summary.complete = false;
+    summary.passed = false;
+    summary.error = cancellation.signal.aborted || performance.now() >= expires
+      ? "Regression runner deadline exceeded; remaining comparisons were not run."
+      : error instanceof assert.AssertionError ? error.message : "Regression execution failed before all comparisons completed.";
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    clearTimeout(deadline);
+    try { await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
+    catch (error) {
+      failure = new AggregateError(failure ? [failure, error] : [error], "Regression execution or temporary-file cleanup failed.");
+      summary.complete = false;
+      summary.passed = false;
+      summary.error = "Regression temporary-file cleanup failed.";
+    }
+    summary.elapsedMs = Math.round(performance.now() - started);
+    await save("summary", summary);
   }
+  if (failure) throw failure;
+  return summary;
 }
 
 async function main() {
@@ -176,7 +278,7 @@ async function main() {
     help: { type: "boolean", short: "h" }, candidate: { type: "string" }, output: { type: "string" },
     "baseline-archive": { type: "string" }, profile: { type: "string" },
     decomposition: { type: "string" }, retrieval: { type: "string" }, relevance: { type: "string" },
-    "max-warm-p95-ms": { type: "string" },
+    "max-warm-p95-ms": { type: "string" }, "deadline-seconds": { type: "string" },
   } });
   if (values.help) {
     console.log(`Usage: node scripts/regression-check.mjs --candidate BINARY --output NEW_DIRECTORY [options]
@@ -185,6 +287,7 @@ Requires distinct MINDLEAK_BASELINE_DATABASE_URL and MINDLEAK_TEST_DATABASE_URL,
 both disposable *_test databases. The runner never deletes either database.
 Downloads and checks the pinned native release; --baseline-archive PATH allows an offline copy.
   --profile pr|load          pr: one model-free pass; load: three passes at concurrency 1 and 4
+  --deadline-seconds N       Whole-run execution budget; pr 1..600 (default 600), load 1..7200 (default 900)
   --max-warm-p95-ms N        Optional load-only latency gate for a controlled host
   --decomposition MODE      load only: sentences|openai
   --retrieval MODE          load only: keyword|vector|hybrid

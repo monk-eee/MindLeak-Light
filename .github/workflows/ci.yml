@@ -74,6 +74,7 @@ jobs:
       - run: npm ci --prefix examples --ignore-scripts
       - run: cargo build --release --locked -p mindleak-mcp --bin mindleak-light
       - name: Compare with the pinned released baseline
+        timeout-minutes: 12
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
           MINDLEAK_BASELINE_DATABASE_URL: postgresql://mindleak_light:mindleak-light-test-only@127.0.0.1:5432/mindleak_baseline_regression_test?sslmode=disable
@@ -81,7 +82,7 @@ jobs:
         run: |
           docker exec "$POSTGRES_CONTAINER" createdb -U mindleak_light mindleak_baseline_regression_test
           docker exec "$POSTGRES_CONTAINER" createdb -U mindleak_light mindleak_candidate_regression_test
-          node scripts/regression-check.mjs --candidate target/release/mindleak-light --output target/regression-pr
+          node scripts/regression-check.mjs --candidate target/release/mindleak-light --output target/regression-pr --deadline-seconds 600
       - name: Preserve release comparison evidence
         if: always()
         uses: actions/upload-artifact@v7

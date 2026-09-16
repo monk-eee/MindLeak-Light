@@ -10,7 +10,7 @@ jobs:
   measure:
     name: First and Repeat Recall Under Load
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     services:
       postgres:
         image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
@@ -36,13 +36,15 @@ jobs:
           node-version: 22
       - run: npm ci --prefix examples --ignore-scripts
       - run: cargo build --release --locked -p mindleak-mcp --bin mindleak-light
+        timeout-minutes: 15
       - name: Compare first and repeat passes at concurrency one and four
+        timeout-minutes: 17
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           docker exec "$POSTGRES_CONTAINER" createdb -U mindleak_light mindleak_baseline_load_test
           docker exec "$POSTGRES_CONTAINER" createdb -U mindleak_light mindleak_candidate_load_test
-          node scripts/regression-check.mjs --candidate target/release/mindleak-light --profile load --output target/regression-load
+          node scripts/regression-check.mjs --candidate target/release/mindleak-light --profile load --output target/regression-load --deadline-seconds 900
       - name: Preserve load reports even on failure
         if: always()
         uses: actions/upload-artifact@v7

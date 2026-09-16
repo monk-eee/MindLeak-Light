@@ -99,8 +99,12 @@ fails individual regressions even when averages improve, and applies a 32 KiB
 result budget for these fixtures. No production latency target is inferred.
 
 Database names are compared after URL decoding, so differently escaped names
-cannot send both runs to the same database. Subprocess deadlines force termination
-of the benchmark process; timeout reports remain incomplete and cannot pass.
+cannot send both runs to the same database. Each benchmark runs in an owned Unix
+process group, or a Windows process tree terminated with `taskkill /T /F` on a
+forced stop. The parent gives each invocation a private temporary directory and
+removes it after the processes close, including after timeouts and output overflow.
+This is process cleanup, not a sandbox for untrusted binaries; hard termination
+of the orchestrator or host can still interrupt cleanup.
 
 For a local run, create two independent disposable databases, then:
 
@@ -118,6 +122,17 @@ the pinned native archive, or accepts the same verified archive through
 created after preserving reports. Ordinary `make ci` remains the core local
 gate; this additional published-baseline check runs automatically in PR CI.
 CI uploads JSON comparisons and logs even when a gate fails, for 30 days.
+
+`--deadline-seconds N` sets one execution budget covering archive download,
+extraction, version checks, every benchmark invocation, and comparisons. PR runs
+default to 600 seconds and accept 1..600; load runs default to 900 seconds and
+accept 1..7200 for explicit longer controlled-host evaluations. Each operation
+receives only the remaining budget. Deadline expiry cancels pending work, stops
+scheduling new comparisons, and leaves a failed, incomplete summary. Success is
+written only after temporary-file cleanup; `elapsedMs` includes that cleanup.
+CI allows 12 minutes for the 10-minute PR runner and 17 minutes for the 15-minute
+load runner. The load job allows 45 minutes overall with a 15-minute build limit,
+leaving time for setup, cleanup and the always-run artifact upload.
 
 Use `--profile load` for three passes at concurrency one and four. The **Release
 Regression Load Report** workflow is manual, not a PR timing gate. On a controlled
@@ -197,8 +212,11 @@ MINDLEAK_IMAGE=mindleak-light:all-in-one-test node scripts/container-smoke.mjs -
 
 The restore target starts with PostgreSQL alone and no application tables. After
 `pg_restore`, the normal candidate starts and must recall the exact original
-source and replay the pre-upgrade keyed receipt. The test checks lifecycle and
-vector metadata, then deletes only its two own projects/volumes. This does not
+source and replay the pre-upgrade keyed receipt. It must then create a new keyed
+episode, find it with an all-term query spanning new text and source metadata,
+and inspect its exact raw text. Another restart must retain that new search
+result and replay its new receipt without creating rows or changing lifecycle,
+vector metadata, or old data. The test then deletes only its two own projects/volumes. This does not
 replace testing your deployment's off-machine backup storage, retention, or
 recovery time. The dump is not logged or uploaded.
 Cleanup attempts every owned project even if one removal fails. Test, log, or
