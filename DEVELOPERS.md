@@ -110,6 +110,10 @@ then deletes only its own volume. Set `MINDLEAK_UPGRADE_FROM` to an older publis
 image to test replacing it with the candidate on that same volume. Required CI
 pins the published 0.1.0 image digest and checks exact raw records, IDs, vectors,
 links, embedding metadata, lifecycle defaults, and post-upgrade MCP recall.
+The candidate must also advertise retry-safe writes and return ranking/truncation
+metadata. A second recreation replays a keyed write and verifies its original
+receipt and unchanged row counts. See [review status](docs/REVIEW-STATUS.md) for
+the integrated contracts and remaining quality questions.
 
 To check Compose environment forwarding before building an image:
 

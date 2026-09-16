@@ -504,6 +504,21 @@ test("decomposition scoring accepts reviewed variants but does not credit merged
   assert.equal(scoreDecomposition(compound, []).verifiedFactRecall, 0);
 });
 
+test("semantic-dependency cases reject disconnected causes and invented interpretations", () => {
+  const corpus = validateDataset(JSON.parse(readFileSync(new URL("./fixtures/semantic-dependencies-v1.json", import.meta.url), "utf8")));
+  assert.equal(corpus.memories.length, 6);
+  const labelled = new Set(corpus.queries.flatMap((query) => query.relevantIds));
+  for (const memory of corpus.memories) {
+    assert.ok(memory.facts.every((fact) => labelled.has(fact.id)));
+    assert.equal(scoreDecomposition(memory, memory.facts.map((fact) => fact.text)).verifiedFactRecall, 1);
+    for (const fragments of memory.rejectedDecompositions) {
+      const score = scoreDecomposition(memory, fragments);
+      assert.ok(score.verifiedFactRecall < 1, `${memory.id} lost or invented a semantic dependency`);
+      assert.ok(score.unverified.length > 0);
+    }
+  }
+});
+
 test("fact verification preserves case-sensitive identifiers and assertion punctuation", () => {
   const memory = { id: "flag", text: "Cirrus enables the allowHTTP flag." };
   assert.equal(scoreDecomposition(memory, ["Cirrus enables the allowHttp flag."]).verifiedFactRecall, 0);

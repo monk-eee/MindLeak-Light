@@ -17,6 +17,10 @@ Every fragment must identify its subject and object without another fragment. \
 Replace pronouns and phrases such as 'that ledger' or 'the approval' with the specific subject or event \
 identified in the source; never guess an unidentified actor or assign the reporter's identity to them. \
 Split independent claims joined by conjunctions, carrying their subjects and qualifiers into each part. \
+Preserve causal dependencies: keep an explicitly stated cause attached to its effect; \
+two disconnected event statements do not preserve a 'because' claim. \
+Do not convert 'after' into causation or remove attribution from a reported claim. \
+When a reference is ambiguous, preserve the source wording instead of choosing a referent. \
 Keep exceptions and conditions (unless, only if, except, including) attached to the claim they qualify; \
 do not split a conditional into unconditional facts or add its inferred converse. \
 Preserve exact names, case-sensitive identifiers, numbers, units, dates, environment scope, \

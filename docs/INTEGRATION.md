@@ -215,6 +215,12 @@ Limits: 32768 UTF-8 bytes per memory/query, 256 bytes per agent ID, 1..64
 fragments of at most 4096 bytes, and 1..50 recall results (default 10).
 Blank inputs are rejected. Raw text and all fragments commit atomically.
 
+Fact directives bind to exact normalized fragment text, not output position or a
+fuzzy match. Unmatched input reports `facts[index].text` without disclosing the
+source text, and stops before embedding/storage. A `decompose_memory` preview can
+help prepare directives but does not reserve a model's next output. Never attach
+a correction to a different fact merely to make validation pass.
+
 Lifecycle controls are available in **v0.2.0**. Existing two-field writes remain valid,
 with short-term retention by default. Facts share context through their source
 episode and can link to existing fragment IDs explicitly. See
@@ -277,7 +283,10 @@ current lifecycle state.
 Reusing that agent/request pair with different text, context, or facts returns
 an invalid-parameters error without changing the original memory. Preserve raw
 text whitespace, fact order, and link order. Omitted optional fields and their
-normal defaults are equivalent; JSON object property order does not matter.
+typed defaults (such as `pinned: false`, `tier: "short_term"`, and `links: []`)
+are equivalent; JSON object property order does not matter. Supplying an explicit
+importance value instead of omitting it changes the canonical request, even
+when it equals the server's default salience. Retain the original arguments.
 Use a new UUID for a genuinely new write, including a corrected request payload.
 Neither the key nor `agentId` is authentication or a tenant boundary.
 
@@ -288,6 +297,21 @@ the key guarantees one committed episode, not one provider invocation. Database
 failures and timeouts remain errors, not successful replays without a stored
 receipt. The key and receipt persist with the memory; deleting that row also
 removes retry protection. No automatic client retry loop is added.
+
+### Bounded Recall Context
+
+Source builds after v0.2.0 add `rankingPriority` and `relationshipsTruncated` to
+each recall match. `score` is unchanged; `rankingPriority` exposes the actual
+lifecycle-adjusted ordering signal. Both are ranking values, not confidence.
+`relationshipCount` counts eligible direct links before limits; truncation is
+explicit when the result includes only some of them.
+
+Each result retains at most eight links, with a shared 32 KiB budget for serialized
+relationship arrays across the response. Primary results are reserved first; a
+512 KiB result-array cap fails oversized primary responses with a request to lower
+`limit`. No fact text is silently shortened. JSON escaping is included, while the
+MCP envelope and dual representations add separate overhead. See
+[lifecycle recall](LIFECYCLE.md#recall-with-context-and-history) for allocation rules.
 
 ## Clients That Need Stdio
 

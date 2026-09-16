@@ -99,11 +99,11 @@ impl MemoryService {
         }
         let fragments = self.decompose_memory(text).await?;
         let mut policies = HashMap::new();
-        for directive in options.facts {
+        for (index, directive) in options.facts.into_iter().enumerate() {
             if !fragments.contains(&directive.text) {
-                return Err(InvalidInput(
-                    "fact directives must match distinct decomposed fragment text exactly".into(),
-                )
+                return Err(InvalidInput(format!(
+                    "facts[{index}].text must match a decomposed fragment exactly"
+                ))
                 .into());
             }
             policies.insert(directive.text.clone(), directive);

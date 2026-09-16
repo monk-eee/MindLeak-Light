@@ -19,6 +19,8 @@ pub const MAX_FRAGMENTS: usize = 64;
 pub const MAX_RECALL_LIMIT: usize = 50;
 pub const MAX_FACT_LINKS: usize = 8;
 pub const MAX_MEMORY_LINKS: usize = 128;
+pub const MAX_RELATED_CONTEXT_BYTES: usize = 32 * 1024;
+pub const MAX_RECALL_RESULT_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -98,8 +100,10 @@ pub struct RecallMatch {
     pub context: MemoryContext,
     pub lifecycle: FactLifecycle,
     pub activation: f64,
+    pub ranking_priority: f64,
     pub relationships: Vec<RelatedFact>,
     pub relationship_count: i64,
+    pub relationships_truncated: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

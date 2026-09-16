@@ -1,31 +1,68 @@
 # Architecture
 
-This describes the current source: v0.2.0 contextual fact lifecycle, hybrid
-recall, similarity thresholds, cached query embeddings, provider response bounds,
-and the subsequent unreleased retry-safe write contract.
+This describes the integrated source: v0.2.0 contextual fact lifecycle, hybrid
+recall, cached query embeddings, and provider safeguards, plus unreleased
+retry-safe writes, modular storage, response budgets, and ranking diagnostics.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
-```text
-Claude / GPT / agents
-        |
-        | MCP: stdio or authenticated Streamable HTTP
-        v
-MindLeak Light (one executable)
-  MemoryService
-        -> MemoryDecomposer -> sentences/lists, or optional chat endpoint
-        -> TextEmbedder     -> optional embedding endpoint
-    -> MemoryStore     -> PostgreSQL transaction
-        -> MemoryRetriever -> keyword, vector, or hybrid rank fusion + lifecycle priority
-        |
-        v
-PostgreSQL: memories, fragments, relationships
+```mermaid
+flowchart TD
+        Agent["Agent and MCP client"] --> MCP["Official MCP SDK: stdio or authenticated HTTP"]
+        MCP --> Service["MemoryService"]
+        Service -->|"prepare or preview"| Decomposition["Sentences/lists or optional chat extraction"]
+        Service -->|"prepare write vectors"| Embedding["Optional TextEmbedder"]
+        Service -->|"write or replay"| Store["MemoryStore: receipts and atomic transactions"]
+        Service -->|"recall"| Retrieval["MemoryRetriever: keyword, vector, or hybrid"]
+        Decomposition -.->|"opt-in"| Models["External model providers"]
+        Embedding -.-> Models
+        Retrieval -.->|"embedding misses and optional selection"| Models
+        Store --> Database[("PostgreSQL: memories, fragments, relationships")]
+        Retrieval --> Database
 ```
+
+## Storage Module Map
+
+The PostgreSQL crate keeps its existing public store/retriever names at the crate
+root. Internal modules separate responsibilities; retry receipts stay in the
+existing store rather than a parallel persistence path:
+
+| Module | Responsibility |
+|---|---|
+| [lib.rs](../crates/mindleak-storage-postgres/src/lib.rs) | Store types and public retriever re-exports |
+| [connection.rs](../crates/mindleak-storage-postgres/src/connection.rs) | TLS, pooling, schema initialization, model binding, and health |
+| [persistence.rs](../crates/mindleak-storage-postgres/src/persistence.rs) | Validated atomic writes, request-key arbitration, and immutable receipt lookup/replay |
+| [queries.rs](../crates/mindleak-storage-postgres/src/queries.rs) | Filtered SQL searches and result decoding |
+| [retrieval.rs](../crates/mindleak-storage-postgres/src/retrieval.rs) | Keyword/vector/hybrid strategies, query cache, and rank fusion |
+| [lifecycle.rs](../crates/mindleak-storage-postgres/src/lifecycle.rs) | Explicit feedback updates, activation priority, and bounded relationship reads |
 
 ## Write
 
+```mermaid
+flowchart TD
+        Input["write_memory arguments"] --> Validate["Validate intrinsic input limits"]
+        Validate --> Key{"requestId supplied?"}
+        Key -->|"yes"| Lookup["Lookup agentId + requestId"]
+        Lookup --> Receipt{"Committed receipt?"}
+        Receipt -->|"same canonical payload"| Replay["Return original result; no inference or lifecycle replay"]
+        Receipt -->|"different payload"| Conflict["Error: requestId conflict"]
+        Receipt -->|"absent"| Prepare["Decompose, bind exact directives, validate vectors"]
+        Key -->|"no"| Prepare
+        Prepare --> Transaction["Begin transaction and insert episode plus receipt"]
+        Transaction --> Insert{"New row inserted?"}
+        Insert -->|"yes"| Persist["Insert fragments; lock target UUIDs in order; apply links"]
+        Persist --> Commit["Commit all data and lifecycle effects"]
+        Commit --> Result["Return memoryId and original fragment receipt"]
+        Insert -->|"concurrent key conflict"| Winner["Read and verify winning committed receipt"]
+        Winner -->|"same payload"| Replay
+        Winner -->|"different payload"| Conflict
+        Prepare -->|"failure"| Failed["Error; no committed key consumed"]
+        Persist -->|"failure"| Rollback["Rollback episode, receipt, fragments, and links"]
+```
+
 Validate input and decompose it using the configured strategy. The default uses
 Unicode sentence boundaries and line/list boundaries, preserving the wording.
-Optional model mode extracts atomic facts from structured JSON output. Normalize
+Optional model mode requests self-contained claims in structured JSON output;
+schema validation cannot prove their semantic fidelity. Normalize
 whitespace and remove exact duplicates. If vector or hybrid retrieval is enabled,
 embed the batch and validate ordering and vector shape before opening a transaction.
 
@@ -74,6 +111,29 @@ verified. Model aliases are not resolved implicitly, and stable model names stil
 cannot prove that a provider has kept its weights unchanged.
 
 ## Recall
+
+```mermaid
+flowchart TD
+        Query["Query, scope, agent, tier, state, and limit"] --> Mode{"Retrieval mode"}
+        Mode -->|"keyword or hybrid"| Keyword["Full-text candidates; filters before limit"]
+        Mode -->|"vector or hybrid"| Cache["Exact query vector cache; embed on miss"]
+        Cache --> Vector["pgvector candidates; filters and cosine floor before limit"]
+        Keyword --> Candidates["Keep branch rank; apply RRF only for hybrid"]
+        Vector --> Candidates
+        Candidates --> Priority["Compute activation and rankingPriority once"]
+        Priority --> Primary["Order primary candidates and apply candidate budget"]
+        Primary --> Context["Reserve primary JSON; allocate bounded related context"]
+        Context --> Selection{"Optional relevance model?"}
+        Selection -->|"off"| Return["Return original score, priority, context, and truncation metadata"]
+        Selection -->|"on"| Evidence["Validate selected indices and exact source quotations"]
+        Evidence -->|"valid selection"| Return
+        Evidence -->|"provider or validation failure"| Error["Error, not empty success"]
+```
+
+The relevance wrapper requests at least its configured candidate count from the
+underlying retriever, then filters to the client limit without refilling omitted
+related context. All recall paths are read-only. The cache stores only vectors;
+current database data and lifecycle filters are always re-evaluated.
 
 `MemoryRetriever` owns the query-to-results boundary. `KeywordMemoryRetriever`
 uses PostgreSQL's English text-search configuration, `websearch_to_tsquery`, and
@@ -127,6 +187,20 @@ is an interface extension point, not a shipped implementation.
 
 ## Contextual Fact Lifecycle
 
+```mermaid
+stateDiagram-v2
+        [*] --> Active
+        Active --> Archived: archives
+        Archived --> Active: restores
+        Active --> Superseded: supersedes with replacement
+        Archived --> Superseded: supersedes with replacement
+```
+
+State, retention tier, and evidence status are separate concepts. A fact starts
+active; short/long-term tiers affect activation, not truth. Superseded is terminal,
+while archived is reversible. A replacement is a new fact committed with its
+supersedes link. Confirmation is a caller-reported claim; recall is never feedback.
+
 The source episode stores optional scope, session ID, source, and summary as
 bounded context. Fragments have independent short/long-term retention, state,
 evidence status, salience, pin, and feedback timestamps/counters. The lifecycle
@@ -142,19 +216,35 @@ Correction, archive, and restore are evidence-linked writes retaining history.
 Context, tier, agent, and state filters enter the keyword/vector SQL before
 candidate selection. Lifecycle priority is computed once after candidate search
 or hybrid fusion, discounting low activation by at most 25% while preserving the
-original score. Exact pgvector cosine remains the semantic query. Read at most
-eight direct related references per final result, with a count for truncation;
-there is no graph traversal. Optional relevance inference receives the context
+original score. The response exposes this final value as `rankingPriority`, not
+a probability of relevance or truth. Exact pgvector cosine remains the semantic
+query. Read at most eight direct related references per final result, subject
+to a shared 32 KiB serialized relationship-array budget. Reserve primary results
+first and allocate related objects round-robin in primary ranking order, retaining
+each owner's existing relationship-type/UUID order. `relationshipCount` reports
+eligible links and `relationshipsTruncated` reports omitted context. Never truncate
+text or drop primary facts for link expansion. The result array is limited to
+512 KiB; if primaries alone exceed it, recall fails and asks for a lower limit.
+These limits measure serialized UTF-8 JSON, including escaping, not token counts.
+MCP adds its envelope and text/structured representations separately.
+There is no graph traversal. Optional relevance inference receives the context
 but still must quote the selected fact itself as evidence.
 
 See [ADR-0010](../adr.d/0010-contextual-fact-lifecycle.md) for precise policies
 and [the lifecycle guide](LIFECYCLE.md) for the human-facing contract.
+Response budgeting and priority disclosure are specified in
+[ADR-0012](../adr.d/0012-bounded-recall-context.md).
 
 ## Storage and Deployment
 
 The Postgres crate owns one bounded pool, shared by all server clones. Startup
 serializes idempotent schema initialization with a transaction-scoped advisory
-lock. The original schema remains unchanged; the explicit
+lock. Catalog checks skip already-applied column changes and existing indexes,
+so restarting against a current schema does not take migration locks that block
+normal readers or writers. A fresh installation or actual schema upgrade still
+requires DDL permissions and can wait for active transactions.
+
+The original schema remains unchanged; the explicit
 [optional-embedding migration](../crates/mindleak-storage-postgres/migrations/0002-optional-embeddings.sql)
 relaxes nullability and adds the keyword index. Existing data is not rewritten.
 

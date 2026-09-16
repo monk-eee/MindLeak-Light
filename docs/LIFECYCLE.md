@@ -101,7 +101,11 @@ In both cases, the first and latest feedback must be at least 24 hours apart.
 Waiting after a burst of feedback does not satisfy that spacing. Repeating the
 same target/type/session is a no-op for counters, timestamps, and promotion,
 including concurrent calls from different agents. The additional raw feedback
-episode is still saved; whole writes are not idempotent.
+episode is still saved for an unkeyed write. In source builds supporting
+`requestId`, replaying the same keyed request returns the original receipt and
+does not create another episode or reapply lifecycle actions. Feedback uniqueness
+and whole-write retry safety are different guarantees; see
+[retry-safe writes](INTEGRATION.md#retry-safe-writes).
 
 These thresholds are conservative initial policies, not biological constants.
 Usefulness-based promotion can leave evidence unconfirmed. A confirmed state
@@ -160,6 +164,24 @@ included per result; the count reveals omitted links. Linked facts include their
 own source context and state. Historical linked references can be shown as context
 even though they are not active relevance matches. No recursive traversal occurs.
 
+Source builds after v0.2.0 additionally return `rankingPriority` and
+`relationshipsTruncated`. Priority is `score - abs(score) * 0.25 * (1 - activation)`;
+results sort by that value, then fragment UUID. Do not resort by `score` unless
+you deliberately want to ignore the lifecycle adjustment.
+
+Related-context arrays share a 32 KiB serialized JSON budget across the returned
+facts, rather than an independent budget for every result. Primary text/context
+is reserved first; references are allocated round-robin and included whole.
+The primary result array plus links must fit 512 KiB. If primary results alone
+exceed that budget, the request fails with guidance to lower `limit`, without
+truncating facts. JSON escaping counts toward both limits. These are payload
+budgets, not token budgets or the size of the enclosing MCP response.
+
+`relationshipCount` is the number of eligible links before per-fact/global limits;
+`relationshipsTruncated` is true when fewer are included. An empty relationship
+array with a positive count does not mean the fact is unrelated. These additions
+require a new source build; v0.2.0 images retain their original response contract.
+
 Set `includeInactive: true` to inspect archived or superseded matches explicitly.
 That does not reactivate them. A normal recall never mutates facts, counters, or
 evidence. The calling agent chooses which facts belong in its working context.
@@ -181,3 +203,24 @@ Old memories are not automatically deleted or hard-hidden by age. Activation is
 computed at read time; there is no decay worker, scheduled replay, or mandatory
 LLM. This models some memory processes, not a brain. Temporal recall quality and
 better promotion policies still require real longitudinal evaluation.
+
+## Trust and Disagreements
+
+All authorized writers share one trust domain. The service has no per-agent
+authority hierarchy and does not determine which conflicting assertion is true.
+`agentId`, scope, source, and session IDs are caller claims, not permissions or
+independent proof. Long-term retention and importance are not truth confidence.
+The existing `confirmed` evidence label means a confirmation was reported.
+
+An agent that finds a disagreement should inspect the exact source and scope,
+record a `contradicts` link for conflicting evidence, and seek independent
+verification. To quarantine suspect material, record an explanatory `archives`
+link; normal recall excludes it while history remains inspectable. Use `restores`
+only for an archived fact after review, or write a verified replacement with
+`supersedes`. A textual correction without the link does not retire the target.
+Superseded facts cannot be revived by archive/restore.
+
+These controls make relationships actionable without automatically inventing
+evidence. They do not protect against a malicious client already authorized to
+write to the same service. Separate trust domains require separate protected
+deployments or authentication/authorization outside this tool contract.

@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "id": "semantic-dependencies-v1",
+  "description": "Hand-authored regression cases for preserving causal, conditional, temporal, and attributed claims. A shorter fragment is not necessarily a more faithful fact. No statistical model-accuracy claim; rejected decompositions deliberately lose or invent information.",
+  "memories": [
+    {
+      "id": "ambiguous-cause",
+      "category": "causal_ambiguity",
+      "split": "evaluation",
+      "text": "John approved the PR because Sarah requested it.",
+      "facts": [{ "id": "ambiguous-cause-fact", "text": "John approved the PR because Sarah requested it" }],
+      "rejectedDecompositions": [
+        ["John approved the PR", "Sarah requested the PR"],
+        ["John approved the PR", "Sarah requested approval"],
+        ["Sarah approved the PR because John requested it"]
+      ]
+    },
+    {
+      "id": "explicit-cause",
+      "category": "causal_relation",
+      "split": "evaluation",
+      "text": "For project Dune, Sol approved the release because Neri requested release approval. The Dune release is scheduled for Tuesday.",
+      "facts": [
+        { "id": "explicit-cause-fact", "text": "For project Dune, Sol approved the release because Neri requested release approval" },
+        { "id": "explicit-cause-date", "text": "The Dune release is scheduled for Tuesday" }
+      ],
+      "rejectedDecompositions": [
+        ["Sol approved the Dune release", "Neri requested approval for the Dune release", "The Dune release is scheduled for Tuesday"],
+        ["Sol approved the Dune release, so Neri requested release approval", "The Dune release is scheduled for Tuesday"]
+      ]
+    },
+    {
+      "id": "conditional-event",
+      "category": "conditional_event",
+      "split": "evaluation",
+      "text": "Eira will reopen the issue if Oren confirms the rollback.",
+      "facts": [{ "id": "conditional-event-fact", "text": "Eira will reopen the issue if Oren confirms the rollback" }],
+      "rejectedDecompositions": [
+        ["Eira will reopen the issue", "Oren confirmed the rollback"],
+        ["Eira reopened the issue because Oren confirmed the rollback"]
+      ]
+    },
+    {
+      "id": "sequence-not-cause",
+      "category": "temporal_not_causal",
+      "split": "evaluation",
+      "text": "Pavo restarted after its backup completed. The Pavo report does not establish that completing the backup caused the restart.",
+      "facts": [
+        { "id": "sequence-fact", "text": "Pavo restarted after its backup completed" },
+        { "id": "no-cause-fact", "text": "The Pavo report does not establish that completing the backup caused the restart" }
+      ],
+      "rejectedDecompositions": [
+        ["Pavo restarted because its backup completed"],
+        ["Pavo restarted", "The Pavo backup completed"]
+      ]
+    },
+    {
+      "id": "reported-cause",
+      "category": "attributed_cause",
+      "split": "evaluation",
+      "text": "Tess reported that Ula rejected the patch because the tests failed.",
+      "facts": [{ "id": "reported-cause-fact", "text": "Tess reported that Ula rejected the patch because the tests failed" }],
+      "rejectedDecompositions": [
+        ["Ula rejected the patch because the tests failed"],
+        ["Tess rejected the patch", "The tests failed"]
+      ]
+    },
+    {
+      "id": "excluded-cause",
+      "category": "causal_negation",
+      "split": "evaluation",
+      "text": "Rhea restored the service because the lock expired, not because storage was exhausted.",
+      "facts": [{ "id": "excluded-cause-fact", "text": "Rhea restored the service because the lock expired, not because storage was exhausted" }],
+      "rejectedDecompositions": [
+        ["Rhea restored the service because storage was exhausted"],
+        ["Rhea restored the service", "The lock expired", "Storage was exhausted"],
+        ["Rhea restored the service because the lock expired"]
+      ]
+    }
+  ],
+  "queries": [
+    { "id": "cause-ambiguous-query", "category": "causal_ambiguity", "split": "evaluation", "query": "What reason does the source give for John approving the PR?", "relevantIds": ["ambiguous-cause-fact"] },
+    { "id": "cause-explicit-query", "category": "causal_relation", "split": "evaluation", "query": "Why did Sol approve the Dune release?", "relevantIds": ["explicit-cause-fact"] },
+    { "id": "cause-date-query", "category": "causal_relation", "split": "evaluation", "query": "When is the Dune release scheduled?", "relevantIds": ["explicit-cause-date"] },
+    { "id": "condition-query", "category": "conditional_event", "split": "evaluation", "query": "What must happen before Eira reopens the issue?", "relevantIds": ["conditional-event-fact"] },
+    { "id": "sequence-query", "category": "temporal_not_causal", "split": "evaluation", "query": "Did Pavo restart before or after the backup?", "relevantIds": ["sequence-fact"] },
+    { "id": "causation-query", "category": "temporal_not_causal", "split": "evaluation", "query": "Does the Pavo report establish that the backup caused the restart?", "relevantIds": ["no-cause-fact"] },
+    { "id": "report-query", "category": "attributed_cause", "split": "evaluation", "query": "What did Tess report about the rejection?", "relevantIds": ["reported-cause-fact"] },
+    { "id": "excluded-query", "category": "causal_negation", "split": "evaluation", "query": "Why did Rhea restore the service, and which reason was excluded?", "relevantIds": ["excluded-cause-fact"] }
+  ]
+}

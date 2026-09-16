@@ -86,6 +86,110 @@ async fn idempotent_lifecycle_retry_preserves_receipt_without_reapplying_links()
         &[&original.fragments[0].id],
     ).await.unwrap().get(0);
     assert_eq!(links, 1);
+    let recalled = HybridMemoryRetriever::new(store, Arc::new(QueryEmbedder))
+        .recall("PR preferences?", &filter(Some(&original.agent_id)), 5)
+        .await
+        .unwrap();
+    let active = recalled
+        .iter()
+        .find(|fact| fact.fragment_id == original.fragments[0].id)
+        .unwrap();
+    assert_eq!(active.lifecycle.state, FactState::Active);
+    assert_eq!(active.relationship_count, 2);
+    assert!(!active.relationships_truncated);
+    assert_eq!(
+        active.ranking_priority,
+        active.score - active.score.abs() * 0.25 * (1.0 - active.activation)
+    );
+    assert!(active
+        .relationships
+        .iter()
+        .any(|fact| fact.memory_id == receipt.memory_id));
+}
+
+#[tokio::test]
+async fn concurrent_distinct_feedback_serializes_promotion_without_losing_evidence() {
+    let (store, database) = setup().await;
+    let original = memory(&format!("promotion-race-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    store
+        .save(&episode(
+            &original,
+            RelationshipType::Confirms,
+            Some("first"),
+        ))
+        .await
+        .unwrap();
+    database
+        .execute(
+            "UPDATE fragments SET first_evidence_at = now() - interval '25 hours' WHERE id = $1",
+            &[&original.fragments[0].id],
+        )
+        .await
+        .unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut tasks = tokio::task::JoinSet::new();
+    for session in ["second", "third"] {
+        let store = store.clone();
+        let feedback = episode(&original, RelationshipType::Confirms, Some(session));
+        let barrier = barrier.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            store.save(&feedback).await
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap().unwrap();
+    }
+    let facts = KeywordMemoryRetriever::new(store)
+        .recall("small", &filter(Some(&original.agent_id)), 5)
+        .await
+        .unwrap();
+    assert_eq!(facts[0].lifecycle.confirmed_sessions, 3);
+    assert_eq!(facts[0].lifecycle.tier, MemoryTier::LongTerm);
+    assert_eq!(facts[0].relationship_count, 3);
+    assert_eq!(facts[0].text, original.fragments[0].text);
+}
+
+#[tokio::test]
+async fn opposite_relationship_orders_lock_targets_consistently() {
+    let (store, database) = setup().await;
+    let original = memory(&format!("ordered-locks-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (session, reverse) in [("first", false), ("second", true)] {
+        let mut feedback = episode(&original, RelationshipType::Confirms, Some(session));
+        feedback.relationships.push(PreparedRelationship {
+            source_fragment: feedback.fragments[0].id,
+            target_fragment: original.fragments[1].id,
+            relationship_type: RelationshipType::Confirms,
+        });
+        if reverse {
+            feedback.relationships.reverse();
+        }
+        let store = store.clone();
+        let barrier = barrier.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            store.save(&feedback).await
+        });
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap().unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    for fragment in &original.fragments {
+        let row = database.query_one(
+            "SELECT confirmed_sessions, (SELECT count(*) FROM relationships WHERE target_fragment = $1) FROM fragments WHERE id = $1",
+            &[&fragment.id],
+        ).await.unwrap();
+        assert_eq!(row.get::<_, i32>(0), 2);
+        assert_eq!(row.get::<_, i64>(1), 2);
+    }
 }
 
 #[tokio::test]
@@ -121,6 +225,56 @@ async fn recalled_facts_include_scope_and_explicit_related_fact_context() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn related_context_has_a_shared_budget_without_dropping_primary_facts() {
+    let (store, _) = setup().await;
+    let agent_id = format!("related-budget-{}", Uuid::new_v4());
+    let mut originals = Vec::new();
+    for index in 0..6 {
+        let mut original = memory(&agent_id);
+        original.fragments.truncate(1);
+        original.raw_text = format!("Bounded recall primary item {index}.");
+        original.fragments[0].text = original.raw_text.clone();
+        original.context.scope = Some(agent_id.clone());
+        store.save(&original).await.unwrap();
+        for linked in 0..10 {
+            let mut evidence = episode(&original, RelationshipType::Supports, None);
+            evidence.raw_text = format!("Supporting note {linked}: {}", "e".repeat(2800));
+            evidence.fragments[0].text = evidence.raw_text.clone();
+            evidence.context.summary = Some("s".repeat(1024));
+            store.save(&evidence).await.unwrap();
+        }
+        originals.push(original);
+    }
+    let results = KeywordMemoryRetriever::new(store)
+        .recall("Bounded recall primary", &filter(Some(&agent_id)), 6)
+        .await
+        .unwrap();
+    assert_eq!(results.len(), originals.len());
+    let related_bytes: usize = results
+        .iter()
+        .map(|fact| serde_json::to_vec(&fact.relationships).unwrap().len())
+        .sum();
+    assert!(
+        related_bytes <= 32 * 1024,
+        "related context used {related_bytes} bytes"
+    );
+    for fact in &results {
+        let original = originals
+            .iter()
+            .find(|memory| memory.id == fact.memory_id)
+            .unwrap();
+        assert_eq!(fact.text, original.raw_text);
+        assert_eq!(fact.relationship_count, 10);
+        assert!(
+            !fact.relationships.is_empty(),
+            "each primary should receive context before extras are allocated"
+        );
+        let serialized = serde_json::to_value(fact).unwrap();
+        assert_eq!(serialized["relationshipsTruncated"], true);
+    }
 }
 
 #[tokio::test]
@@ -404,6 +558,44 @@ async fn decay_changes_priority_but_not_pgvector_similarity_or_stored_facts() {
     assert_eq!(recalled[1].score, 1.0);
     assert!((recalled[1].activation - 0.1875).abs() < 0.001);
     assert!(recalled[0].activation > recalled[1].activation);
+}
+
+#[tokio::test]
+async fn ranking_priority_explains_order_without_replacing_similarity() {
+    let (store, database) = setup().await;
+    let agent_id = format!("priority-{}", Uuid::new_v4());
+    let mut older = memory(&agent_id);
+    older.fragments.truncate(1);
+    let mut pinned = memory(&agent_id);
+    pinned.fragments.truncate(1);
+    pinned.fragments[0].embedding = Some(vec![0.8, 0.6]);
+    pinned.fragments[0].pinned = true;
+    pinned.fragments[0].tier = MemoryTier::LongTerm;
+    store.save(&older).await.unwrap();
+    store.save(&pinned).await.unwrap();
+    database
+        .execute(
+            "UPDATE memories SET created_at = now() - interval '10 years' WHERE id = $1",
+            &[&older.id],
+        )
+        .await
+        .unwrap();
+    let recalled = VectorMemoryRetriever::new(store, Arc::new(QueryEmbedder))
+        .recall("PR preferences?", &filter(Some(&agent_id)), 2)
+        .await
+        .unwrap();
+    assert_eq!(recalled[0].memory_id, pinned.id);
+    assert_eq!(recalled[1].memory_id, older.id);
+    assert!(recalled[0].score < recalled[1].score);
+    assert!(recalled[0].ranking_priority > recalled[1].ranking_priority);
+    for fact in &recalled {
+        let expected = fact.score - fact.score.abs() * 0.25 * (1.0 - fact.activation);
+        assert_eq!(fact.ranking_priority, expected);
+        assert_eq!(
+            serde_json::to_value(fact).unwrap()["rankingPriority"],
+            expected
+        );
+    }
 }
 
 #[tokio::test]
