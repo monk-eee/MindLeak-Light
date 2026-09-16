@@ -19,6 +19,7 @@ pub const MAX_FRAGMENTS: usize = 64;
 pub const MAX_RECALL_LIMIT: usize = 50;
 pub const MAX_FACT_LINKS: usize = 8;
 pub const MAX_MEMORY_LINKS: usize = 128;
+pub const MAX_RELATIONSHIP_SCAN: usize = 128;
 pub const MAX_RELATED_CONTEXT_BYTES: usize = 32 * 1024;
 pub const MAX_RECALL_RESULT_BYTES: usize = 512 * 1024;
 
@@ -103,7 +104,39 @@ pub struct RecallMatch {
     pub ranking_priority: f64,
     pub relationships: Vec<RelatedFact>,
     pub relationship_count: i64,
+    pub relationship_count_exact: bool,
     pub relationships_truncated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipDirection {
+    Incoming,
+    Outgoing,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RelationshipCursor {
+    pub fragment_id: Uuid,
+    pub relationship_type: RelationshipType,
+    pub related_fragment_id: Uuid,
+    pub direction: RelationshipDirection,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FragmentInspection {
+    pub memory_id: Uuid,
+    pub fragment_id: Uuid,
+    pub agent_id: String,
+    pub text: String,
+    pub raw_text: String,
+    pub context: MemoryContext,
+    pub lifecycle: FactLifecycle,
+    pub relationships: Vec<RelatedFact>,
+    pub next_cursor: Option<RelationshipCursor>,
+    pub scanned_relationships: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -133,6 +166,19 @@ pub enum RelationshipType {
 }
 
 impl RelationshipType {
+    pub fn context_priority(self) -> i32 {
+        match self {
+            Self::Supersedes => 0,
+            Self::Contradicts => 1,
+            Self::Archives => 2,
+            Self::Restores => 3,
+            Self::Supports => 4,
+            Self::Confirms => 5,
+            Self::Reinforces => 6,
+            Self::Related => 7,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Supports => "supports",
@@ -206,6 +252,13 @@ pub trait TextEmbedder: Send + Sync {
 pub trait MemoryStore: Send + Sync {
     async fn lookup_write(&self, request: &WriteRequest) -> Result<Option<WriteMemoryResult>>;
     async fn save(&self, memory: &PreparedMemory) -> Result<WriteMemoryResult>;
+    async fn inspect_fragment(
+        &self,
+        fragment_id: Uuid,
+        filter: &RecallFilter,
+        after: Option<&RelationshipCursor>,
+        limit: usize,
+    ) -> Result<Option<FragmentInspection>>;
 }
 
 #[async_trait]

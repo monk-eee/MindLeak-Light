@@ -89,6 +89,7 @@ pub(super) fn recall_match(row: Row) -> Result<RecallMatch> {
         ranking_priority: 0.0,
         relationships: Vec::new(),
         relationship_count: 0,
+        relationship_count_exact: true,
         relationships_truncated: false,
     })
 }

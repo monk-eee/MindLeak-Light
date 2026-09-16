@@ -228,6 +228,197 @@ async fn recalled_facts_include_scope_and_explicit_related_fact_context() {
 }
 
 #[tokio::test]
+async fn corrective_evidence_precedes_confirmation_history() {
+    let (store, _) = setup().await;
+    let original = memory(&format!("corrective-context-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    for index in 0..8 {
+        store
+            .save(&episode(
+                &original,
+                RelationshipType::Confirms,
+                Some(&format!("confirmation-{index}")),
+            ))
+            .await
+            .unwrap();
+    }
+    let contradiction = episode(&original, RelationshipType::Contradicts, None);
+    store.save(&contradiction).await.unwrap();
+    let matches = KeywordMemoryRetriever::new(store)
+        .recall("small", &filter(Some(&original.agent_id)), 5)
+        .await
+        .unwrap();
+    assert_eq!(matches[0].lifecycle.evidence, EvidenceStatus::Disputed);
+    assert_eq!(matches[0].relationship_count, 9);
+    assert_eq!(matches[0].relationships.len(), 8);
+    assert!(matches[0].relationships_truncated);
+    assert_eq!(
+        matches[0].relationships[0].fragment_id, contradiction.fragments[0].id,
+        "corrective evidence must not be displaced by confirmation history"
+    );
+}
+
+#[tokio::test]
+async fn high_degree_context_uses_a_bounded_scan_and_discloses_inexact_counts() {
+    let (store, database) = setup().await;
+    let original = memory(&format!("bounded-scan-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    database
+        .execute(
+            "WITH episodes AS ( \
+                INSERT INTO memories(id, agent_id, raw_text, context) \
+                SELECT gen_random_uuid(), $1, 'Supporting source.', '{}'::jsonb \
+                FROM generate_series(1, 2000) RETURNING id \
+             ), sources AS ( \
+                INSERT INTO fragments(id, memory_id, text, embedding) \
+                SELECT gen_random_uuid(), id, 'Supporting source.', NULL FROM episodes RETURNING id \
+             ) INSERT INTO relationships(source_fragment, target_fragment, relationship_type) \
+             SELECT id, $2, 'supports' FROM sources",
+            &[&original.agent_id, &original.fragments[0].id],
+        )
+        .await
+        .unwrap();
+    let matches = KeywordMemoryRetriever::new(store)
+        .recall("small", &filter(Some(&original.agent_id)), 1)
+        .await
+        .unwrap();
+    assert_eq!(matches[0].relationship_count, 128);
+    assert_eq!(matches[0].relationships.len(), 8);
+    assert!(matches[0].relationships_truncated);
+    assert_eq!(
+        serde_json::to_value(&matches[0]).unwrap()["relationshipCountExact"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn inspection_advances_past_filtered_links_and_respects_inactive_filters() {
+    let (store, _) = setup().await;
+    let original = memory(&format!("inspection-filter-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    let base = Uuid::new_v4().as_u128() & !0xffff;
+    let mut expected = Vec::new();
+    for index in 0..133 {
+        let mut source = episode(&original, RelationshipType::Supports, None);
+        source.fragments[0].id = Uuid::from_u128(base + index + 1);
+        source.relationships[0].source_fragment = source.fragments[0].id;
+        if index < 128 {
+            source.agent_id = format!("other-{}", original.agent_id);
+        } else {
+            expected.push(source.fragments[0].id);
+        }
+        store.save(&source).await.unwrap();
+    }
+    let filter = filter(Some(&original.agent_id));
+    let first = store
+        .inspect_fragment(original.fragments[0].id, &filter, None, 8)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.scanned_relationships, 128);
+    assert!(first.relationships.is_empty());
+    assert!(first.next_cursor.is_some());
+    let second = store
+        .inspect_fragment(
+            original.fragments[0].id,
+            &filter,
+            first.next_cursor.as_ref(),
+            8,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.scanned_relationships, 5);
+    assert_eq!(
+        second
+            .relationships
+            .iter()
+            .map(|fact| fact.fragment_id)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(second.next_cursor.is_none());
+    store
+        .save(&episode(&original, RelationshipType::Archives, None))
+        .await
+        .unwrap();
+    assert!(store
+        .inspect_fragment(original.fragments[0].id, &filter, None, 8)
+        .await
+        .unwrap()
+        .is_none());
+    let history = store
+        .inspect_fragment(
+            original.fragments[0].id,
+            &RecallFilter {
+                include_inactive: true,
+                ..filter.clone()
+            },
+            None,
+            8,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(history.lifecycle.state, FactState::Archived);
+    assert_eq!(history.raw_text, original.raw_text);
+    assert_eq!(
+        history.relationships[0].relationship_type,
+        RelationshipType::Archives
+    );
+}
+
+#[tokio::test]
+async fn inspection_pages_large_escaped_evidence_without_losing_source_text() {
+    let (store, _) = setup().await;
+    let mut original = memory(&format!("inspection-budget-{}", Uuid::new_v4()));
+    original.raw_text = "\u{0001}".repeat(32768);
+    original.fragments.truncate(1);
+    original.fragments[0].text = "\u{0001}".repeat(4096);
+    original.context.scope = Some("\u{0001}".repeat(256));
+    original.context.source = Some("\u{0001}".repeat(1024));
+    original.context.summary = Some("\u{0001}".repeat(2048));
+    store.save(&original).await.unwrap();
+    let mut expected = std::collections::HashSet::new();
+    for _ in 0..8 {
+        let mut source = episode(&original, RelationshipType::Supports, None);
+        source.raw_text = "\u{0001}".repeat(4096);
+        source.fragments[0].text = source.raw_text.clone();
+        store.save(&source).await.unwrap();
+        expected.insert(source.fragments[0].id);
+    }
+    let filter = filter(Some(&original.agent_id));
+    let mut after = None;
+    let mut seen = std::collections::HashSet::new();
+    for page_number in 0..8 {
+        let page = store
+            .inspect_fragment(original.fragments[0].id, &filter, after.as_ref(), 8)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.raw_text, original.raw_text);
+        assert_eq!(page.text, original.fragments[0].text);
+        assert!(
+            serde_json::to_vec(&page).unwrap().len() <= mindleak_memory::MAX_RECALL_RESULT_BYTES
+        );
+        if page_number == 0 {
+            assert!(page.relationships.len() < 8);
+            assert!(page.next_cursor.is_some());
+        }
+        for related in &page.relationships {
+            assert_eq!(related.text, "\u{0001}".repeat(4096));
+            assert!(seen.insert(related.fragment_id));
+        }
+        if page.next_cursor.is_none() {
+            break;
+        }
+        assert_ne!(page.next_cursor, after);
+        after = page.next_cursor;
+    }
+    assert_eq!(seen, expected);
+}
+
+#[tokio::test]
 async fn related_context_has_a_shared_budget_without_dropping_primary_facts() {
     let (store, _) = setup().await;
     let agent_id = format!("related-budget-{}", Uuid::new_v4());

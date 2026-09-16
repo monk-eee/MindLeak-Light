@@ -204,11 +204,11 @@ context. Do not bypass client approvals to make the policy appear automatic.
 | Tool | Arguments | Successful Result |
 |---|---|---|
 | `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (v0.3.0+) | `memoryId` and `fragments` with IDs, text, and tier after commit |
-| `recall_memory` | `query`, optional `agentId`, `scope`, `tier`, `includeInactive`, `limit` | Array of matched facts with IDs, text, score, context, lifecycle, activation, and direct relationships |
+| `recall_memory` | Either `query` for search or `fragmentId` for inspection; optional `agentId`, `scope`, `tier`, `includeInactive`, `limit`; inspection also accepts `after` | Search: array of matches. Inspection (unreleased): original source, selected fact, current lifecycle, and paged direct evidence |
 | `decompose_memory` | `text` | Array of strings; preview only, no database write |
 
-MCP text content contains that JSON. `structuredContent` holds the write object
-directly and wraps arrays in `{"results":[...]}`. Recall returns fragments, so
+MCP text content contains that JSON. `structuredContent` holds write/inspection
+objects directly and wraps search/preview arrays in `{"results":[...]}`. Search returns fragments, so
 several results may reference one memory. `[]` means no matches, not failure.
 
 Limits: 32768 UTF-8 bytes per memory/query, 256 bytes per agent ID, 1..64
@@ -251,6 +251,11 @@ retrieval there may be two sequential provider calls, so size the MCP client
 timeout for query embedding plus selection. The combined query/candidate text
 budget is 32768 UTF-8 bytes, and overflow is an error rather than truncation.
 The default remains `off`; see [model setup](MODELS.md#experimental-relevance-filter).
+
+The current source's selection policy permits useful negative evidence, not only
+positive property values. An unapproved rollout is relevant to an approved-date
+question because it corrects the premise; it must not be rewritten as a date.
+An unrelated fact about the same project is still insufficient.
 
 Writes without `requestId` are not idempotent. A network failure after commit can
 hide a successful write's ID; reconcile before retrying an unkeyed write.
@@ -312,8 +317,11 @@ original `requestId` and payload; do not assume the write was rolled back.
 Version 0.3.0 adds `rankingPriority` and `relationshipsTruncated` to
 each recall match. `score` is unchanged; `rankingPriority` exposes the actual
 lifecycle-adjusted ordering signal. Both are ranking values, not confidence.
-`relationshipCount` counts eligible direct links before limits; truncation is
-explicit when the result includes only some of them.
+Version 0.3.0 counts all eligible direct links. New source builds additionally
+return `relationshipCountExact`: a false value means `relationshipCount` is a
+lower bound from at most 128 examined links, not a full total. There can be zero
+eligible links in a filtered window while more remain. `relationshipsTruncated`
+is true for omitted eligible references or unexamined candidates.
 
 Before final ranking, the bounded candidates are refreshed and their state,
 agent, scope, and tier filters are checked again. Primary metadata and direct
@@ -329,6 +337,46 @@ relationship arrays across the response. Primary results are reserved first; a
 `limit`. No fact text is silently shortened. JSON escaping is included, while the
 MCP envelope and dual representations add separate overhead. See
 [lifecycle recall](LIFECYCLE.md#recall-with-context-and-history) for allocation rules.
+
+### Inspect Original Sources
+
+This is an **unreleased source feature**, not part of v0.3.0. Check that the
+server advertises `fragmentId` and `after` in the `recall_memory` input schema.
+Use a `fragmentId` returned by search or a successful write, omitting `query`:
+
+```json
+{
+  "fragmentId": "7e0d9973-84db-4941-807c-c504b97e7931",
+  "scope": "project:light",
+  "limit": 8
+}
+```
+
+The result object includes `memoryId`, `fragmentId`, `agentId`, original fragment
+`text`, exact episode `rawText`, `context`, `lifecycle`, `relationships`,
+`scannedRelationships`, and `nextCursor`. The raw episode retains whitespace and
+may contain other historical claims; it is not a list of currently active facts.
+No decomposition, query embedding, or relevance model is called, even when those
+modes are enabled. Inspecting by ID never falls back to a model search.
+
+Inspection applies the usual filters to the selected fact. Use `includeInactive:
+true` deliberately for archived/superseded history. Missing or filtered-out IDs,
+mixed `query`/`fragmentId`, a cursor for another fact, and invalid limits return
+invalid-parameters errors. IDs and filters remain provenance, not access control.
+
+Pass the returned `nextCursor` object as `after`, with the same fragment and
+filters, until it is null. `limit` is 1..8, default 8. An empty relationships page
+can still have a next cursor when the bounded scan contained only filtered links.
+Do not stop solely because a page is empty. Keyset ordering is correction-first,
+then related UUID and direction; each request examines at most 128 candidates
+plus lookahead and returns whole facts within a 512 KiB object budget. This is
+separate from normal search's shared 32 KiB related-context budget.
+
+Each page has one coherent read-only snapshot, not a snapshot shared across
+requests. Concurrent inserts before a cursor may be missed until inspection is
+restarted; changing filters also warrants restarting. A cursor is a scan position,
+not proof that a referenced fact is visible or authoritative. Pagination never
+reinforces evidence or follows relationships recursively.
 
 ## Clients That Need Stdio
 
