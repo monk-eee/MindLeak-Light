@@ -42,8 +42,12 @@
 - Reported embedding-model IDs must match configuration exactly; implicit alias
   resolution is not supported. Providers may omit model metadata, so identity
   cannot always be verified from their response.
-- Writes are atomic but not idempotent. A timeout after commit can leave a saved
-  memory without a received ID; blind retries may create duplicates.
+- Unkeyed writes are atomic but not idempotent; blind retries can duplicate a
+  committed memory. The unreleased `requestId` option protects matching retries
+  only when the client retains its original ID, agent ID, and payload. Receipts
+  live with their memory rows and report original write-time tiers, not current
+  lifecycle state. Concurrent first attempts can duplicate provider work even
+  though only one episode commits. This is not a general exactly-once guarantee.
 - Lifecycle retention, evidence links, and read-time decay are source features,
   not a biological simulation or a measured longitudinal quality improvement.
   The half-lives, spaced-feedback thresholds, and priority discount are explicit
@@ -62,7 +66,7 @@
 - HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.
-- Startup applies the initial schema and the explicit nullable-vector/keyword
-  migration transactionally. It needs permission to alter tables and create the
-  index. This is not a general-purpose migration framework; future changes need
+- Startup applies the initial schema and explicit keyword, lifecycle, and
+  idempotency migrations transactionally. It needs permission to alter tables
+  and create indexes. This is not a general-purpose migration framework; future changes need
   explicit reviewed migrations, and operators should back up before upgrades.

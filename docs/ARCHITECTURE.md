@@ -1,7 +1,8 @@
 # Architecture
 
-This describes v0.2.0, including contextual fact lifecycle, hybrid recall,
-similarity thresholds, cached query embeddings, and provider response bounds.
+This describes the current source: v0.2.0 contextual fact lifecycle, hybrid
+recall, similarity thresholds, cached query embeddings, provider response bounds,
+and the subsequent unreleased retry-safe write contract.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
 ```text
@@ -32,6 +33,23 @@ Insert the exact raw memory followed by every fragment, using NULL for disabled
 embeddings. Commit, then return the memory ID. Enabled model work happens before
 the transaction so inference does not hold database connections. No failed
 provider call is replaced with another strategy.
+
+With a client `requestId`, validate intrinsic input constraints and look up a
+committed receipt before model work. The key is a UUID scoped by `agentId`, not
+an authentication boundary. A matching canonical request replays its immutable
+write result. Changed text, context, or directives fail with invalid parameters.
+Typed defaults are normalized; raw text and ordered directive/link lists remain
+part of identity. Requests without a key retain the original write-per-call
+behaviour.
+
+The `memories` insert stores the canonical typed request and original result in
+the same transaction as all fragments, vectors, and lifecycle effects. A partial
+unique index on `(agent_id, request_id)` arbitrates concurrent inserts. A losing
+insert reads and verifies the committed payload, returning its receipt without
+inserting fragments or reapplying relationships. No reservation or database lock
+is held during inference; simultaneous initial requests may duplicate model
+work. Provider failures and rolled-back transactions do not consume a key.
+See [ADR-0011](../adr.d/0011-idempotent-memory-writes.md).
 
 Raw text is preserved exactly. Memory text is limited to 32768 UTF-8 bytes;
 decomposition produces 1..64 fragments of at most 4096 bytes each. Empty facts,
@@ -144,6 +162,14 @@ The [lifecycle migration](../crates/mindleak-storage-postgres/migrations/0003-fa
 adds metadata columns, context, typed relationship actions, and feedback uniqueness.
 Existing facts default to short-term/active/unconfirmed with creation-time activation;
 their raw text, identities, relationships, and vector types/values are preserved.
+
+The [retry-safety migration](../crates/mindleak-storage-postgres/migrations/0004-idempotent-writes.sql)
+adds nullable request ID, canonical payload, and result columns plus the unique
+key and all-or-none metadata constraint to `memories`. Existing rows stay unkeyed;
+no legacy IDs, fragments, vectors, or lifecycle metadata are rewritten. Receipts
+last as long as their memory row, including while facts are archived or superseded.
+Changes to the canonical request representation need an explicit compatibility
+decision so future upgrades do not silently change request identity.
 
 Model-free startup does not bind or require an embedding model. On first vector
 or hybrid startup, model and dimensions are recorded in the fragments table

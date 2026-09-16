@@ -8,6 +8,7 @@ struct Backend {
     fragments: Vec<String>,
     embeddings: Vec<Vec<f32>>,
     fail_embedding: bool,
+    fail_lookup: bool,
 }
 
 impl Default for Backend {
@@ -18,6 +19,7 @@ impl Default for Backend {
             fragments: vec!["Keep PRs small".into(), "Reviews are required".into()],
             embeddings: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
             fail_embedding: false,
+            fail_lookup: false,
         }
     }
 }
@@ -51,10 +53,16 @@ impl TextEmbedder for Backend {
 
 #[async_trait]
 impl MemoryStore for Backend {
-    async fn save(&self, memory: &PreparedMemory) -> Result<()> {
+    async fn lookup_write(&self, _: &WriteRequest) -> Result<Option<WriteMemoryResult>> {
+        self.events.lock().unwrap().push("lookup");
+        ensure!(!self.fail_lookup, "storage unavailable");
+        Ok(None)
+    }
+
+    async fn save(&self, memory: &PreparedMemory) -> Result<WriteMemoryResult> {
         self.events.lock().unwrap().push("save");
         self.saved.lock().unwrap().push(memory.clone());
-        Ok(())
+        Ok(memory.write_result())
     }
 }
 
@@ -79,6 +87,79 @@ impl MemoryRetriever for Backend {
             ..Default::default()
         }])
     }
+}
+
+#[tokio::test]
+async fn invalid_idempotent_requests_fail_before_lookup_or_models() {
+    let backend = Arc::new(Backend::default());
+    for importance in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+        let error = backend
+            .service()
+            .write_memory(
+                "claude",
+                "fact",
+                WriteOptions {
+                    request_id: Some(Uuid::new_v4()),
+                    facts: vec![FactDirective {
+                        text: "Keep PRs small".into(),
+                        importance: Some(importance),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.is::<InvalidInput>());
+    }
+    assert!(backend.events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn idempotent_lookup_failure_does_not_fall_through_to_models() {
+    let backend = Arc::new(Backend {
+        fail_lookup: true,
+        ..Default::default()
+    });
+    assert!(backend
+        .service()
+        .write_memory(
+            "claude",
+            "fact",
+            WriteOptions {
+                request_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
+    assert_eq!(*backend.events.lock().unwrap(), ["lookup"]);
+    assert!(backend.saved.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn idempotent_provider_failure_never_saves_a_request() {
+    let backend = Arc::new(Backend {
+        fail_embedding: true,
+        ..Default::default()
+    });
+    assert!(backend
+        .service()
+        .write_memory(
+            "claude",
+            "fact",
+            WriteOptions {
+                request_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        *backend.events.lock().unwrap(),
+        ["lookup", "decompose", "embed"]
+    );
+    assert!(backend.saved.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -275,6 +356,7 @@ async fn fact_directives_preserve_context_and_exact_source_fact_links() {
             "claude",
             "raw episode",
             WriteOptions {
+                request_id: None,
                 context: context.clone(),
                 facts: vec![FactDirective {
                     text: "Keep PRs small".into(),
@@ -345,5 +427,5 @@ async fn feedback_without_a_session_is_rejected_before_embedding_or_storage() {
         )
         .await;
     assert!(result.unwrap_err().is::<InvalidInput>());
-    assert_eq!(*backend.events.lock().unwrap(), ["decompose"]);
+    assert!(backend.events.lock().unwrap().is_empty());
 }
