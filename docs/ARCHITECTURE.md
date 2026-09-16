@@ -39,7 +39,8 @@ or changing the query/write contracts:
 
 Validate input and decompose it using the configured strategy. The default uses
 Unicode sentence boundaries and line/list boundaries, preserving the wording.
-Optional model mode extracts atomic facts from structured JSON output. Normalize
+Optional model mode requests self-contained claims in structured JSON output;
+schema validation cannot prove their semantic fidelity. Normalize
 whitespace and remove exact duplicates. If vector or hybrid retrieval is enabled,
 embed the batch and validate ordering and vector shape before opening a transaction.
 
@@ -139,13 +140,24 @@ Correction, archive, and restore are evidence-linked writes retaining history.
 Context, tier, agent, and state filters enter the keyword/vector SQL before
 candidate selection. Lifecycle priority is computed once after candidate search
 or hybrid fusion, discounting low activation by at most 25% while preserving the
-original score. Exact pgvector cosine remains the semantic query. Read at most
-eight direct related references per final result, with a count for truncation;
-there is no graph traversal. Optional relevance inference receives the context
+original score. The response exposes this final value as `rankingPriority`, not
+a probability of relevance or truth. Exact pgvector cosine remains the semantic
+query. Read at most eight direct related references per final result, subject
+to a shared 32 KiB serialized relationship-array budget. Reserve primary results
+first and allocate related objects round-robin in primary ranking order, retaining
+each owner's existing relationship-type/UUID order. `relationshipCount` reports
+eligible links and `relationshipsTruncated` reports omitted context. Never truncate
+text or drop primary facts for link expansion. The result array is limited to
+512 KiB; if primaries alone exceed it, recall fails and asks for a lower limit.
+These limits measure serialized UTF-8 JSON, including escaping, not token counts.
+MCP adds its envelope and text/structured representations separately.
+There is no graph traversal. Optional relevance inference receives the context
 but still must quote the selected fact itself as evidence.
 
 See [ADR-0010](../adr.d/0010-contextual-fact-lifecycle.md) for precise policies
 and [the lifecycle guide](LIFECYCLE.md) for the human-facing contract.
+Response budgeting and priority disclosure are specified in
+[ADR-0012](../adr.d/0012-bounded-recall-context.md).
 
 ## Storage and Deployment
 

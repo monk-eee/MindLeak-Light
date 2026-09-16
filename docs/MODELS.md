@@ -20,6 +20,33 @@ and one batched embedding request per write, and one embedding request per recal
 The optional relevance stage is independent and adds a recall-time chat request
 when candidates are available.
 
+## What Decomposition Guarantees
+
+"Atomic" storage means the source text and its complete prepared fragment set
+commit together or fail together. It does not guarantee that each fragment is
+one faithful semantic fact. The default sentence/list path does not need a model
+and preserves wording, but cannot resolve references or identify every claim.
+Model extraction is an optional interpretation step, not a factual validator.
+
+For example, `John approved the PR because Sarah requested it.` should not be
+reduced to `John approved the PR.` and `Sarah requested the PR.` and called
+equivalent. That drops the stated causal relationship and chooses what "it"
+means without sufficient context. Preserve the original causal claim when its
+reference is ambiguous. If the source identifies the request as approval, a
+standalone claim can name that request explicitly without losing "because".
+
+The extraction prompt requires causal, conditional, temporal, and attributed
+relationships to survive. "After" does not establish "because"; "Tess reported"
+must not silently become an unqualified assertion. Shorter fragments are not
+automatically better. A related-fact link also does not reconstruct a missing
+causal claim, and similarity never supplies missing evidence.
+
+Use [semantic-dependency cases](../examples/fixtures/semantic-dependencies-v1.json)
+with the separate extraction benchmark before enabling a model for your data.
+Canonical wording tests catch specified losses; they do not prove arbitrary
+paraphrase equivalence or general model accuracy. Keep source text, preview
+important writes, and do not store speculative conclusions as established facts.
+
 ## Relevance and Hybrid Recall
 
 For fast semantic recall, use vector or hybrid mode with relevance filtering

@@ -86,7 +86,9 @@ fn recall_match(row: Row) -> Result<RecallMatch> {
         context: serde_json::from_str(&row.try_get::<_, String>("context")?)?,
         activation: lifecycle.activation(row.try_get("observed_at")?, row.try_get("importance")?),
         lifecycle,
+        ranking_priority: 0.0,
         relationships: Vec::new(),
         relationship_count: 0,
+        relationships_truncated: false,
     })
 }

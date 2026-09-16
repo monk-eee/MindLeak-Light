@@ -26,6 +26,12 @@ from the same agent or another one. Keep your existing agent framework and model
 keyword search, with no model calls. Add LM Studio, Ollama, or another
 OpenAI-compatible provider for richer fact extraction and semantic recall.
 
+**Atomic storage, not guaranteed atomic facts.** Successful writes commit the
+exact source and every fragment together. Without a model, decomposition splits
+sentences and lists, not semantic claims. Optional extraction aims to produce
+self-contained claims but can lose or misinterpret meaning; validate it on your
+data. See [extraction quality](docs/MODELS.md#what-decomposition-guarantees).
+
 For a native stdio binary, see [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
 and the [installation guide](docs/INSTALL.md).
 
@@ -166,7 +172,7 @@ call; a routine task with no new lesson should not force a write.
 | Setup | Decomposition | Recall |
 |---|---|---|
 | Quickstart, no models | Sentences and list items, wording preserved | Indexed keyword search |
-| Optional chat model | Independent facts extracted from prose | Keyword search still available |
+| Optional chat model | Model-assisted extraction; semantic fidelity needs evaluation | Keyword search still available |
 | Optional embedding model | Either decomposition mode | Semantic vector or hybrid keyword/vector search |
 
 Chat extraction and embeddings are independent options. Add embeddings for
@@ -183,6 +189,11 @@ calibration on your data and does not filter hybrid's keyword matches.
 Hybrid recall and similarity thresholds are included in v0.2.0. Upgrade older
 packages before enabling them; changing settings does not upgrade an executable.
 
+Exact pgvector search is not a demonstrated million-memory service. The current
+benchmarks establish behaviour on small diagnostic corpora, not large-corpus
+precision, load capacity, or end-to-end agent usefulness. See the
+[evaluation limits](docs/BENCHMARKS.md#interpretation-limits) before scaling.
+
 ## Facts, Context, and Retention
 
 The fact lifecycle keeps facts attached to their original episodes and
@@ -195,6 +206,17 @@ confirmation, and decay reduces priority rather than deleting history.
 text, vector, and evidence links. The lifecycle also works with model-free keyword
 search. See [fact lifecycle](docs/LIFECYCLE.md) for examples and exact policies.
 These controls are included in v0.2.0; existing two-field writes remain valid.
+
+`supersedes` retires corrected facts from normal recall; `archives` quarantines
+facts reversibly and `restores` reactivates them. Old source records remain for
+audit and recovery. This is a memory lifecycle, not automatic garbage collection
+or truth adjudication. Importance influences activation and therefore ordering.
+
+**Shared memory is one trust domain.** No agent is authoritative merely because
+of its ID, tier, pin, or reported confirmation. Use explicit project scopes and
+source references, check disagreements, and archive suspect facts while reviewing
+them. Untrusted writers need a separate authenticated service/database boundary,
+not just a different `agentId`. See [trust and corrections](docs/LIFECYCLE.md#trust-and-disagreements).
 
 ## Documentation
 

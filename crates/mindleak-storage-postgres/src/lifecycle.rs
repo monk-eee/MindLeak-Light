@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{ensure, Context, Result};
 use mindleak_memory::{
     FactLifecycle, FactState, InvalidInput, MemoryTier, PreparedMemory, RecallFilter, RecallMatch,
-    RelatedFact, RelationshipType, MAX_FACT_LINKS, MAX_MEMORY_LINKS,
+    RelatedFact, RelationshipType, MAX_FACT_LINKS, MAX_MEMORY_LINKS, MAX_RECALL_RESULT_BYTES,
+    MAX_RELATED_CONTEXT_BYTES,
 };
 use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
@@ -184,9 +185,13 @@ impl PostgresMemoryStore {
         filter: &RecallFilter,
         limit: usize,
     ) -> Result<Vec<RecallMatch>> {
+        for fact in &mut facts {
+            fact.ranking_priority = priority(fact);
+        }
         facts.sort_by(|left, right| {
-            priority(right)
-                .total_cmp(&priority(left))
+            right
+                .ranking_priority
+                .total_cmp(&left.ranking_priority)
                 .then_with(|| left.fragment_id.cmp(&right.fragment_id))
         });
         facts.truncate(limit);
@@ -236,12 +241,186 @@ impl PostgresMemoryStore {
                 state: serde_json::from_value(serde_json::Value::String(row.try_get("state")?))?,
             });
         }
-        for fact in &mut facts {
-            if let Some((total, relationships)) = relations.remove(&fact.fragment_id) {
-                fact.relationship_count = total;
-                fact.relationships = relationships;
+        allocate_related_context(&mut facts, relations)?;
+        Ok(facts)
+    }
+}
+
+fn allocate_related_context(
+    facts: &mut [RecallMatch],
+    mut relations: HashMap<Uuid, (i64, Vec<RelatedFact>)>,
+) -> Result<()> {
+    let mut pending = Vec::with_capacity(facts.len());
+    for fact in facts.iter_mut() {
+        let (count, relationships) = relations.remove(&fact.fragment_id).unwrap_or_default();
+        fact.relationship_count = count;
+        fact.relationships.clear();
+        fact.relationships_truncated = false;
+        pending.push(relationships.into_iter());
+    }
+    let primary_bytes = serde_json::to_vec(&facts)?.len();
+    if primary_bytes > MAX_RECALL_RESULT_BYTES {
+        return Err(InvalidInput(
+            "primary recall results exceed the 512 KiB response budget; lower limit".into(),
+        )
+        .into());
+    }
+    let mut remaining = (MAX_RECALL_RESULT_BYTES - primary_bytes)
+        .min(MAX_RELATED_CONTEXT_BYTES.saturating_sub(2 * facts.len()));
+    for _ in 0..MAX_FACT_LINKS {
+        for (fact, candidates) in facts.iter_mut().zip(&mut pending) {
+            if let Some(related) = candidates.next() {
+                let bytes = serde_json::to_vec(&related)?.len()
+                    + usize::from(!fact.relationships.is_empty());
+                if bytes <= remaining {
+                    remaining -= bytes;
+                    fact.relationships.push(related);
+                }
             }
         }
-        Ok(facts)
+    }
+    for fact in facts {
+        fact.relationships_truncated = fact.relationship_count > fact.relationships.len() as i64;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fact(identifier: u128) -> RecallMatch {
+        RecallMatch {
+            fragment_id: Uuid::from_u128(identifier),
+            text: "Primary fact".into(),
+            score: 0.9,
+            activation: 1.0,
+            ..Default::default()
+        }
+    }
+
+    fn related(identifier: u128, text: String) -> RelatedFact {
+        RelatedFact {
+            fragment_id: Uuid::from_u128(identifier),
+            memory_id: Uuid::from_u128(100),
+            agent_id: "test-agent".into(),
+            text,
+            context: Default::default(),
+            relationship_type: RelationshipType::Related,
+            direction: "incoming".into(),
+            state: FactState::Active,
+        }
+    }
+
+    #[test]
+    fn related_budget_counts_serialized_escaping_and_preserves_complete_text() {
+        let mut facts = vec![fact(1), fact(2)];
+        let text = "\u{0001}".repeat(1000);
+        let relations = facts
+            .iter()
+            .map(|fact| {
+                (
+                    fact.fragment_id,
+                    (
+                        8,
+                        (0..8)
+                            .map(|index| related(index + 10, text.clone()))
+                            .collect(),
+                    ),
+                )
+            })
+            .collect();
+        allocate_related_context(&mut facts, relations).unwrap();
+        let bytes: usize = facts
+            .iter()
+            .map(|fact| serde_json::to_vec(&fact.relationships).unwrap().len())
+            .sum();
+        assert!(bytes <= MAX_RELATED_CONTEXT_BYTES);
+        assert!(facts
+            .iter()
+            .all(|fact| !fact.relationships.is_empty() && fact.relationships_truncated));
+        assert!(facts
+            .iter()
+            .flat_map(|fact| &fact.relationships)
+            .all(|related| related.text == text));
+        assert!(serde_json::to_vec(&facts).unwrap().len() <= MAX_RECALL_RESULT_BYTES);
+    }
+
+    #[test]
+    fn primary_facts_get_the_response_budget_before_related_context() {
+        let mut facts = vec![fact(1)];
+        while serde_json::to_vec(&facts).unwrap().len() < MAX_RECALL_RESULT_BYTES - 40_000 {
+            let mut primary = fact(facts.len() as u128 + 1);
+            primary.text = "\u{0001}".repeat(4000);
+            facts.push(primary);
+        }
+        let primary_texts: Vec<_> = facts.iter().map(|fact| fact.text.clone()).collect();
+        let relations = facts
+            .iter()
+            .map(|fact| {
+                (
+                    fact.fragment_id,
+                    (
+                        8,
+                        (0..8)
+                            .map(|index| related(index + 100, "\u{0001}".repeat(1500)))
+                            .collect(),
+                    ),
+                )
+            })
+            .collect();
+        allocate_related_context(&mut facts, relations).unwrap();
+        assert!(serde_json::to_vec(&facts).unwrap().len() <= MAX_RECALL_RESULT_BYTES);
+        assert_eq!(
+            facts
+                .iter()
+                .map(|fact| fact.text.clone())
+                .collect::<Vec<_>>(),
+            primary_texts
+        );
+        assert!(facts.iter().any(|fact| fact.relationships_truncated));
+    }
+
+    #[test]
+    fn oversized_primary_results_fail_instead_of_losing_facts() {
+        let mut facts: Vec<_> = (1..=50)
+            .map(|identifier| {
+                let mut primary = fact(identifier);
+                primary.text = "\u{0001}".repeat(4000);
+                primary
+            })
+            .collect();
+        let error = allocate_related_context(&mut facts, HashMap::new()).unwrap_err();
+        assert!(error.is::<InvalidInput>());
+        assert_eq!(facts.len(), 50);
+        assert!(facts.iter().all(|fact| fact.text.len() == 4000));
+    }
+
+    #[test]
+    fn relationship_counts_report_per_fact_truncation_and_empty_context() {
+        let mut facts = vec![fact(1), fact(2), fact(3)];
+        let relations = HashMap::from([
+            (
+                facts[0].fragment_id,
+                (
+                    9,
+                    (0..8)
+                        .map(|index| related(index + 10, "Reference".into()))
+                        .collect(),
+                ),
+            ),
+            (
+                facts[1].fragment_id,
+                (1, vec![related(20, "Complete reference".into())]),
+            ),
+        ]);
+        allocate_related_context(&mut facts, relations).unwrap();
+        assert_eq!(facts[0].relationship_count, 9);
+        assert_eq!(facts[0].relationships.len(), 8);
+        assert!(facts[0].relationships_truncated);
+        assert!(!facts[1].relationships_truncated);
+        assert!(!facts[2].relationships_truncated);
+        assert_eq!(facts[2].relationship_count, 0);
+        assert!(facts[2].relationships.is_empty());
     }
 }
