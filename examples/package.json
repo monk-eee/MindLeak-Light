@@ -5,10 +5,14 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "memory": "node agent-memory.mjs",
-    "benchmark": "node benchmark-recall.mjs"
+    "benchmark": "node benchmark-recall.mjs",
+    "validate": "node validation-harness.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
+    "openai": "7.12.1",
+    "vega": "6.4.0",
+    "vega-lite": "6.4.3",
     "zod": "4.5.4"
   }
 }
