@@ -70,7 +70,7 @@ impl PostgresMemoryStore {
     }
 }
 
-fn recall_match(row: Row) -> Result<RecallMatch> {
+pub(super) fn recall_match(row: Row) -> Result<RecallMatch> {
     let score = row.try_get::<_, f64>("score")?;
     ensure!(
         score.is_finite(),

@@ -1,7 +1,7 @@
 # Hardening Review Status
 
 This records the disposition of the 21-item review and the subsequent conceptual
-critique. It describes the integrated source, not the published v0.2.0 packages.
+critique. It describes the hardening included in v0.3.0, not the older v0.2.0 packages.
 The integration combines recall-contract PR #13 (`716029c`), modular-storage PR
 #14 (`545ec5d`), and retry-write PR #15 (`037dbf3`, merged to main as `3703b7a`).
 Their individual test runs are not evidence that the combined revision works.
@@ -37,6 +37,15 @@ and documented, not an implemented feature. "Open" is not a completion claim.
 | L3: unused importance | Covered | Salience participates in activation and lifecycle-adjusted priority, without changing raw similarity. Tests bound its effects. |
 
 ## Concepts and Contracts
+
+A subsequent pre-release review reproduced two additional correctness defects.
+Both are addressed in v0.3.0: official-SDK cancellation drops pending tool work,
+and final recall refreshes primary filters/state in the same read-only snapshot
+as direct relationships. Red/green regressions cover each. Neither promises
+rollback of an already-sent commit or that results remain current after return;
+see [ADR-0013](../adr.d/0013-cancellation-and-recall-snapshots.md).
+The separate [evidence and auditability gaps](../gaps.d/recall-evidence-and-auditability.md)
+remain open, alongside model quality and scale limitations.
 
 Atomic **persistence** is the guarantee: raw source, complete prepared fragments,
 vectors, links, receipt, and lifecycle effects commit together. Semantic extraction

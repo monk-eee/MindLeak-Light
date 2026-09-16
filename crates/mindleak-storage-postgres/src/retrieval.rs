@@ -9,14 +9,20 @@ use mindleak_memory::{
     validate_embeddings, validate_text, MemoryRetriever, RecallFilter, RecallMatch, TextEmbedder,
     MAX_MEMORY_BYTES, MAX_RECALL_LIMIT,
 };
+use tokio::sync::OnceCell;
 
 use crate::PostgresMemoryStore;
+
+struct QueryEmbedding {
+    query: String,
+    vector: OnceCell<Vec<f32>>,
+}
 
 pub struct VectorMemoryRetriever {
     store: PostgresMemoryStore,
     embedder: Arc<dyn TextEmbedder>,
     min_similarity: Option<f64>,
-    query_embeddings: Mutex<VecDeque<(String, Vec<f32>)>>,
+    query_embeddings: Mutex<VecDeque<Arc<QueryEmbedding>>>,
 }
 
 const QUERY_EMBEDDING_CACHE_CAPACITY: usize = 128;
@@ -41,33 +47,37 @@ impl VectorMemoryRetriever {
     }
 
     async fn query_embedding(&self, query: &str, dimensions: usize) -> Result<Vec<f32>> {
-        let cached = self
-            .query_embeddings
-            .lock()
-            .map_err(|_| anyhow::anyhow!("query embedding cache lock failed"))?
-            .iter()
-            .find(|(text, _)| text == query)
-            .map(|(_, vector)| vector.clone());
-        if let Some(vector) = cached {
-            return Ok(vector);
-        }
-        let embeddings = self.embedder.embed_batch(&[query.to_owned()]).await?;
-        validate_embeddings(&embeddings, 1, dimensions)?;
-        let vector = embeddings
-            .into_iter()
-            .next()
-            .context("missing query embedding")?;
-        let mut cache = self
-            .query_embeddings
-            .lock()
-            .map_err(|_| anyhow::anyhow!("query embedding cache lock failed"))?;
-        if !cache.iter().any(|(text, _)| text == query) {
-            if cache.len() == QUERY_EMBEDDING_CACHE_CAPACITY {
-                cache.pop_front();
+        let entry = {
+            let mut cache = self
+                .query_embeddings
+                .lock()
+                .map_err(|_| anyhow::anyhow!("query embedding cache lock failed"))?;
+            if let Some(entry) = cache.iter().find(|entry| entry.query == query) {
+                entry.clone()
+            } else {
+                if cache.len() == QUERY_EMBEDDING_CACHE_CAPACITY {
+                    cache.pop_front();
+                }
+                let entry = Arc::new(QueryEmbedding {
+                    query: query.to_owned(),
+                    vector: OnceCell::new(),
+                });
+                cache.push_back(entry.clone());
+                entry
             }
-            cache.push_back((query.to_owned(), vector.clone()));
-        }
-        Ok(vector)
+        };
+        let vector = entry
+            .vector
+            .get_or_try_init(|| async {
+                let embeddings = self.embedder.embed_batch(&[query.to_owned()]).await?;
+                validate_embeddings(&embeddings, 1, dimensions)?;
+                embeddings
+                    .into_iter()
+                    .next()
+                    .context("missing query embedding")
+            })
+            .await?;
+        Ok(vector.clone())
     }
 
     async fn candidates(

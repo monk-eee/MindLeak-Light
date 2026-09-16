@@ -38,8 +38,10 @@
   Inputs exceeding its explicit text budget fail rather than being truncated.
 - Semantic query caching is bounded to 128 exact query strings per process and
   retriever. It speeds repeat queries, not unseen ones, and never caches result
-  rows. Concurrent cold misses may duplicate embedding work. Benchmarks on small
-  corpora do not establish latency at large scale or under concurrent load.
+  rows. Overlapping callers share initialization while their slot remains cached;
+  eviction, cancellation, or a failed initializer can require another attempt.
+  Unfinished slots also occupy capacity. This is not a global provider-concurrency
+  limit, and small-corpus benchmarks do not establish latency at large scale.
 - Benchmark fact verification uses reviewed canonical wording and accepted
   variants. Valid unseen paraphrases are unverified, not necessarily wrong. The
   synthetic corpus and small per-category samples do not establish population
@@ -54,12 +56,12 @@
   resolution is not supported. Providers may omit model metadata, so identity
   cannot always be verified from their response.
 - Unkeyed writes are atomic but not idempotent; blind retries can duplicate a
-  committed memory. The unreleased `requestId` option protects matching retries
+  committed memory. The `requestId` option, available from v0.3.0, protects matching retries
   only when the client retains its original ID, agent ID, and payload. Receipts
   live with their memory rows and report original write-time tiers, not current
   lifecycle state. Concurrent first attempts can duplicate provider work even
   though only one episode commits. This is not a general exactly-once guarantee.
-- Lifecycle retention, evidence links, and read-time decay are source features,
+- Lifecycle retention, evidence links, and read-time decay are implemented features,
   not a biological simulation or a measured longitudinal quality improvement.
   The half-lives, spaced-feedback thresholds, and priority discount are explicit
   initial policies. No automatic episodic replay, summary generation, or deletion.
@@ -67,17 +69,27 @@
   prove independent evidence, and trusted clients can submit mistaken feedback.
   Long-term/pinned means retained, not true; confirmed means a confirmation was
   recorded. Superseding a disputed fact requires an explicit correction.
-- Direct related-fact context is bounded to eight links per result and, in new
-  source builds, 32 KiB across serialized relationship arrays. A 512 KiB result-array
+- Direct related-fact context is bounded to eight links per result and, from
+  v0.3.0, 32 KiB across serialized relationship arrays. A 512 KiB result-array
   budget preserves primary facts or rejects an oversized request; it is not a
   token limit or a limit on the enclosing MCP wire message. Omitted context is
   reported by `relationshipsTruncated` and `relationshipCount`. This is not a
   recursive graph. Lifecycle cannot rescue facts outside the retrieval candidate
   pool. No automatic deduplication or re-embedding accompanies consolidation.
-- Source writes can archive, restore, or supersede existing facts through explicit
+- Writes can archive, restore, or supersede existing facts through explicit
   links; original episodes/text remain immutable. There is no destructive delete
   or automatic expiry tool. Operators manage backups and data erasure in Postgres;
   memories are not encrypted at the application layer.
+- MCP cancellation drops pending work but cannot undo a commit already sent to
+  PostgreSQL or guarantee that a remote model stops computing. Reconcile an
+  ambiguous keyed write with its original request ID and payload.
+- Final primary metadata and related context share a read-only snapshot, but
+  earlier candidate searches and later client actions do not. Concurrently
+  filtered candidates are not refilled; recall is not a reservation of facts.
+- Bounded link ordering can omit contrary evidence, exact link totals still scan
+  all eligible links, and the tools have no original-source-by-ID read. These
+  [evidence and auditability gaps](../gaps.d/recall-evidence-and-auditability.md)
+  remain open; truncation metadata is not evidence completeness.
 - HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.

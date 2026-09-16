@@ -67,6 +67,18 @@ function persistedRecords() {
     'embedding_model', obj_description('public.fragments'::regclass, 'pg_class'))`));
 }
 
+function lifecycleRecords() {
+  return JSON.parse(sql(`SELECT json_build_object(
+    'memories', (SELECT json_agg(saved ORDER BY id) FROM (
+      SELECT id, context FROM public.memories) AS saved),
+    'fragments', (SELECT json_agg(saved ORDER BY id) FROM (
+      SELECT id, tier, state, evidence, pinned, useful_sessions, confirmed_sessions,
+        reinforced_at, first_evidence_at FROM public.fragments) AS saved),
+    'relationships', (SELECT json_agg(saved ORDER BY source_fragment, target_fragment, relationship_type) FROM (
+      SELECT source_fragment, target_fragment, relationship_type, evidence_session
+      FROM public.relationships) AS saved))`));
+}
+
 async function recallPersisted(endpoint, memoryId, retryRequest) {
   const require = createRequire(new URL("../examples/package.json", import.meta.url));
   const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
@@ -183,6 +195,8 @@ try {
   const saved = snapshot();
   assert.deepEqual(saved, { memories: 1, fragments: 2, vectors: 0, tables: 3, listen: "", fsync: "on" });
 
+  const hadLifecycle = sql(`SELECT EXISTS(SELECT 1 FROM pg_attribute
+    WHERE attrelid = 'public.memories'::regclass AND attname = 'context' AND NOT attisdropped)`) === "t";
   if (upgradeFrom) {
     sql(`BEGIN;
       ALTER TABLE public.fragments ALTER COLUMN embedding TYPE vector(2);
@@ -192,15 +206,29 @@ try {
         SELECT source.id, target.id, 'related' FROM public.fragments AS source
         JOIN public.fragments AS target ON source.id < target.id;
       COMMIT;`);
+    if (hadLifecycle) {
+      sql(`BEGIN;
+        UPDATE public.memories SET context = '{"scope":"container-upgrade","sessionId":"legacy-feedback","source":"published-image fixture","summary":"Preserve existing lifecycle state"}'::jsonb;
+        UPDATE public.fragments SET tier = 'long_term', evidence = 'confirmed',
+          pinned = position('reviews' IN text) > 0,
+          state = CASE WHEN position('reviews' IN text) > 0 THEN 'active' ELSE 'archived' END,
+          useful_sessions = 3, confirmed_sessions = 2,
+          reinforced_at = now() - interval '1 day', first_evidence_at = now() - interval '3 days';
+        COMMIT;`);
+    }
   }
   const before = persistedRecords();
+  const lifecycleBefore = hadLifecycle ? lifecycleRecords() : null;
   const counts = snapshot();
   compose("down");
   env.MINDLEAK_IMAGE = image;
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
   assert.deepEqual(snapshot(), counts, "Recreating the container lost persisted memory");
   assert.deepEqual(persistedRecords(), before, "Upgrade changed original records or embedding metadata");
-  if (upgradeFrom) {
+  if (lifecycleBefore) {
+    assert.deepEqual(lifecycleRecords(), lifecycleBefore,
+      "Upgrade changed existing context, retention, archival, or feedback metadata");
+  } else if (upgradeFrom) {
     assert.equal(sql("SELECT count(*) FROM public.memories WHERE context = '{}'::jsonb"), "1");
     assert.equal(sql("SELECT count(*) FROM public.fragments WHERE tier = 'short_term' AND state = 'active' AND evidence = 'unconfirmed'"), "2");
   }
@@ -212,10 +240,11 @@ try {
   const receipt = await recallPersisted(
     `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest);
   if (upgradeFrom) {
-    console.log("Published-image upgrade: exact raw text, IDs, vectors, links, model metadata, lifecycle defaults, and MCP recall verified.");
+    console.log("Published-image upgrade: exact records, vectors, links, model metadata, existing lifecycle or legacy defaults, and MCP recall verified.");
   }
   const keyedCounts = snapshot();
   const keyedRecords = persistedRecords();
+  const keyedLifecycle = lifecycleRecords();
   compose("down");
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
   assert.deepEqual(await recallPersisted(
@@ -223,6 +252,7 @@ try {
   receipt, "Replaying after container recreation changed the committed receipt");
   assert.deepEqual(snapshot(), keyedCounts, "A keyed retry created extra rows");
   assert.deepEqual(persistedRecords(), keyedRecords, "A keyed retry changed persisted data");
+  assert.deepEqual(lifecycleRecords(), keyedLifecycle, "A keyed retry changed lifecycle metadata");
   console.log("Integrated contracts: ranking metadata and immutable keyed replay after container recreation verified.");
   console.log("All-in-one image: auth, MCP write/recall, socket-only Postgres, and volume persistence verified.");
 } catch (error) {

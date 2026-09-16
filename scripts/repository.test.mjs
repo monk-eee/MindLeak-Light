@@ -288,11 +288,16 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(release, { recursive: true });
   writeFileSync(join(release, "mindleak-light"), "test executable\n");
   for (const name of ["README.md", "LICENSE", "SECURITY.md"]) writeFileSync(join(directory, name), name);
-  const branding = ["mindleak_logo.png", "mindleak_128x128.png"];
+  const branding = [
+    "mindleak_logo.png", "mindleak_128x128.png", "architecture.excalidraw",
+    "architecture-overview.svg", "architecture-write.svg", "architecture-recall.svg",
+    "architecture-lifecycle.svg",
+  ];
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md"]) {
+  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md"];
+  for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
   const archive = packageBinary(directory, target, "0.1.0");
@@ -304,7 +309,7 @@ test("release packaging includes a pluggable binary, installation guide, brandin
     const packaged = execFileSync("tar", ["-xOf", archive, `./assets/${name}`]);
     assert.deepEqual(packaged, readFileSync(join(directory, "assets", name)));
   }
-  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md"]) {
+  for (const name of guides) {
     assert.ok(contents.includes(`docs/${name}`), `release archive is missing ${name}`);
   }
   const mcp = JSON.parse(execFileSync("tar", ["-xOf", archive, "./mcp.example.json"], { encoding: "utf8" }));

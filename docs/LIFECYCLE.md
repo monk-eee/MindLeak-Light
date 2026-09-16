@@ -101,8 +101,8 @@ In both cases, the first and latest feedback must be at least 24 hours apart.
 Waiting after a burst of feedback does not satisfy that spacing. Repeating the
 same target/type/session is a no-op for counters, timestamps, and promotion,
 including concurrent calls from different agents. The additional raw feedback
-episode is still saved for an unkeyed write. In source builds supporting
-`requestId`, replaying the same keyed request returns the original receipt and
+episode is still saved for an unkeyed write. From v0.3.0,
+replaying the same `requestId` returns the original receipt and
 does not create another episode or reapply lifecycle actions. Feedback uniqueness
 and whole-write retry safety are different guarantees; see
 [retry-safe writes](INTEGRATION.md#retry-safe-writes).
@@ -164,7 +164,7 @@ included per result; the count reveals omitted links. Linked facts include their
 own source context and state. Historical linked references can be shown as context
 even though they are not active relevance matches. No recursive traversal occurs.
 
-Source builds after v0.2.0 additionally return `rankingPriority` and
+Version 0.3.0 additionally returns `rankingPriority` and
 `relationshipsTruncated`. Priority is `score - abs(score) * 0.25 * (1 - activation)`;
 results sort by that value, then fragment UUID. Do not resort by `score` unless
 you deliberately want to ignore the lifecycle adjustment.
@@ -180,7 +180,7 @@ budgets, not token budgets or the size of the enclosing MCP response.
 `relationshipCount` is the number of eligible links before per-fact/global limits;
 `relationshipsTruncated` is true when fewer are included. An empty relationship
 array with a positive count does not mean the fact is unrelated. These additions
-require a new source build; v0.2.0 images retain their original response contract.
+require v0.3.0 or newer; v0.2.0 images retain their original response contract.
 
 Set `includeInactive: true` to inspect archived or superseded matches explicitly.
 That does not reactivate them. A normal recall never mutates facts, counters, or

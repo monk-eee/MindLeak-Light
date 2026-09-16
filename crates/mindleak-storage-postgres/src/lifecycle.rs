@@ -6,7 +6,7 @@ use mindleak_memory::{
     RelatedFact, RelationshipType, MAX_FACT_LINKS, MAX_MEMORY_LINKS, MAX_RECALL_RESULT_BYTES,
     MAX_RELATED_CONTEXT_BYTES,
 };
-use tokio_postgres::{Row, Transaction};
+use tokio_postgres::{IsolationLevel, Row, Transaction};
 use uuid::Uuid;
 
 use crate::PostgresMemoryStore;
@@ -185,6 +185,39 @@ impl PostgresMemoryStore {
         filter: &RecallFilter,
         limit: usize,
     ) -> Result<Vec<RecallMatch>> {
+        if facts.is_empty() {
+            return Ok(facts);
+        }
+        let identifiers: Vec<_> = facts.iter().map(|fact| fact.fragment_id).collect();
+        let scores: Vec<_> = facts.iter().map(|fact| fact.score).collect();
+        let mut connection = self
+            .pool
+            .get()
+            .await
+            .context("acquire database connection")?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await?;
+        let rows = transaction.query(
+            &format!("SELECT memories.id AS memory_id, fragments.id AS fragment_id, memories.agent_id, \
+                fragments.text, candidates.score, {LIFECYCLE_COLUMNS} \
+                FROM unnest($1::uuid[], $2::double precision[]) AS candidates(fragment_id, score) \
+                JOIN public.fragments AS fragments ON fragments.id = candidates.fragment_id \
+                JOIN public.memories AS memories ON memories.id = fragments.memory_id \
+                WHERE ($3::text IS NULL OR memories.agent_id = $3) \
+                  AND ($4::text IS NULL OR memories.context->>'scope' = $4) \
+                  AND ($5::text IS NULL OR fragments.tier = $5) \
+                  AND ($6::boolean OR fragments.state = 'active')"),
+            &[&identifiers, &scores, &filter.agent_id, &filter.scope,
+              &filter.tier.map(MemoryTier::as_str), &filter.include_inactive],
+        ).await.context("refresh primary facts in recall snapshot")?;
+        facts = rows
+            .into_iter()
+            .map(crate::queries::recall_match)
+            .collect::<Result<_>>()?;
         for fact in &mut facts {
             fact.ranking_priority = priority(fact);
         }
@@ -196,15 +229,14 @@ impl PostgresMemoryStore {
         });
         facts.truncate(limit);
         if facts.is_empty() {
+            transaction
+                .commit()
+                .await
+                .context("complete empty recall snapshot")?;
             return Ok(facts);
         }
         let identifiers: Vec<_> = facts.iter().map(|fact| fact.fragment_id).collect();
-        let connection = self
-            .pool
-            .get()
-            .await
-            .context("acquire database connection")?;
-        let rows = connection.query(
+        let rows = transaction.query(
             "SELECT owners.id AS owner_id, linked.* FROM unnest($1::uuid[]) AS owners(id) \
              JOIN public.fragments AS owner ON owner.id = owners.id \
              JOIN public.memories AS owner_memory ON owner_memory.id = owner.memory_id \
@@ -242,6 +274,10 @@ impl PostgresMemoryStore {
             });
         }
         allocate_related_context(&mut facts, relations)?;
+        transaction
+            .commit()
+            .await
+            .context("complete recall snapshot")?;
         Ok(facts)
     }
 }
@@ -288,6 +324,117 @@ fn allocate_related_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "postgres-tests")]
+    #[tokio::test]
+    async fn final_recall_revalidates_primary_state_and_filters() {
+        use mindleak_memory::{EmbeddedFragment, MemoryContext, MemoryStore, PreparedRelationship};
+
+        let url = std::env::var("MINDLEAK_TEST_DATABASE_URL").unwrap();
+        let config: tokio_postgres::Config = url.parse().unwrap();
+        assert!(config
+            .get_dbname()
+            .is_some_and(|name| name.ends_with("_test")));
+        let store = PostgresMemoryStore::connect(&url, None, 4, None)
+            .await
+            .unwrap();
+        let original = PreparedMemory {
+            id: Uuid::new_v4(),
+            agent_id: format!("snapshot-{}", Uuid::new_v4()),
+            raw_text: "The team requires reviews.".into(),
+            context: MemoryContext {
+                scope: Some(format!("scope-{}", Uuid::new_v4())),
+                ..Default::default()
+            },
+            fragments: vec![EmbeddedFragment {
+                id: Uuid::new_v4(),
+                text: "The team requires reviews.".into(),
+                embedding: None,
+                importance: 0.5,
+                tier: MemoryTier::ShortTerm,
+                pinned: false,
+            }],
+            relationships: Vec::new(),
+            request: None,
+        };
+        store.save(&original).await.unwrap();
+        let filter = RecallFilter {
+            agent_id: Some(original.agent_id.clone()),
+            scope: original.context.scope.clone(),
+            ..Default::default()
+        };
+        let candidates = store.keyword_search("reviews", &filter, 5).await.unwrap();
+        assert_eq!(candidates.len(), 1);
+        let mut archive = original.clone();
+        archive.id = Uuid::new_v4();
+        archive.fragments[0].id = Uuid::new_v4();
+        archive.fragments[0].text = "Archive decision.".into();
+        archive.raw_text = archive.fragments[0].text.clone();
+        archive.relationships.push(PreparedRelationship {
+            source_fragment: archive.fragments[0].id,
+            target_fragment: original.fragments[0].id,
+            relationship_type: RelationshipType::Archives,
+        });
+        store.save(&archive).await.unwrap();
+        store
+            .pool
+            .get()
+            .await
+            .unwrap()
+            .execute(
+                "UPDATE public.fragments SET tier = 'long_term', pinned = true WHERE id = $1",
+                &[&original.fragments[0].id],
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .finish_recall(candidates.clone(), &filter, 5)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a primary archived after candidate search must not return as active"
+        );
+        let history_filter = RecallFilter {
+            include_inactive: true,
+            ..filter.clone()
+        };
+        let history = store
+            .finish_recall(candidates.clone(), &history_filter, 5)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].lifecycle.state, FactState::Archived);
+        assert_eq!(history[0].lifecycle.tier, MemoryTier::LongTerm);
+        assert!(history[0].lifecycle.pinned);
+        assert_eq!(history[0].activation, 0.0);
+        assert_eq!(history[0].score, candidates[0].score);
+        assert_eq!(history[0].ranking_priority, priority(&history[0]));
+        assert_eq!(
+            history[0].relationships[0].relationship_type,
+            RelationshipType::Archives
+        );
+        for changed in [
+            RecallFilter {
+                tier: Some(MemoryTier::ShortTerm),
+                ..history_filter.clone()
+            },
+            RecallFilter {
+                scope: Some("other-scope".into()),
+                ..history_filter.clone()
+            },
+            RecallFilter {
+                agent_id: Some("other-agent".into()),
+                ..history_filter
+            },
+        ] {
+            assert!(store
+                .finish_recall(candidates.clone(), &changed, 5)
+                .await
+                .unwrap()
+                .is_empty());
+        }
+    }
 
     fn fact(identifier: u128) -> RecallMatch {
         RecallMatch {

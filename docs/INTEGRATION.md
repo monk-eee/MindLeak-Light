@@ -203,7 +203,7 @@ context. Do not bypass client approvals to make the policy appear automatic.
 
 | Tool | Arguments | Successful Result |
 |---|---|---|
-| `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (unreleased) | `memoryId` and `fragments` with IDs, text, and tier after commit |
+| `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (v0.3.0+) | `memoryId` and `fragments` with IDs, text, and tier after commit |
 | `recall_memory` | `query`, optional `agentId`, `scope`, `tier`, `includeInactive`, `limit` | Array of matched facts with IDs, text, score, context, lifecycle, activation, and direct relationships |
 | `decompose_memory` | `text` | Array of strings; preview only, no database write |
 
@@ -257,8 +257,8 @@ hide a successful write's ID; reconcile before retrying an unkeyed write.
 
 ### Retry-Safe Writes
 
-This is an **unreleased source feature**, not part of the published v0.2.0
-packages. A server that supports it advertises `requestId` in the `write_memory`
+Available from **v0.3.0**; older packages do not accept the field.
+A server that supports it advertises `requestId` in the `write_memory`
 input schema. It does not add another MCP tool or application table.
 
 Generate a UUID once per logical write and retain it with the original arguments
@@ -298,13 +298,30 @@ failures and timeouts remain errors, not successful replays without a stored
 receipt. The key and receipt persist with the memory; deleting that row also
 removes retry protection. No automatic client retry loop is added.
 
+### Cancellation
+
+Version 0.3.0 observes the official MCP request cancellation token for all three
+tools and drops pending work. Cancelling a blocked preparation step stops that
+request from continuing into storage. This cannot undo a commit already sent to
+PostgreSQL, and dropping a local provider request does not prove the provider
+stopped its own computation. After cancellation near commit, reconcile with the
+original `requestId` and payload; do not assume the write was rolled back.
+
 ### Bounded Recall Context
 
-Source builds after v0.2.0 add `rankingPriority` and `relationshipsTruncated` to
+Version 0.3.0 adds `rankingPriority` and `relationshipsTruncated` to
 each recall match. `score` is unchanged; `rankingPriority` exposes the actual
 lifecycle-adjusted ordering signal. Both are ranking values, not confidence.
 `relationshipCount` counts eligible direct links before limits; truncation is
 explicit when the result includes only some of them.
+
+Before final ranking, the bounded candidates are refreshed and their state,
+agent, scope, and tier filters are checked again. Primary metadata and direct
+relationships use one short read-only snapshot after query embedding. A fact
+archived since candidate search is excluded from normal recall; historical
+recall sees its refreshed state. Results describe that snapshot, not a promise
+that another writer cannot change facts before the client uses them. Candidates
+removed at final validation are not replaced by an unbounded search.
 
 Each result retains at most eight links, with a shared 32 KiB budget for serialized
 relationship arrays across the response. Primary results are reserved first; a

@@ -9,13 +9,13 @@ embedding model; [models are a recommended optional upgrade](MODELS.md).
 | All-in-one container | One container to run and back up | Docker/Podman, a persistent volume, and an HTTP token |
 | Source Compose stack | Developing MindLeak itself | Git and Docker/Podman Compose |
 
-This guide targets **v0.2.0**: model-free keyword recall, optional pgvector or
-hybrid recall, configurable similarity thresholds, contextual fact lifecycle,
-and bounded provider responses. Models remain optional. Download versioned
+This guide targets **v0.3.0**: model-free keyword recall, optional pgvector or
+hybrid recall, contextual fact lifecycle, retry-safe writes, bounded recall
+context, and shared concurrent query embeddings. Models remain optional. Download versioned
 archives from [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
 or get the full all-in-one image from
 [Docker Hub](https://hub.docker.com/r/monkeemagic/mindleak-light), pinned as
-`monkeemagic/mindleak-light:0.2.0`. The
+`monkeemagic/mindleak-light:0.3.0`. The
 [publishing workflow](https://github.com/monk-eee/MindLeak-Light/actions/workflows/docker-hub.yml)
 records image verification. Older binaries do not gain features from new settings.
 
@@ -46,6 +46,8 @@ Download your platform's archive and its `.sha256` file from
 The client starts the binary with `--transport stdio`. It initializes the three
 tables and waits for MCP requests; silence in a terminal is normal. See
 [agent integration](INTEGRATION.md) for calls, permissions, and the memory policy.
+Each archive also includes the editable architecture board, four self-contained
+SVG previews, and the architecture guide.
 
 Remote PostgreSQL should use `sslmode=require`; a private CA can be supplied via
 `MINDLEAK_DATABASE_CA_FILE`. Use `sslmode=disable` only for trusted local setups.
@@ -64,7 +66,7 @@ HTTP port is exposed. A process supervisor manages startup and shutdown.
 Pin the version tag so upgrades are deliberate:
 
 ```sh
-docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.2.0
+docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.3.0
 ```
 
 That token is a public local-development example. For anything shared, use your
@@ -94,7 +96,7 @@ docker compose -f docker/compose.all-in-one.yml up --detach --wait
 ```
 
 This starts one container, not the two-service development stack. The file
-defaults to `monkeemagic/mindleak-light:0.2.0`. This release does not promote the
+defaults to `monkeemagic/mindleak-light:0.3.0`. This release does not promote the
 `latest` alias. Override `MINDLEAK_IMAGE` to pin a digest or another version.
 Podman may not expose embedded health metadata from published OCI images. The
 Compose template defines its own health check so `up --wait` still verifies
@@ -126,21 +128,25 @@ PostgreSQL major-version upgrades require a database upgrade procedure, not just
 changing the image tag. This single-container package is convenient for a laptop
 or small deployment, not a high-availability database service.
 
-### Upgrade from 0.1.0
+### Upgrade from 0.1.0 or 0.2.0
 
 Back up and test the restore first. Stop all old MCP processes, then replace the
-binary or container with 0.2.0 using the same database or volume. Startup applies
-the lifecycle migration atomically under the existing database advisory lock.
+binary or container with 0.3.0 using the same database or volume. Startup applies
+the required migrations atomically under the existing database advisory lock.
 Existing raw text, IDs, fragments, vectors, relationships, and embedding model
-metadata are preserved. Existing facts start active, unconfirmed, and short-term;
-their context is empty. No re-embedding or model download is required.
+metadata are preserved. Existing 0.2.0 context, lifecycle states, tiers, pins,
+and feedback history are retained. Facts from 0.1.0 acquire empty context and
+active, unconfirmed, short-term lifecycle defaults. Existing memories remain
+unkeyed; retry protection applies to new writes that supply `requestId`.
+No re-embedding or model download is required.
 
 Keep the original embedding model and dimensions when enabling vector or hybrid
-recall. Do not run 0.1.0 and 0.2.0 MCP processes concurrently against the upgraded
-database: older clients cannot apply the new lifecycle visibility rules. Rollback
-means stopping 0.2.0, restoring the pre-upgrade backup to a separate database or
-volume, and pointing 0.1.0 at that restored copy. An in-place downgrade is not
-supported and would expose archived or superseded facts through the old server.
+recall. Avoid running mixed server versions during the upgrade: older servers
+do not support the new retry and response contracts, and 0.1.0 also ignores
+lifecycle visibility. Rollback means stopping 0.3.0, restoring the pre-upgrade
+backup to a separate database or volume, and pointing the previous binary at
+that restored copy. An in-place downgrade is not supported. Clients must check
+the server's advertised tool schema before sending `requestId`.
 
 For optional models, pass the [model settings](MODELS.md) as container environment
 variables. For a calibrated similarity threshold in the all-in-one

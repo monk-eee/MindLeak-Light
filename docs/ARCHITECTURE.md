@@ -1,8 +1,8 @@
 # Architecture
 
-This describes the integrated source: v0.2.0 contextual fact lifecycle, hybrid
-recall, cached query embeddings, and provider safeguards, plus unreleased
-retry-safe writes, modular storage, response budgets, and ranking diagnostics.
+This describes v0.3.0: contextual fact lifecycle, hybrid recall, shared query
+embeddings, provider safeguards, retry-safe writes, modular storage, response
+budgets, and ranking diagnostics.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
 All four diagrams are editable frames in the
@@ -70,6 +70,12 @@ are errors rather than successful results with a null score.
 
 ## Provider Responses
 
+All three MCP handlers consume the SDK `RequestContext` cancellation token.
+A cancellation-aware future drops pending service work rather than merely
+stopping the client wait. This is cooperative cancellation, not rollback of an
+already-sent commit or a guarantee about remote provider execution. See
+[ADR-0013](../adr.d/0013-cancellation-and-recall-snapshots.md).
+
 The `mindleak-provider` crate owns the shared `read_json_response` boundary used
 by the decomposition, embedding, and relevance clients. It caps each provider
 body at 4 MiB before JSON parsing, checking the declared length when available
@@ -102,13 +108,22 @@ vectors by PostgreSQL's cosine-distance operator. NULL embeddings are excluded,
 not filled with fake vectors. Both paths filter by agent before limiting. Vector
 search is exact and has no approximate-vector index yet.
 
-Vector/hybrid retrievers keep an in-process FIFO cache of at most 128 validated
-query embeddings, keyed by the exact query string. Cache hits skip embedding
-inference, not database recall: current rows and agent filters are always checked.
-Invalid vectors and provider failures are not cached. The cache belongs to one
-fixed model/dimension space and is cleared on process exit; concurrent misses
-may duplicate inference. Hybrid keyword lookup runs concurrently with the vector
-path. No mutex is held during an await. See
+Vector/hybrid retrievers keep an in-process FIFO cache of at most 128 exact-query
+slots, including unfinished initializations. Each slot uses a Tokio `OnceCell`
+to share a successful embedding calculation between overlapping callers; only
+validated vectors populate the cell. Query keys preserve case and whitespace.
+Cache hits skip embedding inference, not database recall: current rows and agent,
+scope, state, and tier filters are always checked.
+
+A failed initializer returns its error without populating the cell. A waiting or
+later caller can make its own attempt after a failure or cancellation; the failed
+call is not retried internally. Different query strings initialize independently.
+FIFO eviction uses the slot's insertion order, and an evicted in-flight slot can
+lead to another calculation if that query arrives again. Uninitialized slots
+remain bounded by the same capacity and can be retried or evicted. The cache
+belongs to one fixed model/dimension space and is cleared on process exit.
+Hybrid keyword lookup runs concurrently with the vector path. The cache mutex
+is released before inference or awaiting a cell. See
 [ADR-0009](../adr.d/0009-fast-recall-and-optional-model-controls.md).
 
 `MINDLEAK_RECALL_MIN_SIMILARITY` optionally filters vector candidates by cosine
@@ -124,6 +139,15 @@ can survive without an embedding or below the cosine floor; the floor gates the
 semantic branch only. Different facts from one memory remain distinct. Enabled
 provider failures are propagated, never hidden behind keyword results.
 See [ADR-0007](../adr.d/0007-hybrid-recall-and-calibrated-relevance.md).
+
+Finalization refreshes the bounded candidate IDs and their lifecycle metadata in
+a short read-only `REPEATABLE READ` transaction, reapplies agent/scope/tier/state
+filters, then ranks and loads direct relationships from that same snapshot.
+Original keyword/cosine/fused scores remain intact. This prevents mixed primary
+and relationship states when a concurrent archive commits between candidate
+lookup and finalization. It does not refill missing candidates or establish one
+snapshot for all earlier search signals. No transaction is held during query
+embedding or optional relevance inference.
 
 `MINDLEAK_RELEVANCE=openai` optionally wraps any candidate retriever with
 `OpenAiRelevanceRetriever`. It asks a configured model to select existing
