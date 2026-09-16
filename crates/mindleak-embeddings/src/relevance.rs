@@ -3,8 +3,8 @@ use std::{collections::HashSet, sync::Arc};
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{
-    validate_text, MemoryRetriever, RecallFilter, RecallMatch, MAX_FRAGMENT_BYTES,
-    MAX_MEMORY_BYTES, MAX_RECALL_LIMIT,
+    validate_text, MemoryRetriever, RecallDiagnostics, RecallFilter, RecallMatch,
+    MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES, MAX_RECALL_LIMIT,
 };
 use mindleak_provider::read_json_response;
 use reqwest::{Client, Url};
@@ -74,6 +74,16 @@ impl OpenAiRelevanceRetriever {
 
 #[async_trait]
 impl MemoryRetriever for OpenAiRelevanceRetriever {
+    async fn query_diagnostics(
+        &self,
+        query: &str,
+        filter: &RecallFilter,
+    ) -> Result<RecallDiagnostics> {
+        let mut diagnostics = self.candidates.query_diagnostics(query, filter).await?;
+        diagnostics.relevance_filter = true;
+        Ok(diagnostics)
+    }
+
     async fn recall(
         &self,
         query: &str,

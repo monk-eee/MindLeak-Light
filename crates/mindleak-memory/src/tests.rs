@@ -276,7 +276,8 @@ async fn recall_uses_only_the_replaceable_retriever() {
         )
         .await
         .unwrap();
-    assert_eq!(result[0].text, "Keep PRs small");
+    assert_eq!(result.results[0].text, "Keep PRs small");
+    assert!(serde_json::to_value(&result).unwrap().is_array());
     assert_eq!(*backend.events.lock().unwrap(), ["recall"]);
 }
 

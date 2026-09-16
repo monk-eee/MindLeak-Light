@@ -3,6 +3,8 @@
 This describes v0.3.0: contextual fact lifecycle, hybrid recall, shared query
 embeddings, provider safeguards, retry-safe writes, modular storage, response
 budgets, and ranking diagnostics.
+The explicitly marked unreleased document-recall extensions below are not yet
+part of the v0.3.0 diagrams or published packages.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
 All four diagrams are editable frames in the
@@ -27,6 +29,7 @@ existing store rather than a parallel persistence path:
 | [queries.rs](../crates/mindleak-storage-postgres/src/queries.rs) | Filtered SQL searches and result decoding |
 | [retrieval.rs](../crates/mindleak-storage-postgres/src/retrieval.rs) | Keyword/vector/hybrid strategies, query cache, and rank fusion |
 | [lifecycle.rs](../crates/mindleak-storage-postgres/src/lifecycle.rs) | Explicit feedback updates, activation priority, and bounded relationship reads |
+| [documents.rs](../crates/mindleak-storage-postgres/src/documents.rs) | Unreleased bounded same-episode context and shared context-budget allocation |
 
 ## Write
 
@@ -99,8 +102,8 @@ related context. All recall paths are read-only. The cache stores only vectors;
 current database data and lifecycle filters are always re-evaluated.
 
 `MemoryRetriever` owns the query-to-results boundary. `KeywordMemoryRetriever`
-uses PostgreSQL's English text-search configuration, `websearch_to_tsquery`, and
-normalized `ts_rank_cd`, with a GIN expression index. It searches all fragments.
+uses PostgreSQL's English text-search configuration, defaults to
+`websearch_to_tsquery`, and uses normalized `ts_rank_cd` with a GIN index.
 Use short keyword queries; unrelated synonyms are not inferred.
 
 Optional `VectorMemoryRetriever` embeds the query and orders fragments with
@@ -165,6 +168,42 @@ See [ADR-0008](../adr.d/0008-bounded-model-relevance-selection.md).
 The client agent performs synthesis from returned fragments and their provenance.
 Replacing the retriever does not change the MCP tools or write pipeline. RAST
 is an interface extension point, not a shipped implementation.
+
+### Unreleased Document Recall
+
+The existing three-table design now stores a derived `fragments.search_vector`
+combining fragment text with lower-weight `context.source` and `context.summary`
+terms. Qualified fragment lexemes remain searchable alongside dot-component
+aliases. Source metadata also supplies path-component terms. A single GIN index
+serves all-term queries spanning text and metadata, without a cross-table scan
+as the only search plan. Fragment and source-context triggers keep the vector
+current; migration backfills old rows without changing raw text or embeddings.
+
+`matchMode` selects web-search syntax or literal all/any English terms using
+PostgreSQL parsers. The same SQL expression supplies optional query diagnostics
+through `MemoryRetriever::query_diagnostics`. Disabled diagnostics add no lookup;
+an unsupported custom retriever reports an explicit error when asked for them.
+Vector-only recall rejects explicit all/any keyword modes; hybrid applies them
+only to its keyword branch, preserving semantic candidate behavior.
+
+`contextLimit` enables a single bounded same-episode lookup within the existing
+final `REPEATABLE READ` transaction. New writes store fragment order; legacy
+order is recovered only for unambiguous literal source positions. Unknown order
+is reported, not invented. Context has no retrieval score and does not create
+relationships. Requested visibility filters still apply. It shares the 32 KiB
+context budget with existing links, which are allocated first; omissions remain
+explicit under both per-primary and total response bounds.
+
+`MemoryService` optionally groups exact equal text only after the retriever and
+optional relevance selector have applied the fragment limit. Every included
+occurrence keeps its provenance, lifecycle, scores, links, and document context.
+No stored records or evidence counters are merged. `RecallResponse` retains the
+existing text-array serialization unless diagnostics are requested; with them,
+the result is an object containing `results` and `diagnostics`. The service checks
+the final 512 KiB serialized payload, including grouped provenance and any
+diagnostics. MCP envelope/dual-representation overhead remains outside that cap.
+See [ADR-0015](../adr.d/0015-document-keyword-recall.md) and the
+[operator contract](INTEGRATION.md#document-recall-controls).
 
 ## Contextual Fact Lifecycle
 

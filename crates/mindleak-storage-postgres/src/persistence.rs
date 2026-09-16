@@ -106,11 +106,11 @@ impl MemoryStore for PostgresMemoryStore {
         }
         let statement = transaction
             .prepare(
-                     "INSERT INTO public.fragments (id, memory_id, text, embedding, importance, tier, pinned) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                     "INSERT INTO public.fragments (id, memory_id, text, embedding, importance, tier, pinned, fragment_index) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .await?;
-        for fragment in &memory.fragments {
+        for (index, fragment) in memory.fragments.iter().enumerate() {
             transaction
                 .execute(
                     &statement,
@@ -122,6 +122,7 @@ impl MemoryStore for PostgresMemoryStore {
                         &fragment.importance,
                         &fragment.tier.as_str(),
                         &fragment.pinned,
+                        &i32::try_from(index)?,
                     ],
                 )
                 .await

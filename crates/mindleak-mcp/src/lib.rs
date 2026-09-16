@@ -5,8 +5,8 @@ pub use http::http_router;
 use std::future::Future;
 
 use mindleak_memory::{
-    FactDirective, InvalidInput, MemoryContext, MemoryService, MemoryTier, RecallFilter,
-    WriteOptions,
+    FactDirective, InvalidInput, KeywordMatchMode, MemoryContext, MemoryService, MemoryTier,
+    RecallFilter, WriteOptions,
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -55,7 +55,9 @@ pub struct RecallMemoryInput {
     query: String,
     #[schemars(description = "Optional agent provenance filter; omit to recall shared memory.")]
     agent_id: Option<String>,
-    #[schemars(description = "Maximum number of fragments, 1 to 50; defaults to 10.")]
+    #[schemars(
+        description = "Maximum number of matched fragments before optional duplicate grouping, 1 to 50; defaults to 10."
+    )]
     limit: Option<usize>,
     #[schemars(
         description = "Optional project/topic context filter, independent from agent provenance."
@@ -68,6 +70,26 @@ pub struct RecallMemoryInput {
         description = "Include archived and superseded facts for explicit historical inspection. Default false."
     )]
     include_inactive: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Keyword branch matching: websearch (default) preserves quotes, OR, and exclusions; all/any treat input as literal terms. Applies to keyword and hybrid recall, not vector-only recall."
+    )]
+    match_mode: KeywordMatchMode,
+    #[serde(default)]
+    #[schemars(
+        description = "Include the retrieval strategy and PostgreSQL-parsed keyword query and terms. Default false; diagnostics are not a relevance or completeness guarantee."
+    )]
+    diagnostics: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Include up to 0..8 nearby fragments from each matched source episode; default 0. Context shares the 32 KiB related-context budget, keeps source provenance, and is not a scored match or inferred relationship."
+    )]
+    context_limit: usize,
+    #[serde(default)]
+    #[schemars(
+        description = "Group exact equal text within the returned working set. Each additional occurrence keeps its IDs, context, scores, lifecycle, links, and document context in duplicateSources. No stored facts are merged; sourceCount is not a corpus-wide count. Default false."
+    )]
+    group_duplicates: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -134,6 +156,10 @@ impl MemoryMcp {
                     scope: input.scope,
                     tier: input.tier,
                     include_inactive: input.include_inactive,
+                    match_mode: input.match_mode,
+                    diagnostics: input.diagnostics,
+                    context_limit: input.context_limit,
+                    group_duplicates: input.group_duplicates,
                 },
                 input.limit.unwrap_or(10),
             ),

@@ -18,9 +18,74 @@ pub const MAX_FRAGMENT_BYTES: usize = 4096;
 pub const MAX_FRAGMENTS: usize = 64;
 pub const MAX_RECALL_LIMIT: usize = 50;
 pub const MAX_FACT_LINKS: usize = 8;
+pub const MAX_DOCUMENT_CONTEXT_FRAGMENTS: usize = 8;
 pub const MAX_MEMORY_LINKS: usize = 128;
 pub const MAX_RELATED_CONTEXT_BYTES: usize = 32 * 1024;
 pub const MAX_RECALL_RESULT_BYTES: usize = 512 * 1024;
+
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum KeywordMatchMode {
+    #[default]
+    Websearch,
+    All,
+    Any,
+}
+
+impl KeywordMatchMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Websearch => "websearch",
+            Self::All => "all",
+            Self::Any => "any",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeywordQueryDiagnostics {
+    pub match_mode: KeywordMatchMode,
+    pub parsed_query: String,
+    pub terms: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallDiagnostics {
+    pub strategy: &'static str,
+    pub keyword: Option<KeywordQueryDiagnostics>,
+    pub relevance_filter: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecallResponse {
+    pub results: Vec<RecallMatch>,
+    pub diagnostics: Option<RecallDiagnostics>,
+}
+
+impl Serialize for RecallResponse {
+    fn serialize<Serializer>(
+        &self,
+        serializer: Serializer,
+    ) -> Result<Serializer::Ok, Serializer::Error>
+    where
+        Serializer: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        if let Some(diagnostics) = &self.diagnostics {
+            let mut response = serializer.serialize_struct("RecallResponse", 2)?;
+            response.serialize_field("results", &self.results)?;
+            response.serialize_field("diagnostics", diagnostics)?;
+            response.end()
+        } else {
+            self.results.serialize(serializer)
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -104,6 +169,74 @@ pub struct RecallMatch {
     pub relationships: Vec<RelatedFact>,
     pub relationship_count: i64,
     pub relationships_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fragment_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_context: Option<DocumentContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_count: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub duplicate_sources: Vec<RecallSource>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallSource {
+    pub memory_id: Uuid,
+    pub fragment_id: Uuid,
+    pub agent_id: String,
+    pub score: f64,
+    pub context: MemoryContext,
+    pub lifecycle: FactLifecycle,
+    pub activation: f64,
+    pub ranking_priority: f64,
+    pub relationships: Vec<RelatedFact>,
+    pub relationship_count: i64,
+    pub relationships_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fragment_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_context: Option<DocumentContext>,
+}
+
+impl From<RecallMatch> for RecallSource {
+    fn from(fact: RecallMatch) -> Self {
+        Self {
+            memory_id: fact.memory_id,
+            fragment_id: fact.fragment_id,
+            agent_id: fact.agent_id,
+            score: fact.score,
+            context: fact.context,
+            lifecycle: fact.lifecycle,
+            activation: fact.activation,
+            ranking_priority: fact.ranking_priority,
+            relationships: fact.relationships,
+            relationship_count: fact.relationship_count,
+            relationships_truncated: fact.relationships_truncated,
+            fragment_index: fact.fragment_index,
+            document_context: fact.document_context,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentContext {
+    pub fragments: Vec<DocumentFragment>,
+    pub truncated: bool,
+    pub order_known: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentFragment {
+    pub fragment_id: Uuid,
+    pub memory_id: Uuid,
+    pub agent_id: String,
+    pub text: String,
+    pub context: MemoryContext,
+    pub lifecycle: FactLifecycle,
+    pub fragment_index: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -216,6 +349,17 @@ pub trait MemoryRetriever: Send + Sync {
         filter: &RecallFilter,
         limit: usize,
     ) -> Result<Vec<RecallMatch>>;
+
+    async fn query_diagnostics(
+        &self,
+        _query: &str,
+        _filter: &RecallFilter,
+    ) -> Result<RecallDiagnostics> {
+        Err(
+            InvalidInput("the configured retriever does not provide query diagnostics".into())
+                .into(),
+        )
+    }
 }
 
 pub fn validate_text(text: &str, field: &str, max_bytes: usize) -> Result<()> {

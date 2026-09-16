@@ -1,4 +1,5 @@
 mod connection;
+mod documents;
 mod lifecycle;
 mod persistence;
 mod queries;
