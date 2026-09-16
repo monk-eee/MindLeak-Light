@@ -1,6 +1,6 @@
 services:
   mindleak-light:
-    image: ${MINDLEAK_IMAGE:-monkeemagic/mindleak-light:0.3.0}
+    image: ${MINDLEAK_IMAGE:-monkeemagic/mindleak-light:0.4.0}
     environment:
       MINDLEAK_HTTP_TOKEN: ${MINDLEAK_HTTP_TOKEN:?Set a strong MINDLEAK_HTTP_TOKEN}
       POSTGRES_DB: ${POSTGRES_DB:-mindleak_light}

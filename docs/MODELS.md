@@ -114,11 +114,11 @@ retain their original text, provenance, scores, and order. An empty selection is
 valid. Provider failures or invalid selections fail recall rather than returning
 unfiltered candidates. No selection request is made for an empty candidate list.
 
-Current source also accepts directly useful negative evidence: explicit unknowns,
+Version 0.4.0 also accepts directly useful negative evidence: explicit unknowns,
 unapproved status, prohibitions, failed approaches, and missing prerequisites.
 For example, "the rollout is not approved" is useful for a question asking its
 approved date, without supplying or inventing a date. Mere topic overlap remains
-irrelevant. This revised prompt policy is not present in v0.3.0. Use the
+irrelevant. Older releases use the earlier direct-answer policy. Use the
 [versioned evidence fixture](../examples/fixtures/recall-evidence-v1.json) as a
 regression check, not an independent quality estimate. Exact source inspection
 by fragment ID bypasses this optional selector entirely.

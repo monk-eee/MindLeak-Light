@@ -79,7 +79,13 @@ function lifecycleRecords() {
       FROM public.relationships) AS saved))`));
 }
 
-async function recallPersisted(endpoint, memoryId, retryRequest, expectedRaw) {
+function requestReceipts() {
+  return JSON.parse(sql(`SELECT COALESCE(json_agg(receipt ORDER BY id), '[]'::json)
+    FROM (SELECT id, request_id, request_payload, write_result FROM public.memories
+      WHERE request_id IS NOT NULL) AS receipt`));
+}
+
+async function withClient(endpoint, operation) {
   const require = createRequire(new URL("../examples/package.json", import.meta.url));
   const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/sdk/client/streamableHttp.js");
@@ -88,6 +94,22 @@ async function recallPersisted(endpoint, memoryId, retryRequest, expectedRaw) {
     await client.connect(new StreamableHTTPClientTransport(new URL(`${endpoint}/mcp`), {
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
     }));
+    return await operation(client);
+  } finally {
+    await client.close();
+  }
+}
+
+async function writeReceipt(client, request) {
+  const written = await client.callTool({ name: "write_memory", arguments: request });
+  assert.ok(!written.isError, "Keyed write or replay failed");
+  assert.equal(typeof written.structuredContent?.memoryId, "string");
+  assert.equal(written.structuredContent.fragments.length, 1);
+  return written.structuredContent;
+}
+
+async function recallPersisted(endpoint, memoryId, retryRequest, expectedRaw) {
+  return withClient(endpoint, async (client) => {
     const recalled = await client.callTool({
       name: "recall_memory", arguments: { query: "reviews", agentId: project, limit: 5 },
     });
@@ -116,14 +138,8 @@ async function recallPersisted(endpoint, memoryId, retryRequest, expectedRaw) {
     assert.equal(inspected.structuredContent?.fragmentId, original.fragmentId);
     assert.ok(inspected.structuredContent.scannedRelationships <= 128);
     assert.equal(sql("SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN ('relationships_incoming_context_idx', 'relationships_outgoing_context_idx')"), "2");
-    const written = await client.callTool({ name: "write_memory", arguments: retryRequest });
-    assert.ok(!written.isError, "Keyed write or replay failed");
-    assert.equal(typeof written.structuredContent?.memoryId, "string");
-    assert.equal(written.structuredContent.fragments.length, 1);
-    return written.structuredContent;
-  } finally {
-    await client.close();
-  }
+    return writeReceipt(client, retryRequest);
+  });
 }
 
 const directory = mkdtempSync(join(tmpdir(), "mindleak-light-compose-"));
@@ -229,6 +245,17 @@ try {
         COMMIT;`);
     }
   }
+  const originalMemory = persistedRecords().memories[0];
+  const retryRequest = {
+    agentId: project,
+    requestId: randomUUID(),
+    text: "Retry-safe writes survive container recreation.",
+  };
+  const hadReceipts = sql(`SELECT EXISTS(SELECT 1 FROM pg_attribute
+    WHERE attrelid = 'public.memories'::regclass AND attname = 'request_id' AND NOT attisdropped)`) === "t";
+  const legacyReceipt = upgradeFrom && hadReceipts
+    ? await withClient(endpoint, (client) => writeReceipt(client, retryRequest)) : null;
+  const receiptsBefore = hadReceipts ? requestReceipts() : null;
   const before = persistedRecords();
   const lifecycleBefore = hadLifecycle ? lifecycleRecords() : null;
   const counts = snapshot();
@@ -237,6 +264,9 @@ try {
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
   assert.deepEqual(snapshot(), counts, "Recreating the container lost persisted memory");
   assert.deepEqual(persistedRecords(), before, "Upgrade changed original records or embedding metadata");
+  if (receiptsBefore) {
+    assert.deepEqual(requestReceipts(), receiptsBefore, "Upgrade changed stored requests or receipts");
+  }
   if (lifecycleBefore) {
     assert.deepEqual(lifecycleRecords(), lifecycleBefore,
       "Upgrade changed existing context, retention, archival, or feedback metadata");
@@ -244,27 +274,29 @@ try {
     assert.equal(sql("SELECT count(*) FROM public.memories WHERE context = '{}'::jsonb"), "1");
     assert.equal(sql("SELECT count(*) FROM public.fragments WHERE tier = 'short_term' AND state = 'active' AND evidence = 'unconfirmed'"), "2");
   }
-  const retryRequest = {
-    agentId: project,
-    requestId: randomUUID(),
-    text: "Retry-safe writes survive container recreation.",
-  };
   const receipt = await recallPersisted(
-    `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest, before.memories[0].raw_text);
+    `http://${compose("port", "mindleak-light", "8088")}`, originalMemory.id, retryRequest, originalMemory.raw_text);
+  if (legacyReceipt) {
+    assert.deepEqual(receipt, legacyReceipt, "Retrying a pre-upgrade request changed its original receipt");
+    assert.deepEqual(snapshot(), counts, "Retrying a pre-upgrade request created extra rows");
+    console.log("Pre-upgrade keyed request: original receipt replayed with unchanged row counts.");
+  }
   if (upgradeFrom) {
     console.log("Published-image upgrade: exact records, vectors, links, model metadata, existing lifecycle or legacy defaults, and MCP recall verified.");
   }
   const keyedCounts = snapshot();
   const keyedRecords = persistedRecords();
   const keyedLifecycle = lifecycleRecords();
+  const keyedReceipts = requestReceipts();
   compose("down");
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
   assert.deepEqual(await recallPersisted(
-    `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest, before.memories[0].raw_text),
+    `http://${compose("port", "mindleak-light", "8088")}`, originalMemory.id, retryRequest, originalMemory.raw_text),
   receipt, "Replaying after container recreation changed the committed receipt");
   assert.deepEqual(snapshot(), keyedCounts, "A keyed retry created extra rows");
   assert.deepEqual(persistedRecords(), keyedRecords, "A keyed retry changed persisted data");
   assert.deepEqual(lifecycleRecords(), keyedLifecycle, "A keyed retry changed lifecycle metadata");
+  assert.deepEqual(requestReceipts(), keyedReceipts, "A keyed retry changed stored request receipts");
   console.log("Integrated contracts: bounded evidence indexes, exact source inspection, ranking metadata and keyed replay after recreation verified.");
   console.log("All-in-one image: auth, MCP write/recall, socket-only Postgres, and volume persistence verified.");
 } catch (error) {

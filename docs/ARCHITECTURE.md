@@ -1,6 +1,6 @@
 # Architecture
 
-This describes v0.3.0 plus unreleased bounded evidence/source inspection:
+This describes v0.4.0, including bounded evidence and original-source inspection:
 contextual fact lifecycle, hybrid recall, shared query
 embeddings, provider safeguards, retry-safe writes, modular storage, response
 budgets, and ranking diagnostics.

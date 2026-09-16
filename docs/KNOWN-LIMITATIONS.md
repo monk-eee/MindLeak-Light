@@ -86,7 +86,7 @@
 - Final primary metadata and related context share a read-only snapshot, but
   earlier candidate searches and later client actions do not. Concurrently
   filtered candidates are not refilled; recall is not a reservation of facts.
-- Source builds after v0.3.0 prioritize corrective links, bound scans, and expose
+- Version 0.4.0 prioritizes corrective links, bounds scans, and exposes
   provider-free source/evidence inspection. `relationshipCountExact: false`
   means a lower bound, not a total. Sparse filters can produce empty pages with
   `nextCursor`; continue until null. Each page is a new snapshot, so concurrent

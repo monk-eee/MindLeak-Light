@@ -177,14 +177,14 @@ exceed that budget, the request fails with guidance to lower `limit`, without
 truncating facts. JSON escaping counts toward both limits. These are payload
 budgets, not token budgets or the size of the enclosing MCP response.
 
-In v0.3.0, `relationshipCount` is the full eligible-link count. New source builds
-bound each owner's scan to 128 links plus lookahead and add
+In v0.3.0, `relationshipCount` is the full eligible-link count. Version 0.4.0
+bounds each owner's scan to 128 links plus lookahead and adds
 `relationshipCountExact`. False means the reported count is a lower bound;
 `relationshipsTruncated` covers both omitted references and unexamined links.
 An empty array, even with count zero, does not establish no relationships when
-the count is inexact. These newer count semantics are not in v0.3.0 packages.
+the count is inexact. Check `relationshipCountExact` when upgrading from v0.3.0.
 
-Source builds order explicit supersession, contradiction, archival, and restore
+Version 0.4.0 orders explicit supersession, contradiction, archival, and restore
 links ahead of support, confirmation, reinforcement, and general association.
 That preserves corrective evidence before repeated confirmation history without
 deciding which claim is true. Each category uses related UUID and direction for

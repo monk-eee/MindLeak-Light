@@ -5,6 +5,34 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-16
+
+### Changed
+- Emit benchmark report v5 with a planned-query manifest and exact query hashes,
+  and reject incomplete new comparison or calibration evidence. Add original
+  dataset/background audits that detect shared missing queries and changed labels.
+- Measure UTF-8 JSON result-array bytes, including related context and escaping,
+  alongside primary-fragment text size. Add per-pass size distributions and
+  all-pass byte-budget gates that fail closed on missing legacy measurements.
+- Require runtime changes to be declared in paired comparisons and expose audit
+  flags distinguishing checked provenance from unavailable legacy data. Preserve
+  existing gold corpora and first-pass quality semantics.
+- Prepare versioned v0.4.0 native packages and standalone containers with
+  original-source inspection, corrective evidence, and benchmark-evidence audits.
+- Pin installation commands to 0.4.0, document bounded-count compatibility and
+  backup-first upgrades, and require an upgrade from the published 0.3.0 image
+  in addition to the existing 0.1.0 and 0.2.0 checks. Leave Docker Hub latest unchanged.
+
+### Fixed
+- Prioritize correction and contradiction links before confirmation history in
+  recalled context. Bound directional relationship scans and report lower-bound
+  counts explicitly with `relationshipCountExact`.
+- Add provider-free `recall_memory` inspection by `fragmentId`, preserving exact
+  raw source text and paginating direct evidence with `after`/`nextCursor`.
+- Retain useful negative, unknown, and corrective evidence in the optional
+  relevance policy; add a separate policy fixture without changing historical
+  benchmark labels or results.
+
 ## [0.3.0] - 2026-09-16
 
 ### Added

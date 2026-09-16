@@ -204,7 +204,7 @@ context. Do not bypass client approvals to make the policy appear automatic.
 | Tool | Arguments | Successful Result |
 |---|---|---|
 | `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (v0.3.0+) | `memoryId` and `fragments` with IDs, text, and tier after commit |
-| `recall_memory` | Either `query` for search or `fragmentId` for inspection; optional `agentId`, `scope`, `tier`, `includeInactive`, `limit`; inspection also accepts `after` | Search: array of matches. Inspection (unreleased): original source, selected fact, current lifecycle, and paged direct evidence |
+| `recall_memory` | Either `query` for search or `fragmentId` for inspection; optional `agentId`, `scope`, `tier`, `includeInactive`, `limit`; inspection also accepts `after` | Search: array of matches. Inspection (v0.4.0+): original source, selected fact, current lifecycle, and paged direct evidence |
 | `decompose_memory` | `text` | Array of strings; preview only, no database write |
 
 MCP text content contains that JSON. `structuredContent` holds write/inspection
@@ -317,7 +317,7 @@ original `requestId` and payload; do not assume the write was rolled back.
 Version 0.3.0 adds `rankingPriority` and `relationshipsTruncated` to
 each recall match. `score` is unchanged; `rankingPriority` exposes the actual
 lifecycle-adjusted ordering signal. Both are ranking values, not confidence.
-Version 0.3.0 counts all eligible direct links. New source builds additionally
+Version 0.3.0 counts all eligible direct links. Version 0.4.0 adds bounded scans and
 return `relationshipCountExact`: a false value means `relationshipCount` is a
 lower bound from at most 128 examined links, not a full total. There can be zero
 eligible links in a filtered window while more remain. `relationshipsTruncated`
@@ -340,7 +340,7 @@ MCP envelope and dual representations add separate overhead. See
 
 ### Inspect Original Sources
 
-This is an **unreleased source feature**, not part of v0.3.0. Check that the
+Available from **v0.4.0**; older packages do not support inspection. Check that the
 server advertises `fragmentId` and `after` in the `recall_memory` input schema.
 Use a `fragmentId` returned by search or a successful write, omitting `query`:
 
