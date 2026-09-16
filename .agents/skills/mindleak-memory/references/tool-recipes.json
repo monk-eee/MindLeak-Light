@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "skillVersion": "1.0.0",
+  "minimumServerVersion": "0.4.0",
+  "purpose": "Synthetic call templates for the companion workflow and its contract tests. Replace the example content with verified task evidence. Do not ingest these demonstration facts into production.",
+  "placeholders": {
+    "$AGENT_ID": "Stable contribution identity of the actual writer; different agents use their own identities.",
+    "$SCOPE": "One agreed scope shared by cooperating agents; tests must use a fresh disposable namespace.",
+    "$SESSION_ID": "The actual stable session ID; do not invent sessions to manufacture feedback.",
+    "$REQUEST_ID": "A UUID generated once per logical write and retained with its exact arguments for retries.",
+    "$FRAGMENT_ID": "The verified target ID returned by a scoped search or successful write, never a guessed ID."
+  },
+  "calls": {
+    "search": {
+      "name": "recall_memory",
+      "arguments": {"query": "Solstice timeout", "scope": "$SCOPE", "limit": 5}
+    },
+    "preview": {
+      "name": "decompose_memory",
+      "arguments": {"text": "Solstice request timeout is 7 seconds."}
+    },
+    "remember": {
+      "name": "write_memory",
+      "arguments": {
+        "agentId": "$AGENT_ID",
+        "requestId": "$REQUEST_ID",
+        "text": "Solstice request timeout is 7 seconds.",
+        "context": {"scope": "$SCOPE", "sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/original", "summary": "Controlled handoff fixture, not production guidance."}
+      }
+    },
+    "inspect": {
+      "name": "recall_memory",
+      "arguments": {"fragmentId": "$FRAGMENT_ID", "scope": "$SCOPE", "limit": 8}
+    },
+    "correct": {
+      "name": "write_memory",
+      "arguments": {
+        "agentId": "$AGENT_ID",
+        "requestId": "$REQUEST_ID",
+        "text": "Solstice request timeout is 12 seconds.",
+        "context": {"scope": "$SCOPE", "sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/correction"},
+        "facts": [{"text": "Solstice request timeout is 12 seconds.", "links": [{"targetFragmentId": "$FRAGMENT_ID", "relationshipType": "supersedes"}]}]
+      }
+    },
+    "usefulness": {
+      "name": "write_memory",
+      "arguments": {
+        "agentId": "$AGENT_ID",
+        "requestId": "$REQUEST_ID",
+        "text": "The recorded timeout helped verify the Solstice client configuration.",
+        "context": {"scope": "$SCOPE", "sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/verified-use"},
+        "facts": [{"text": "The recorded timeout helped verify the Solstice client configuration.", "links": [{"targetFragmentId": "$FRAGMENT_ID", "relationshipType": "reinforces"}]}]
+      }
+    },
+    "history": {
+      "name": "recall_memory",
+      "arguments": {"query": "Solstice timeout", "scope": "$SCOPE", "includeInactive": true, "limit": 5}
+    },
+    "document_search": {
+      "name": "recall_memory",
+      "arguments": {"query": "Solstice timeout", "scope": "$SCOPE", "limit": 5, "matchMode": "all", "diagnostics": true, "contextLimit": 1, "groupDuplicates": true}
+    }
+  }
+}

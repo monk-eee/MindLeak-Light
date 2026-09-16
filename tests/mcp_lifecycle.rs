@@ -1,6 +1,268 @@
 use super::*;
 
 #[tokio::test]
+async fn companion_recipes_support_fresh_client_handoff_and_correction() {
+    use std::collections::HashMap;
+
+    fn substitute(value: &Value, bindings: &HashMap<&str, Value>) -> Value {
+        match value {
+            Value::String(text) if text.starts_with('$') => bindings
+                .get(text.as_str())
+                .unwrap_or_else(|| panic!("unbound recipe placeholder: {text}"))
+                .clone(),
+            Value::Array(values) => Value::Array(
+                values
+                    .iter()
+                    .map(|value| substitute(value, bindings))
+                    .collect(),
+            ),
+            Value::Object(object) => Value::Object(
+                object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), substitute(value, bindings)))
+                    .collect(),
+            ),
+            _ => value.clone(),
+        }
+    }
+
+    fn recipe(
+        recipes: &Value,
+        name: &str,
+        bindings: &HashMap<&str, Value>,
+    ) -> CallToolRequestParams {
+        let request = &recipes["calls"][name];
+        let arguments = substitute(&request["arguments"], bindings);
+        CallToolRequestParams::new(request["name"].as_str().unwrap().to_owned())
+            .with_arguments(arguments.as_object().unwrap().clone())
+    }
+
+    let recipes: Value = serde_json::from_str(include_str!(
+        "../.agents/skills/mindleak-memory/references/tool-recipes.json"
+    ))
+    .unwrap();
+    assert_eq!(recipes["skillVersion"], "1.0.0");
+    let scope = format!("companion-{}", Uuid::new_v4());
+    let writer = format!("companion-writer-{}", Uuid::new_v4());
+    let mut bindings = HashMap::from([
+        ("$AGENT_ID", json!(writer)),
+        ("$SCOPE", json!(scope)),
+        ("$SESSION_ID", json!(Uuid::new_v4())),
+        ("$REQUEST_ID", json!(Uuid::new_v4())),
+    ]);
+    let directory = tempfile::tempdir().unwrap();
+    let mut original_receipt = Value::Null;
+    let mut correction_receipt = Value::Null;
+    let mut database = None;
+    for phase in 0..3 {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+        command.current_dir(directory.path()).env_clear().envs([
+            ("MINDLEAK_DATABASE_URL", database_url()),
+            ("MINDLEAK_DECOMPOSITION", "sentences".into()),
+            ("MINDLEAK_RETRIEVAL", "keyword".into()),
+            ("MINDLEAK_RELEVANCE", "off".into()),
+        ]);
+        let client = tokio::time::timeout(
+            Duration::from_secs(15),
+            ().serve(TokioChildProcess::new(command).unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let tools = client.list_all_tools().await.unwrap();
+        assert_eq!(tools.len(), 3);
+        for request in recipes["calls"].as_object().unwrap().values() {
+            assert!(tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == request["name"].as_str().unwrap()));
+        }
+        if phase == 0 {
+            let (connection, task) =
+                tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+                    .await
+                    .unwrap();
+            tokio::spawn(async move { task.await.unwrap() });
+            database = Some(connection);
+            let preview = client
+                .call_tool(recipe(&recipes, "preview", &bindings))
+                .await
+                .unwrap();
+            assert_ne!(preview.is_error, Some(true));
+            assert_eq!(
+                preview.structured_content.unwrap()["results"],
+                json!([recipes["calls"]["remember"]["arguments"]["text"]])
+            );
+            let preview_count: i64 = database
+                .as_ref()
+                .unwrap()
+                .query_one(
+                    "SELECT count(*) FROM public.memories WHERE context->>'scope' = $1",
+                    &[&scope],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(preview_count, 0, "preview is not persistence");
+            let written = client
+                .call_tool(recipe(&recipes, "remember", &bindings))
+                .await
+                .unwrap();
+            assert_ne!(written.is_error, Some(true));
+            original_receipt = written.structured_content.unwrap();
+            assert_eq!(original_receipt["fragments"].as_array().unwrap().len(), 1);
+            let retry = client
+                .call_tool(recipe(&recipes, "remember", &bindings))
+                .await
+                .unwrap();
+            assert_ne!(retry.is_error, Some(true));
+            assert_eq!(retry.structured_content.unwrap(), original_receipt);
+        } else {
+            bindings.insert(
+                "$AGENT_ID",
+                json!(format!("companion-reader-{phase}-{}", Uuid::new_v4())),
+            );
+            bindings.insert("$SESSION_ID", json!(Uuid::new_v4()));
+            bindings.insert("$REQUEST_ID", json!(Uuid::new_v4()));
+            let recalled = client
+                .call_tool(recipe(&recipes, "search", &bindings))
+                .await
+                .unwrap();
+            assert_ne!(recalled.is_error, Some(true));
+            let results = recalled.structured_content.unwrap();
+            let facts = results["results"].as_array().unwrap();
+            assert_eq!(facts.len(), 1);
+            let fact = &facts[0];
+            let expected = if phase == 1 {
+                &original_receipt
+            } else {
+                &correction_receipt
+            };
+            assert_eq!(fact["memoryId"], expected["memoryId"]);
+            assert_eq!(fact["text"], expected["fragments"][0]["text"]);
+            assert_ne!(
+                fact["agentId"], bindings["$AGENT_ID"],
+                "shared recall must cross contributor IDs"
+            );
+            assert_eq!(fact["lifecycle"]["usefulSessions"], 0);
+            assert_eq!(fact["lifecycle"]["confirmedSessions"], 0);
+            bindings.insert("$FRAGMENT_ID", fact["fragmentId"].clone());
+            let inspected = client
+                .call_tool(recipe(&recipes, "inspect", &bindings))
+                .await
+                .unwrap();
+            assert_ne!(inspected.is_error, Some(true));
+            let inspected = inspected.structured_content.unwrap();
+            assert_eq!(inspected["rawText"], fact["text"]);
+            assert_eq!(inspected["context"]["scope"], scope);
+            assert_eq!(inspected["lifecycle"]["state"], "active");
+            let expanded = client
+                .call_tool(recipe(&recipes, "document_search", &bindings))
+                .await
+                .unwrap();
+            assert_ne!(expanded.is_error, Some(true));
+            let expanded = expanded.structured_content.unwrap();
+            assert!(expanded["diagnostics"].is_object());
+            assert_eq!(expanded["results"][0]["memoryId"], fact["memoryId"]);
+            assert_eq!(expanded["results"][0]["sourceCount"], 1);
+
+            bindings.insert("$SCOPE", json!(format!("unrelated-{}", Uuid::new_v4())));
+            let unrelated = client
+                .call_tool(recipe(&recipes, "search", &bindings))
+                .await
+                .unwrap();
+            assert_ne!(unrelated.is_error, Some(true));
+            assert!(unrelated.structured_content.unwrap()["results"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            bindings.insert("$SCOPE", json!(scope));
+            let row = database.as_ref().unwrap().query_one(
+                "SELECT (SELECT count(*) FROM public.memories WHERE context->>'scope' = $1), \
+                 (SELECT COALESCE(sum(fragments.useful_sessions + fragments.confirmed_sessions), 0)::bigint \
+                 FROM public.fragments JOIN public.memories ON memories.id = fragments.memory_id WHERE memories.context->>'scope' = $1)",
+                &[&scope],
+            ).await.unwrap();
+            assert_eq!(
+                row.get::<_, i64>(0),
+                phase as i64,
+                "read-only handoff added an episode"
+            );
+            assert_eq!(
+                row.get::<_, i64>(1),
+                0,
+                "recall or inspection reinforced evidence"
+            );
+            if phase == 1 {
+                let corrected = client
+                    .call_tool(recipe(&recipes, "correct", &bindings))
+                    .await
+                    .unwrap();
+                assert_ne!(corrected.is_error, Some(true));
+                correction_receipt = corrected.structured_content.unwrap();
+                let replay = client
+                    .call_tool(recipe(&recipes, "correct", &bindings))
+                    .await
+                    .unwrap();
+                assert_ne!(replay.is_error, Some(true));
+                assert_eq!(replay.structured_content.unwrap(), correction_receipt);
+            } else {
+                let history = client
+                    .call_tool(recipe(&recipes, "history", &bindings))
+                    .await
+                    .unwrap();
+                assert_ne!(history.is_error, Some(true));
+                let history = history.structured_content.unwrap();
+                assert!(history["results"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|fact| fact["memoryId"] == original_receipt["memoryId"]
+                        && fact["lifecycle"]["state"] == "superseded"));
+                let feedback = client
+                    .call_tool(recipe(&recipes, "usefulness", &bindings))
+                    .await
+                    .unwrap();
+                assert_ne!(feedback.is_error, Some(true));
+                let counters = database.as_ref().unwrap().query_one(
+                    "SELECT useful_sessions, confirmed_sessions FROM public.fragments WHERE id = $1",
+                    &[&Uuid::parse_str(fact["fragmentId"].as_str().unwrap()).unwrap()],
+                ).await.unwrap();
+                assert_eq!(counters.get::<_, i32>(0), 1);
+                assert_eq!(counters.get::<_, i32>(1), 0);
+            }
+        }
+        let stopped_peer = client.peer().clone();
+        client.cancel().await.unwrap();
+        if phase == 2 {
+            bindings.insert("$REQUEST_ID", json!(Uuid::new_v4()));
+            let failed = tokio::time::timeout(
+                Duration::from_secs(2),
+                stopped_peer.call_tool(recipe(&recipes, "remember", &bindings)),
+            )
+            .await
+            .unwrap();
+            assert!(
+                failed.is_err(),
+                "a stopped server must not report persistence"
+            );
+        }
+    }
+    let final_count: i64 = database
+        .unwrap()
+        .query_one(
+            "SELECT count(*) FROM public.memories WHERE context->>'scope' = $1",
+            &[&scope],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        final_count, 3,
+        "only the original, correction, and explicit usefulness episode persist"
+    );
+}
+
+#[tokio::test]
 async fn fragment_inspection_preserves_source_and_pages_evidence_without_models() {
     let directory = tempfile::tempdir().unwrap();
     let scope = format!("inspection-{}", Uuid::new_v4());

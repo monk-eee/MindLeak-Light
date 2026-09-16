@@ -134,6 +134,64 @@ test("README teaches the agent memory policy before the explicit tool smoke test
   assert.ok(readme.slice(0, policyStart).includes("#give-your-agent-a-memory-policy"));
 });
 
+test("companion skill is self-contained, discoverable, and permission-neutral", () => {
+  const directory = fileURLToPath(new URL("../.agents/skills/mindleak-memory/", import.meta.url));
+  const skill = readFileSync(join(directory, "SKILL.md"), "utf8");
+  const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(skill)?.[1];
+  assert.ok(frontmatter, "the skill requires first-line YAML frontmatter");
+  assert.match(frontmatter, /^name: mindleak-memory$/m);
+  const description = JSON.parse(/^description: (".*")$/m.exec(frontmatter)?.[1] ?? "null");
+  assert.ok(typeof description === "string" && description.length <= 1024 && description.includes("agents"));
+  assert.match(frontmatter, /version: "1\.0\.0"/);
+  assert.doesNotMatch(frontmatter, /^(?:allowed-tools|hooks|context|agent|model):/m);
+  assert.doesNotMatch(skill, /^!`|^```!/m);
+  assert.ok(skill.split("\n").length < 250, "keep the on-demand workflow compact");
+  assert.ok(skill.includes("./references/agent-policy.md"));
+  assert.ok(skill.includes("./references/tool-recipes.json"));
+  assert.deepEqual(checkDocs(directory), [], "the installed bundle cannot depend on external repository files");
+  for (const term of ["untrusted", "requestId", "nextCursor", "supersedes", "sessionId", "agentId", "scope"]) {
+    assert.ok(skill.includes(term), `missing workflow boundary: ${term}`);
+  }
+  const recipes = JSON.parse(readFileSync(join(directory, "references/tool-recipes.json"), "utf8"));
+  assert.equal(recipes.schemaVersion, 1);
+  assert.equal(recipes.skillVersion, "1.0.0");
+  assert.equal(recipes.minimumServerVersion, "0.4.0");
+  for (const recipe of Object.values(recipes.calls)) {
+    assert.ok(["write_memory", "recall_memory", "decompose_memory"].includes(recipe.name));
+    assert.ok(recipe.arguments && typeof recipe.arguments === "object");
+    if (recipe.name === "write_memory") {
+      assert.equal(recipe.arguments.requestId, "$REQUEST_ID");
+      assert.equal(recipe.arguments.context.scope, "$SCOPE");
+    }
+    if (recipe.name === "recall_memory") {
+      assert.equal(recipe.arguments.scope, "$SCOPE");
+      assert.equal(recipe.arguments.agentId, undefined, "shared examples must not hide other agents");
+    }
+  }
+});
+
+test("agent instructions and onboarding use the same companion activation policy", () => {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const policy = readFileSync(join(root, ".agents/skills/mindleak-memory/references/agent-policy.md"), "utf8");
+  const block = /```text\n([\s\S]*?)\n```/.exec(policy)?.[1];
+  assert.ok(block);
+  for (const file of ["README.md", "docs/INTEGRATION.md"]) {
+    const text = readFileSync(join(root, file), "utf8");
+    assert.ok(text.includes(`\x60\x60\x60text\n${block}\n\x60\x60\x60`), `${file} has a stale activation policy`);
+    assert.ok(text.includes(".agents/skills/mindleak-memory/SKILL.md"));
+  }
+  for (const file of ["AGENTS.md", ".github/copilot-instructions.md", "CLAUDE.md"]) {
+    const text = readFileSync(join(root, file), "utf8");
+    assert.ok(text.includes(".agents/skills/mindleak-memory/SKILL.md"), `${file} must route to the canonical workflow`);
+    assert.ok(text.includes(".agents/skills/mindleak-memory/references/agent-policy.md"));
+  }
+  const guide = readFileSync(join(root, "docs/INSTALL.md"), "utf8");
+  for (const location of [".agents/skills/mindleak-memory/", ".claude/skills/mindleak-memory/", ".github/copilot-instructions.md", "CLAUDE.md", "AGENTS.md"]) {
+    assert.ok(guide.includes(location), `missing client installation location: ${location}`);
+  }
+  assert.ok(guide.includes("already-published v0.4.0"));
+});
+
 test("architecture diagrams cover the integrated write and recall contracts", () => {
   const architecture = readFileSync(new URL("../docs/ARCHITECTURE.md", import.meta.url), "utf8");
   const source = readFileSync(new URL("../assets/architecture.excalidraw", import.meta.url), "utf8");
@@ -300,6 +358,12 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
+  const skillDirectory = ".agents/skills/mindleak-memory";
+  const skillFiles = ["SKILL.md", "references/agent-policy.md", "references/tool-recipes.json"];
+  mkdirSync(join(directory, skillDirectory, "references"), { recursive: true });
+  for (const name of skillFiles) {
+    writeFileSync(join(directory, skillDirectory, name), `test skill resource: ${name}\n`);
+  }
   const archive = packageBinary(directory, target, "0.1.0");
   const contents = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" });
   assert.match(contents, /mindleak-light/);
@@ -311,6 +375,11 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   }
   for (const name of guides) {
     assert.ok(contents.includes(`docs/${name}`), `release archive is missing ${name}`);
+  }
+  for (const name of skillFiles) {
+    assert.ok(contents.includes(`${skillDirectory}/${name}`), `release archive is missing the companion skill ${name}`);
+    assert.deepEqual(execFileSync("tar", ["-xOf", archive, `./${skillDirectory}/${name}`]),
+      readFileSync(join(directory, skillDirectory, name)));
   }
   const mcp = JSON.parse(execFileSync("tar", ["-xOf", archive, "./mcp.example.json"], { encoding: "utf8" }));
   assert.equal(mcp.mcpServers["mindleak-light"].command, "mindleak-light");
