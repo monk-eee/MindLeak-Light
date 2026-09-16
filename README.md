@@ -182,6 +182,16 @@ asking it to use memory. Look for a focused `recall_memory` call before substant
 work. A genuinely reusable discovery should produce a verified `write_memory`
 call; a routine task with no new lesson should not force a write.
 
+## Test Cross-Agent Rediscovery
+
+Can a fresh agent use a previous investigation to fix a bug with less work?
+The [Validation Harness v1](docs/VALIDATION.md) compares memory-on and memory-off
+agents on identical disposable code, checks the actual fix, and records searches,
+tool calls, time, and available token usage. It also checks persistence, extraction,
+recall, poisoning, contradictions, corpus growth, and resumable multi-day retention.
+JSON reports and scale charts include failures and unmeasured results. A faster
+incorrect answer earns no savings; no 50-80% reduction is assumed or claimed.
+
 ## Add Models When Ready
 
 | Setup | Decomposition | Recall |

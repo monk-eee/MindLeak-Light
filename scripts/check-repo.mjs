@@ -6,7 +6,7 @@ for (const args of [
   ["scripts/adr-index.mjs", "--check"],
   ["scripts/changelog.mjs", "--check"],
   ["scripts/check-docs.mjs"],
-  ["--test", "scripts/repository.test.mjs", "examples/benchmark-recall.test.mjs"],
+  ["--test", "scripts/repository.test.mjs", "examples/benchmark-recall.test.mjs", "examples/validation-harness.test.mjs"],
 ]) {
   execFileSync(process.execPath, args, { stdio: "inherit" });
 }
