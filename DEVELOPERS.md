@@ -62,7 +62,7 @@ cargo test --workspace --locked
 node scripts/adr-index.mjs --check
 node scripts/changelog.mjs --check
 node scripts/check-docs.mjs
-node --test scripts/repository.test.mjs examples/benchmark-recall.test.mjs
+node --test scripts/repository.test.mjs examples/benchmark-recall.test.mjs examples/validation-harness.test.mjs
 ```
 
 `cargo test` alone does not run database tests. For the required integration gate,
@@ -109,6 +109,65 @@ checks. Use a disposable `_test` database for it. These are protocol-contract
 checks, not model-behaviour or native Copilot/Claude/Codex activation evidence;
 record those separately using the [acceptance checklist](docs/INTEGRATION.md#verify-the-agent-behaviour).
 Never turn an unrun client combination into a compatibility claim.
+
+### Released-Baseline Gate
+
+The required PostgreSQL CI job also runs
+[regression-check.mjs](scripts/regression-check.mjs) against the published native
+release pinned in [regression-baseline.json](scripts/regression-baseline.json).
+Both corpus hashes are frozen. The default model-free run evaluates 100 queries,
+fails individual regressions even when averages improve, and applies a 32 KiB
+result budget for these fixtures. No production latency target is inferred.
+
+Database names are compared after URL decoding, so differently escaped names
+cannot send both runs to the same database. Each benchmark runs in an owned Unix
+process group, or a Windows process tree terminated with `taskkill /T /F` on a
+forced stop. The parent gives each invocation a private temporary directory and
+removes it after the processes close, including after timeouts and output overflow.
+This is process cleanup, not a sandbox for untrusted binaries; hard termination
+of the orchestrator or host can still interrupt cleanup.
+
+For a local run, create two independent disposable databases, then:
+
+```sh
+cargo build --release --locked -p mindleak-mcp --bin mindleak-light
+npm ci --prefix examples --ignore-scripts
+export MINDLEAK_BASELINE_DATABASE_URL='postgresql://mindleak_light:mindleak-light-development-only@127.0.0.1:55432/mindleak_baseline_regression_test?sslmode=disable'
+export MINDLEAK_TEST_DATABASE_URL='postgresql://mindleak_light:mindleak-light-development-only@127.0.0.1:55432/mindleak_candidate_regression_test?sslmode=disable'
+node scripts/regression-check.mjs --candidate target/release/mindleak-light --output target/regression-local
+```
+
+The output directory must not already exist. The runner downloads and verifies
+the pinned native archive, or accepts the same verified archive through
+`--baseline-archive PATH`. It does not delete databases; remove only those you
+created after preserving reports. Ordinary `make ci` remains the core local
+gate; this additional published-baseline check runs automatically in PR CI.
+CI uploads JSON comparisons and logs even when a gate fails, for 30 days.
+
+`--deadline-seconds N` sets one execution budget covering archive download,
+extraction, version checks, every benchmark invocation, and comparisons. PR runs
+default to 600 seconds and accept 1..600; load runs default to 900 seconds and
+accept 1..7200 for explicit longer controlled-host evaluations. Each operation
+receives only the remaining budget. Deadline expiry cancels pending work, stops
+scheduling new comparisons, and leaves a failed, incomplete summary. Success is
+written only after temporary-file cleanup; `elapsedMs` includes that cleanup.
+CI allows 12 minutes for the 10-minute PR runner and 17 minutes for the 15-minute
+load runner. The load job allows 45 minutes overall with a 15-minute build limit,
+leaving time for setup, cleanup and the always-run artifact upload.
+
+Use `--profile load` for three passes at concurrency one and four. The **Release
+Regression Load Report** workflow is manual, not a PR timing gate. On a controlled
+host only, add `--max-warm-p95-ms N` with a justified budget. Model modes require
+explicit `--decomposition`, `--retrieval`, or `--relevance` flags in this profile
+and matching provider settings; the dispatched GitHub workflow remains model-free.
+Pin model weights/provider versions separately. See [benchmark guidance](docs/BENCHMARKS.md)
+and [ADR-0016](adr.d/0016-release-regression-gates.md).
+
+The per-query gate checks every executed candidate pass, comparing the matching
+baseline pass when present and baseline pass 1 otherwise. An affected query is
+counted once even if it fails repeatedly; `regressedPasses` identifies the failing
+passes and lost facts. Headline quality and confidence intervals still use only
+pass 1, so repeated runs are not additional accuracy observations.
 
 ### Architecture Diagrams
 
@@ -164,6 +223,28 @@ A second recreation replays a keyed write and verifies its original
 receipt and unchanged row counts. See [review status](docs/REVIEW-STATUS.md) for
 the integrated contracts and remaining quality questions.
 
+CI additionally tests the pinned v0.4.0 image and restores its real pre-upgrade
+backup into a fresh volume. To run that drill locally after building the image:
+
+```sh
+export MINDLEAK_UPGRADE_FROM="$(node -p 'require("./scripts/regression-baseline.json").image')"
+MINDLEAK_IMAGE=mindleak-light:all-in-one-test node scripts/container-smoke.mjs --restore
+```
+
+The restore target starts with PostgreSQL alone and no application tables. After
+`pg_restore`, the normal candidate starts and must recall the exact original
+source and replay the pre-upgrade keyed receipt. It must then create a new keyed
+episode, find it with an all-term query spanning new text and source metadata,
+and inspect its exact raw text. Another restart must retain that new search
+result and replay its new receipt without creating rows or changing lifecycle,
+vector metadata, or old data. The test then deletes only its two own projects/volumes. This does not
+replace testing your deployment's off-machine backup storage, retention, or
+recovery time. The dump is not logged or uploaded.
+Cleanup attempts every owned project even if one removal fails. Test, log, or
+cleanup failures cannot turn the drill into a pass; the original test error and
+any failed removals are retained together. A stopped local process does not
+guarantee a remote provider stopped computing.
+
 To check Compose environment forwarding before building an image:
 
 ```sh
@@ -186,6 +267,22 @@ confusing source hits with verified facts. The runner uses the optional example 
 dependencies and a native server against an explicit disposable `*_test`
 database; it never writes to the running quickstart HTTP server. Scoring tests
 need no npm packages, model, or database and run in `make script-test` and `make ci`.
+
+The [Validation Harness v1](docs/VALIDATION.md) extends these deterministic
+scoring helpers with fresh MCP sessions, agent comparisons, sandboxed coding
+tasks, scale charts, and a real-time longitudinal journal. Its unit tests run in
+the same gates without a model. For the optional actual container/chart tests:
+
+```sh
+npm ci --prefix examples
+podman pull docker.io/library/node:22-bookworm-slim
+MINDLEAK_VALIDATION_CODE_ENGINE=podman node --test examples/validation-harness.test.mjs
+```
+
+The ordinary gate reports that integration test as skipped unless explicitly
+enabled. Agent inference and the full 100/500/1000-fact harness are opt-in,
+separate from ordinary unit tests. They require the documented disposable
+database and never target a running user's memory service.
 
 ## Changes and Releases
 
