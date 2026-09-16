@@ -14,7 +14,7 @@
   provider would otherwise return valid facts or vectors. Embeddings with squared
   norms unsafe for f32 cosine arithmetic are rejected. Existing invalid database
   scores cause recall errors; this validation does not rewrite stored vectors.
-- Vector retrieval is exact cosine search without ANN indexing, reranking, decay,
+- Vector retrieval is exact cosine search without ANN indexing,
   RAST, synthesis inside the server, or automatic relationship generation.
 - A configured cosine floor trades recall for rejection; it is model/corpus
   specific and cannot prove relevance. Hybrid fuses bounded keyword/vector ranks
@@ -25,6 +25,10 @@
   repair incorrect extraction. Model selection is not proof of truth, relevance,
   or prompt-injection resistance; candidates remain untrusted reference data.
   Inputs exceeding its explicit text budget fail rather than being truncated.
+- Semantic query caching is bounded to 128 exact query strings per process and
+  retriever. It speeds repeat queries, not unseen ones, and never caches result
+  rows. Concurrent cold misses may duplicate embedding work. Benchmarks on small
+  corpora do not establish latency at large scale or under concurrent load.
 - Benchmark fact verification uses reviewed canonical wording and accepted
   variants. Valid unseen paraphrases are unverified, not necessarily wrong. The
   synthetic corpus and small per-category samples do not establish population
@@ -40,8 +44,21 @@
   cannot always be verified from their response.
 - Writes are atomic but not idempotent. A timeout after commit can leave a saved
   memory without a received ID; blind retries may create duplicates.
-- No update, delete, expiry, or retention tools yet. Operators manage backups
-  and retention using Postgres; memories are not encrypted at the application layer.
+- Lifecycle retention, evidence links, and read-time decay are source features,
+  not a biological simulation or a measured longitudinal quality improvement.
+  The half-lives, spaced-feedback thresholds, and priority discount are explicit
+  initial policies. No automatic episodic replay, summary generation, or deletion.
+- Scope/session/source IDs are caller-supplied. Distinct session labels do not
+  prove independent evidence, and trusted clients can submit mistaken feedback.
+  Long-term/pinned means retained, not true; confirmed means a confirmation was
+  recorded. Superseding a disputed fact requires an explicit correction.
+- Direct related-fact context is bounded to eight links per result; it is not a
+  recursive graph. Lifecycle cannot rescue facts outside the retrieval candidate
+  pool. No automatic deduplication or re-embedding accompanies consolidation.
+- Source writes can archive, restore, or supersede existing facts through explicit
+  links; original episodes/text remain immutable. There is no destructive delete
+  or automatic expiry tool. Operators manage backups and data erasure in Postgres;
+  memories are not encrypted at the application layer.
 - HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.

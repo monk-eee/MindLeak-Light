@@ -47,7 +47,7 @@ impl MemoryRetriever for Backend {
     async fn recall(
         &self,
         _query: &str,
-        _agent_id: Option<&str>,
+        _filter: &RecallFilter,
         limit: usize,
     ) -> Result<Vec<RecallMatch>> {
         assert_eq!(limit, 10);
@@ -57,6 +57,7 @@ impl MemoryRetriever for Backend {
             agent_id: "claude".into(),
             text: "User prefers PRs under 500 LOC".into(),
             score: 0.92,
+            ..Default::default()
         }])
     }
 }
@@ -84,6 +85,12 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
         .find(|tool| tool.name == "write_memory")
         .unwrap();
     assert!(write.input_schema["properties"].get("agentId").is_some());
+    assert!(write.input_schema["properties"].get("context").is_some());
+    assert!(write.input_schema["properties"].get("facts").is_some());
+    assert_eq!(
+        write.annotations.as_ref().unwrap().destructive_hint,
+        Some(true)
+    );
     assert_eq!(
         write.annotations.as_ref().unwrap().idempotent_hint,
         Some(false)

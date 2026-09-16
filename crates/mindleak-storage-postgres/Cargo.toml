@@ -14,13 +14,13 @@ pgvector.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 tokio-postgres.workspace = true
 tokio-postgres-rustls.workspace = true
+uuid.workspace = true
 webpki-roots.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
-uuid.workspace = true
 url = "2"
 
 [features]

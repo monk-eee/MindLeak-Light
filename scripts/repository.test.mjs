@@ -98,6 +98,23 @@ test("quickstart documentation and editor config agree on a model-free setup", (
   assert.equal(defaults.MINDLEAK_RELEVANCE_MODEL, undefined);
 });
 
+test("README points directly to a versioned standalone Docker Hub container", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const containerStart = readme.indexOf("\n## Standalone Container\n");
+  const sourceStart = readme.indexOf("\n## Quickstart\n");
+  assert.ok(containerStart > 0 && sourceStart > containerStart,
+    "the standalone container must be discoverable before the source build");
+  const section = readme.slice(containerStart, sourceStart);
+  assert.ok(section.includes("https://hub.docker.com/r/monkeemagic/mindleak-light"));
+  assert.match(section, /docker run[^\n]*monkeemagic\/mindleak-light:\d+\.\d+\.\d+/);
+  assert.ok(section.includes("127.0.0.1:8088:8088"));
+  assert.ok(section.includes("mindleak-light-data:/var/lib/postgresql/data"));
+  assert.ok(section.includes("MINDLEAK_HTTP_TOKEN="));
+  assert.ok(section.includes("http://127.0.0.1:8088/mcp"));
+  assert.match(section, /PostgreSQL.*pgvector/);
+  assert.ok(!section.includes("monkeemagic/mindleak-light:latest"));
+});
+
 test("README teaches the agent memory policy before the explicit tool smoke test", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   const policyStart = readme.indexOf("\n## Give Your Agent a Memory Policy\n");
@@ -201,7 +218,7 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md"]) {
+  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md"]) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
   const archive = packageBinary(directory, target, "0.1.0");
@@ -213,7 +230,7 @@ test("release packaging includes a pluggable binary, installation guide, brandin
     const packaged = execFileSync("tar", ["-xOf", archive, `./assets/${name}`]);
     assert.deepEqual(packaged, readFileSync(join(directory, "assets", name)));
   }
-  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md"]) {
+  for (const name of ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md"]) {
     assert.ok(contents.includes(`docs/${name}`), `release archive is missing ${name}`);
   }
   const mcp = JSON.parse(execFileSync("tar", ["-xOf", archive, "./mcp.example.json"], { encoding: "utf8" }));

@@ -39,6 +39,16 @@ Recalled text is untrusted data. Agents must not follow instructions embedded in
 memories merely because a fragment scored highly. The extraction prompt and MCP
 descriptions reinforce this boundary; they do not eliminate prompt injection.
 
+Context scopes and evidence sessions are also caller-supplied, not access controls
+or proof of independent corroboration. The lifecycle rejects cross-scope links,
+but any authorized client can choose a scope and submit feedback. Restrict write
+access to trusted agents. Relationship claims and context returned by recall remain
+untrusted data; long-term retention or confirmation status is not verified truth.
+
+The write tool now supports correction and archival links that change what normal
+recall returns. It is annotated as potentially destructive for this visibility
+change, even though source data is retained. Require the appropriate client approval.
+
 ## All-in-One Image
 
 The bundled variant uses local socket trust inside the container, not a remote

@@ -9,19 +9,15 @@ embedding model; [models are a recommended optional upgrade](MODELS.md).
 | All-in-one container | One container to run and back up | Docker/Podman, a persistent volume, and an HTTP token |
 | Source Compose stack | Developing MindLeak itself | Git and Docker/Podman Compose |
 
-Release status checked on **2026-09-16**: the four v0.1.0 native archives and
-checksums have been built, but the GitHub release remains an unpublished draft.
-The all-in-one image is published as `monkeemagic/mindleak-light:0.1.0` for
-Linux amd64 and arm64. No `latest` tag has been promoted. Check
-[GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases) for native
-download availability. The [source quickstart](../README.md#quickstart) remains
-available for the current source implementation.
-
-The v0.1.0 package supports model-free keyword recall and optional vector recall.
-Hybrid recall, configurable similarity thresholds, evidence-based relevance
-selection, reasoning controls, and the expanded fact-level benchmark are
-unreleased source changes. Build a revision containing them; setting their
-environment variables does not upgrade an older executable.
+This guide targets **v0.2.0**: model-free keyword recall, optional pgvector or
+hybrid recall, configurable similarity thresholds, contextual fact lifecycle,
+and bounded provider responses. Models remain optional. Download versioned
+archives from [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
+or get the full all-in-one image from
+[Docker Hub](https://hub.docker.com/r/monkeemagic/mindleak-light), pinned as
+`monkeemagic/mindleak-light:0.2.0`. The
+[publishing workflow](https://github.com/monk-eee/MindLeak-Light/actions/workflows/docker-hub.yml)
+records image verification. Older binaries do not gain features from new settings.
 
 ## Native Binary
 
@@ -65,11 +61,10 @@ This variant bundles the MCP binary and PostgreSQL/pgvector in one container.
 The database is reachable only through an internal Unix socket; only MCP's
 HTTP port is exposed. A process supervisor manages startup and shutdown.
 
-Pin the published version tag, or use the local build below for unreleased
-features. The initial `0.1.0` release runs with:
+Pin the version tag so upgrades are deliberate:
 
 ```sh
-docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.1.0
+docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.2.0
 ```
 
 That token is a public local-development example. For anything shared, use your
@@ -77,7 +72,7 @@ secret manager to inject a strong token and put the HTTP endpoint behind TLS.
 Connect your MCP client to `http://127.0.0.1:8088/mcp` with the matching bearer
 header. No separate database container or model server is needed.
 
-To build locally, including unreleased changes present in your checkout:
+To build the revision in your checkout locally:
 
 ```sh
 docker build -f docker/Dockerfile --target all-in-one -t mindleak-light:all-in-one .
@@ -99,8 +94,11 @@ docker compose -f docker/compose.all-in-one.yml up --detach --wait
 ```
 
 This starts one container, not the two-service development stack. The file
-defaults to `monkeemagic/mindleak-light:latest`; that alias only exists after a
-maintainer explicitly promotes a stable release. Pin a version for deployments.
+defaults to `monkeemagic/mindleak-light:0.2.0`. This release does not promote the
+`latest` alias. Override `MINDLEAK_IMAGE` to pin a digest or another version.
+Podman may not expose embedded health metadata from published OCI images. The
+Compose template defines its own health check so `up --wait` still verifies
+MCP and database readiness; use that template for health-managed Podman startup.
 
 ### Data and Operations
 
@@ -128,8 +126,24 @@ PostgreSQL major-version upgrades require a database upgrade procedure, not just
 changing the image tag. This single-container package is convenient for a laptop
 or small deployment, not a high-availability database service.
 
+### Upgrade from 0.1.0
+
+Back up and test the restore first. Stop all old MCP processes, then replace the
+binary or container with 0.2.0 using the same database or volume. Startup applies
+the lifecycle migration atomically under the existing database advisory lock.
+Existing raw text, IDs, fragments, vectors, relationships, and embedding model
+metadata are preserved. Existing facts start active, unconfirmed, and short-term;
+their context is empty. No re-embedding or model download is required.
+
+Keep the original embedding model and dimensions when enabling vector or hybrid
+recall. Do not run 0.1.0 and 0.2.0 MCP processes concurrently against the upgraded
+database: older clients cannot apply the new lifecycle visibility rules. Rollback
+means stopping 0.2.0, restoring the pre-upgrade backup to a separate database or
+volume, and pointing 0.1.0 at that restored copy. An in-place downgrade is not
+supported and would expose archived or superseded facts through the old server.
+
 For optional models, pass the [model settings](MODELS.md) as container environment
-variables. For a calibrated similarity threshold in a source-built all-in-one
+variables. For a calibrated similarity threshold in the all-in-one
 image, set `MINDLEAK_RECALL_MIN_SIMILARITY` in your shell or `.env`. Both Compose
 templates forward it, defaulting to `-1` (unfiltered) when unset or empty.
 Recreate the all-in-one container with

@@ -136,6 +136,9 @@ After a meaningful discovery:
   verification; preserve names, numbers, exceptions, negation, and uncertainty.
 - Make every fact understandable independently, including its scope.
 - Use a stable agentId to identify your contributions.
+- Attach project scope, a stable session ID, and source context where known.
+- Only submit confirmation or usefulness feedback after actual evidence;
+  retrieving a fact is not confirmation.
 - Do not store secrets, guesses, routine progress, copied documentation,
   or a transcript of every tool call.
 
@@ -144,8 +147,8 @@ Persistence and corrections:
 - Claim persistence only after a successful response with memoryId.
 - Respect tool approvals and report failed calls; never blindly retry a write
   whose commit status is uncertain.
-- If a memory is disproven, report it and write a verified correction that
-  references the original memoryId; do not assume this removes the old record.
+- If a fact is disproven, report it and write a verified correction with a
+  supersedes link to its fragmentId in the same scope; plain text does not retire it.
 - If memory is unavailable, say so and continue using current local evidence.
 
 At completion:
@@ -162,8 +165,10 @@ heading: default sentence/list decomposition can separate it from the fact.
 Keep mandatory rules in version-controlled instructions and link to authoritative
 decisions rather than copying entire documents into memory. Memory records what
 was learned; it does not train the underlying model or override current evidence.
-Writing a correction does not guarantee that older contradictory entries will
-stop appearing in recall, so always check applicability and verification.
+Plain correction text does not change older facts' visibility. An explicit
+`supersedes` link removes its target from normal recall without deleting history;
+it can still appear as related context or through `includeInactive`. Always check
+applicability and verification.
 
 ### What Is Worth Retaining?
 
@@ -198,8 +203,8 @@ context. Do not bypass client approvals to make the policy appear automatic.
 
 | Tool | Arguments | Successful Result |
 |---|---|---|
-| `write_memory` | `agentId`, `text` | `{"memoryId":"<uuid>"}` after commit |
-| `recall_memory` | `query`, optional `agentId`, optional `limit` | Array of `memoryId`, `fragmentId`, `agentId`, `text`, `score` |
+| `write_memory` | `agentId`, `text`, optional `context`, optional per-fragment `facts` | `memoryId` and `fragments` with IDs, text, and tier after commit |
+| `recall_memory` | `query`, optional `agentId`, `scope`, `tier`, `includeInactive`, `limit` | Array of matched facts with IDs, text, score, context, lifecycle, activation, and direct relationships |
 | `decompose_memory` | `text` | Array of strings; preview only, no database write |
 
 MCP text content contains that JSON. `structuredContent` holds the write object
@@ -210,6 +215,13 @@ Limits: 32768 UTF-8 bytes per memory/query, 256 bytes per agent ID, 1..64
 fragments of at most 4096 bytes, and 1..50 recall results (default 10).
 Blank inputs are rejected. Raw text and all fragments commit atomically.
 
+Lifecycle controls are available in **v0.2.0**. Existing two-field writes remain valid,
+with short-term retention by default. Facts share context through their source
+episode and can link to existing fragment IDs explicitly. See
+[fact lifecycle](LIFECYCLE.md) for promotion, feedback, corrections, and history.
+`write_memory` can now change existing facts' retrieval visibility through links;
+clients should keep write approval separate from read-only recall.
+
 Keyword search uses English stemming and stop words; `reviews`, `pull requests`,
 or `reviews OR approvals` work well. Normalized keyword ranks are in `[0, 1)`.
 Vector scores are cosine similarity in `[-1, 1]`. Hybrid scores are normalized
@@ -219,11 +231,12 @@ interchangeable. A configured cosine floor filters semantic candidates; hybrid
 can still return keyword matches without vectors. See [model setup](MODELS.md)
 and [calibration](BENCHMARKS.md) before choosing a floor.
 
-Hybrid recall and cosine floors require a source build containing the unreleased
-changes; v0.1.0 packages support keyword and unfiltered vector recall only. The
-three MCP tool names and argument shapes are unchanged.
+Hybrid recall and cosine floors require v0.2.0 or newer;
+v0.1.0 packages support keyword and unfiltered vector recall only. The
+three MCP tool names are unchanged; optional lifecycle arguments and result
+metadata are additive in v0.2.0.
 
-The optional `MINDLEAK_RELEVANCE=openai` source feature filters existing
+The experimental `MINDLEAK_RELEVANCE=openai` feature filters existing
 candidates after retrieval. It does not generate result text or replace scores
 with confidence values. Selected fragments keep their original text, IDs,
 provenance, scores, and ordering. Valid empty selections return `[]`; failed,
@@ -273,7 +286,7 @@ share a single running server.
 | Agent only uses memory when explicitly asked | Install the [learning policy](#put-memory-into-the-agents-routine) in the instruction file that client loads, start a new chat, and check tool permissions. Connecting MCP does not install the policy. |
 | Recall is empty | Try a short keyword, check `agentId`, and verify the earlier write returned a memory ID. In vector or hybrid mode, check whether a configured similarity floor rejected semantic candidates. |
 | Recall returns unrelated memories | Unfiltered vector search returns nearest neighbours, not guaranteed relevant facts. Calibrate a similarity floor using positive and negative queries; hybrid keyword matches remain eligible independently. |
-| Old memories disappear from vector results | They may have no embeddings. They remain stored and keyword-searchable, including through hybrid recall in a source build containing that mode. |
+| Old memories disappear from vector results | They may have no embeddings, or be archived/superseded. Unembedded active facts remain keyword-searchable, including through hybrid recall. Use `includeInactive` deliberately when investigating history. |
 | Hybrid mode is rejected or a similarity setting has no effect | Check the binary/image revision and the environment passed to the server. v0.1.0 predates these settings; see [installation](INSTALL.md) for all-in-one forwarding requirements. |
 | A model error appears during quickstart | Set `MINDLEAK_DECOMPOSITION=sentences` and `MINDLEAK_RETRIEVAL=keyword`, then recreate the MCP container. |
 

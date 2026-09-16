@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ const engine = process.env.CONTAINER_ENGINE ?? "docker";
 assert.ok(["docker", "podman"].includes(engine), "CONTAINER_ENGINE must be docker or podman");
 const image = process.env.MINDLEAK_IMAGE;
 assert.ok(image, "Set MINDLEAK_IMAGE to a locally built all-in-one image");
+const upgradeFrom = process.env.MINDLEAK_UPGRADE_FROM;
 const project = `mindleak-light-smoke-${randomUUID()}`;
 const token = "mindleak-light-container-test-token";
 const database = "mindleak_light_test";
@@ -38,8 +40,12 @@ function compose(...args) {
   return run(["compose", "--project-name", project, "--file", "docker/compose.all-in-one.yml", ...args]);
 }
 
+function sql(query) {
+  return compose("exec", "-T", "mindleak-light", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "mindleak_light", "-d", database, "-tAc", query);
+}
+
 function snapshot() {
-  return JSON.parse(compose("exec", "-T", "mindleak-light", "psql", "-X", "-U", "mindleak_light", "-d", database, "-tAc",
+  return JSON.parse(sql(
     "SELECT json_build_object(" +
     "'memories', (SELECT count(*) FROM public.memories), " +
     "'fragments', (SELECT count(*) FROM public.fragments), " +
@@ -48,18 +54,52 @@ function snapshot() {
     "'listen', current_setting('listen_addresses'), 'fsync', current_setting('fsync'))"));
 }
 
+function persistedRecords() {
+  return JSON.parse(sql(`SELECT json_build_object(
+    'memories', (SELECT json_agg(saved ORDER BY id) FROM (
+      SELECT id, agent_id, created_at, raw_text FROM public.memories) AS saved),
+    'fragments', (SELECT json_agg(saved ORDER BY id) FROM (
+      SELECT id, memory_id, text, embedding::text, importance FROM public.fragments) AS saved),
+    'relationships', (SELECT json_agg(saved ORDER BY source_fragment, target_fragment, relationship_type) FROM (
+      SELECT source_fragment, target_fragment, relationship_type FROM public.relationships) AS saved),
+    'embedding_type', (SELECT format_type(atttypid, atttypmod) FROM pg_attribute
+      WHERE attrelid = 'public.fragments'::regclass AND attname = 'embedding'),
+    'embedding_model', obj_description('public.fragments'::regclass, 'pg_class'))`));
+}
+
+async function recallPersisted(endpoint, memoryId) {
+  const require = createRequire(new URL("../examples/package.json", import.meta.url));
+  const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
+  const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/sdk/client/streamableHttp.js");
+  const client = new Client({ name: "mindleak-upgrade-test", version: "1.0.0" });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${endpoint}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    }));
+    const recalled = await client.callTool({
+      name: "recall_memory", arguments: { query: "reviews", agentId: project, limit: 5 },
+    });
+    assert.ok(!recalled.isError, "Recall failed after upgrade");
+    assert.ok(recalled.structuredContent?.results?.some((result) => result.memoryId === memoryId),
+      "The upgraded server cannot recall the original memory");
+    const tools = await client.listTools();
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(),
+      ["decompose_memory", "recall_memory", "write_memory"]);
+  } finally {
+    await client.close();
+  }
+}
+
 const directory = mkdtempSync(join(tmpdir(), "mindleak-light-compose-"));
 try {
   const envFile = join(directory, ".env");
   const defaults = {
     MINDLEAK_RECALL_MIN_SIMILARITY: "-1",
-    MINDLEAK_LLM_REASONING_EFFORT: "",
     MINDLEAK_RELEVANCE: "off",
     MINDLEAK_RELEVANCE_URL: "",
     MINDLEAK_RELEVANCE_MODEL: "",
     MINDLEAK_RELEVANCE_API_KEY: "",
     MINDLEAK_RELEVANCE_CANDIDATES: "20",
-    MINDLEAK_RELEVANCE_REASONING_EFFORT: "",
   };
   const relevance = {
     MINDLEAK_RELEVANCE: "openai",
@@ -67,7 +107,6 @@ try {
     MINDLEAK_RELEVANCE_MODEL: "test-relevance-model",
     MINDLEAK_RELEVANCE_API_KEY: "test-relevance-key",
     MINDLEAK_RELEVANCE_CANDIDATES: "12",
-    MINDLEAK_RELEVANCE_REASONING_EFFORT: "none",
   };
   for (const [file, service] of [
     ["docker-compose.yml", "mcp"],
@@ -82,9 +121,6 @@ try {
       [{ MINDLEAK_RELEVANCE: "", MINDLEAK_RELEVANCE_CANDIDATES: "" }, {}, {}],
       [relevance, { MINDLEAK_RELEVANCE: "off", MINDLEAK_RELEVANCE_CANDIDATES: "7" },
         { ...relevance, MINDLEAK_RELEVANCE: "off", MINDLEAK_RELEVANCE_CANDIDATES: "7" }],
-      [{ MINDLEAK_LLM_REASONING_EFFORT: "low", MINDLEAK_RELEVANCE_REASONING_EFFORT: "high" },
-        { MINDLEAK_RELEVANCE_REASONING_EFFORT: "none" },
-        { MINDLEAK_LLM_REASONING_EFFORT: "low", MINDLEAK_RELEVANCE_REASONING_EFFORT: "none" }],
     ]) {
       writeFileSync(envFile, Object.entries(fileValues).map(([key, value]) => `${key}=${value}`).join("\n") + "\n");
       const configurationEnvironment = { ...env };
@@ -116,6 +152,7 @@ assert.equal(refused.status, 64, "Container must refuse to start without an HTTP
 assert.match(refused.stderr, /Set MINDLEAK_HTTP_TOKEN/);
 
 try {
+  if (upgradeFrom) env.MINDLEAK_IMAGE = upgradeFrom;
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
   const address = compose("port", "mindleak-light", "8088");
   const endpoint = `http://${address}`;
@@ -134,9 +171,29 @@ try {
   const saved = snapshot();
   assert.deepEqual(saved, { memories: 1, fragments: 2, vectors: 0, tables: 3, listen: "", fsync: "on" });
 
+  if (upgradeFrom) {
+    sql(`BEGIN;
+      ALTER TABLE public.fragments ALTER COLUMN embedding TYPE vector(2);
+      UPDATE public.fragments SET embedding = '[1,0]'::vector;
+      COMMENT ON TABLE public.fragments IS '{"model":"container-upgrade-fixture","dimensions":2}';
+      INSERT INTO public.relationships (source_fragment, target_fragment, relationship_type)
+        SELECT source.id, target.id, 'related' FROM public.fragments AS source
+        JOIN public.fragments AS target ON source.id < target.id;
+      COMMIT;`);
+  }
+  const before = persistedRecords();
+  const counts = snapshot();
   compose("down");
+  env.MINDLEAK_IMAGE = image;
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
-  assert.deepEqual(snapshot(), saved, "Recreating the container lost persisted memory");
+  assert.deepEqual(snapshot(), counts, "Recreating the container lost persisted memory");
+  assert.deepEqual(persistedRecords(), before, "Upgrade changed original records or embedding metadata");
+  await recallPersisted(`http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id);
+  if (upgradeFrom) {
+    assert.equal(sql("SELECT count(*) FROM public.memories WHERE context = '{}'::jsonb"), "1");
+    assert.equal(sql("SELECT count(*) FROM public.fragments WHERE tier = 'short_term' AND state = 'active' AND evidence = 'unconfirmed'"), "2");
+    console.log("Published-image upgrade: exact raw text, IDs, vectors, links, model metadata, lifecycle defaults, and MCP recall verified.");
+  }
   console.log("All-in-one image: auth, MCP write/recall, socket-only Postgres, and volume persistence verified.");
 } catch (error) {
   console.error(compose("logs", "--no-color", "--tail", "80"));

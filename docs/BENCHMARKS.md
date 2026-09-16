@@ -274,6 +274,31 @@ and continue calling those scores held out.
 
 ## Quality Gates
 
+### Fast Recall
+
+Keep `--relevance off` for latency-sensitive recall. To measure repeated queries
+without reingesting the corpus, run multiple passes in one server process:
+
+```sh
+node examples/benchmark-recall.mjs --retrieval hybrid --passes 3 --max-warm-p95-ms 20 > target/recall-speed.json
+```
+
+Pass 1 reports first-seen-query latency; each later pass has its own metrics and
+latency distribution in `byPass`. The gate fails if any later pass exceeds the
+declared p95 budget, while retaining the complete report. Twenty milliseconds
+is a local test target, not a service guarantee. Result quality is scored on
+every pass; repetitions are not independent accuracy samples. Calibration accepts
+only a single pass. Query caches hold 128 exact strings, so larger working sets
+may evict vectors before reuse. All passes still query current PostgreSQL data.
+
+`--decomposition-reasoning-effort` and `--relevance-reasoning-effort` explicitly
+set compatible providers' chat effort controls and are recorded under `reasoning`.
+They are omitted by default. Never compare runs with different reasoning settings
+as if only the prompt changed. They are quality/latency options, not automatic
+optimizations; some models give worse answers with thinking disabled.
+
+### Accuracy Gates
+
 Provider failures, malformed responses, unknown source IDs, and records from
 another agent namespace abort the run without a score report. They are not
 converted into empty successful recalls. Quality misses are valid measurements

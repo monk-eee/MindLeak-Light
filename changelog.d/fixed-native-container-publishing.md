@@ -1,3 +1,0 @@
-- Build amd64 and arm64 release images on matching native GitHub runners instead of compiling Rust under CPU emulation.
-- Smoke-test each pushed image by digest before publishing the combined version tag, and pin CI/build inputs to one validated release commit.
-- Allow the current publishing workflow to build an existing release tag without moving it or including newer application changes.

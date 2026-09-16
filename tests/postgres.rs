@@ -1,9 +1,13 @@
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use mindleak_memory::{
-    EmbeddedFragment, MemoryRetriever, MemoryStore, PreparedMemory, TextEmbedder,
+    EmbeddedFragment, MemoryContext, MemoryRetriever, MemoryStore, MemoryTier, PreparedMemory,
+    RecallFilter, TextEmbedder,
 };
 use mindleak_storage_postgres::{
     HybridMemoryRetriever, KeywordMemoryRetriever, PostgresMemoryStore, VectorMemoryRetriever,
@@ -11,6 +15,15 @@ use mindleak_storage_postgres::{
 use tokio_postgres::{Client, NoTls};
 use url::Url;
 use uuid::Uuid;
+
+mod lifecycle;
+
+fn filter(agent_id: Option<&str>) -> RecallFilter {
+    RecallFilter {
+        agent_id: agent_id.map(str::to_owned),
+        ..Default::default()
+    }
+}
 
 fn database_url() -> String {
     let url = std::env::var("MINDLEAK_TEST_DATABASE_URL")
@@ -60,18 +73,24 @@ fn memory(agent_id: &str) -> PreparedMemory {
         id: Uuid::new_v4(),
         agent_id: agent_id.into(),
         raw_text: "User prefers small PRs. Team requires reviews.".into(),
+        context: MemoryContext::default(),
+        relationships: Vec::new(),
         fragments: vec![
             EmbeddedFragment {
                 id: Uuid::new_v4(),
                 text: "User prefers small PRs".into(),
                 embedding: Some(vec![1.0, 0.0]),
                 importance: 0.5,
+                tier: MemoryTier::ShortTerm,
+                pinned: false,
             },
             EmbeddedFragment {
                 id: Uuid::new_v4(),
                 text: "Team requires reviews".into(),
                 embedding: Some(vec![0.0, 1.0]),
                 importance: 0.5,
+                tier: MemoryTier::ShortTerm,
+                pinned: false,
             },
         ],
     }
@@ -88,6 +107,127 @@ impl TextEmbedder for QueryEmbedder {
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         assert_eq!(texts, ["PR preferences?"]);
         Ok(vec![vec![1.0, 0.0]])
+    }
+}
+
+#[derive(Default)]
+struct CountingQueryEmbedder {
+    calls: AtomicUsize,
+    fail_first: bool,
+    invalid_first: bool,
+}
+
+#[async_trait]
+impl TextEmbedder for CountingQueryEmbedder {
+    fn dimensions(&self) -> usize {
+        2
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::ensure!(texts.len() == 1, "expected one query");
+        anyhow::ensure!(call != 0 || !self.fail_first, "provider unavailable");
+        if call == 0 && self.invalid_first {
+            return Ok(vec![vec![0.0, 0.0]]);
+        }
+        Ok(vec![vec![1.0, 0.0]])
+    }
+}
+
+#[tokio::test]
+async fn repeated_queries_reuse_embeddings_but_requery_memories_and_agent_filters() {
+    let (store, client) = setup().await;
+    for hybrid in [false, true] {
+        let agent_id = format!("query-cache-{}", Uuid::new_v4());
+        let original = memory(&agent_id);
+        store.save(&original).await.unwrap();
+        let embedder = Arc::new(CountingQueryEmbedder::default());
+        let retriever: Box<dyn MemoryRetriever> = if hybrid {
+            Box::new(HybridMemoryRetriever::new(store.clone(), embedder.clone()))
+        } else {
+            Box::new(VectorMemoryRetriever::new(store.clone(), embedder.clone()))
+        };
+        assert_eq!(
+            retriever
+                .recall("PR preferences?", &filter(Some(&agent_id)), 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(retriever
+            .recall("PR preferences?", &filter(Some("absent-agent")), 5)
+            .await
+            .unwrap()
+            .is_empty());
+        let added = memory(&agent_id);
+        store.save(&added).await.unwrap();
+        let updated = retriever
+            .recall("PR preferences?", &filter(Some(&agent_id)), 5)
+            .await
+            .unwrap();
+        assert_eq!(updated.len(), 4);
+        assert!(updated.iter().any(|row| row.memory_id == added.id));
+        client
+            .execute("DELETE FROM memories WHERE id = $1", &[&original.id])
+            .await
+            .unwrap();
+        let after_delete = retriever
+            .recall("PR preferences?", &filter(Some(&agent_id)), 5)
+            .await
+            .unwrap();
+        assert_eq!(after_delete.len(), 2);
+        assert!(after_delete.iter().all(|row| row.memory_id == added.id));
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn query_embedding_cache_is_bounded_exact_and_does_not_cache_provider_failures() {
+    let (store, _) = setup().await;
+    let agent_id = format!("cache-bounds-{}", Uuid::new_v4());
+    let embedder = Arc::new(CountingQueryEmbedder::default());
+    let retriever = VectorMemoryRetriever::new(store.clone(), embedder.clone());
+    for index in 0..128 {
+        retriever
+            .recall(&format!("query-{index}"), &filter(Some(&agent_id)), 1)
+            .await
+            .unwrap();
+    }
+    retriever
+        .recall("query-0", &filter(Some(&agent_id)), 1)
+        .await
+        .unwrap();
+    assert_eq!(embedder.calls.load(Ordering::SeqCst), 128);
+    retriever
+        .recall("Query-0", &filter(Some(&agent_id)), 1)
+        .await
+        .unwrap();
+    retriever
+        .recall("query-0", &filter(Some(&agent_id)), 1)
+        .await
+        .unwrap();
+    assert_eq!(embedder.calls.load(Ordering::SeqCst), 130);
+    for invalid_first in [false, true] {
+        let provider = Arc::new(CountingQueryEmbedder {
+            fail_first: !invalid_first,
+            invalid_first,
+            ..Default::default()
+        });
+        let retriever = VectorMemoryRetriever::new(store.clone(), provider.clone());
+        assert!(retriever
+            .recall("query", &filter(Some(&agent_id)), 1)
+            .await
+            .is_err());
+        retriever
+            .recall("query", &filter(Some(&agent_id)), 1)
+            .await
+            .unwrap();
+        retriever
+            .recall("query", &filter(Some(&agent_id)), 1)
+            .await
+            .unwrap();
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 }
 
@@ -125,7 +265,7 @@ async fn unsafe_vectors_and_non_finite_scores_fail_closed() {
         .unwrap()
         .get(0);
     let query_rejected = VectorMemoryRetriever::new(store.clone(), Arc::new(SmallQueryEmbedder))
-        .recall("PR preferences?", Some(&agent_id), 5)
+        .recall("PR preferences?", &filter(Some(&agent_id)), 5)
         .await
         .is_err();
 
@@ -156,7 +296,7 @@ async fn unsafe_vectors_and_non_finite_scores_fail_closed() {
             };
             rejected_scores.push(
                 retriever
-                    .recall("PR preferences?", Some(&agent_id), 5)
+                    .recall("PR preferences?", &filter(Some(&agent_id)), 5)
                     .await
                     .is_err(),
             );
@@ -195,7 +335,7 @@ async fn roundtrip_uses_pgvector_ranking_and_optional_agent_filter() {
     assert!(row.get::<_, bool>(1));
     let retriever = VectorMemoryRetriever::new(store, Arc::new(QueryEmbedder));
     let matches = retriever
-        .recall("PR preferences?", Some(&agent_id), 2)
+        .recall("PR preferences?", &filter(Some(&agent_id)), 2)
         .await
         .unwrap();
     assert_eq!(matches.len(), 2);
@@ -206,18 +346,21 @@ async fn roundtrip_uses_pgvector_ranking_and_optional_agent_filter() {
     assert!(matches[1].score.abs() < 1e-6);
     assert_eq!(
         retriever
-            .recall("PR preferences?", Some(&agent_id), 1)
+            .recall("PR preferences?", &filter(Some(&agent_id)), 1)
             .await
             .unwrap()
             .len(),
         1
     );
     assert!(retriever
-        .recall("PR preferences?", Some("absent-agent"), 2)
+        .recall("PR preferences?", &filter(Some("absent-agent")), 2)
         .await
         .unwrap()
         .is_empty());
-    let global = retriever.recall("PR preferences?", None, 3).await.unwrap();
+    let global = retriever
+        .recall("PR preferences?", &filter(None), 3)
+        .await
+        .unwrap();
     assert!(!global.is_empty());
     assert!(global.windows(2).all(|pair| pair[0].score >= pair[1].score));
 }
@@ -250,7 +393,7 @@ async fn hybrid_recall_fuses_semantic_and_unembedded_keyword_matches_with_agent_
         .with_min_similarity(Some(0.5))
         .unwrap();
     let matches = retriever
-        .recall("PR preferences?", Some(&agent_id), 5)
+        .recall("PR preferences?", &filter(Some(&agent_id)), 5)
         .await
         .unwrap();
     assert_eq!(matches.len(), 3);
@@ -261,19 +404,19 @@ async fn hybrid_recall_fuses_semantic_and_unembedded_keyword_matches_with_agent_
         .any(|result| result.memory_id == unembedded.id));
     assert_eq!(
         retriever
-            .recall("PR preferences?", Some(&agent_id), 1)
+            .recall("PR preferences?", &filter(Some(&agent_id)), 1)
             .await
             .unwrap()
             .len(),
         1
     );
     assert!(retriever
-        .recall("PR preferences?", Some("absent-agent"), 5)
+        .recall("PR preferences?", &filter(Some("absent-agent")), 5)
         .await
         .unwrap()
         .is_empty());
     assert!(retriever
-        .recall("PR preferences?", Some(&agent_id), 0)
+        .recall("PR preferences?", &filter(Some(&agent_id)), 0)
         .await
         .is_err());
 }
@@ -297,13 +440,13 @@ async fn hybrid_recall_never_hides_embedding_failure_behind_keyword_results() {
     let agent_id = format!("hybrid-failure-{}", Uuid::new_v4());
     store.save(&memory(&agent_id)).await.unwrap();
     assert!(!KeywordMemoryRetriever::new(store.clone())
-        .recall("reviews", Some(&agent_id), 5)
+        .recall("reviews", &filter(Some(&agent_id)), 5)
         .await
         .unwrap()
         .is_empty());
     let retriever = HybridMemoryRetriever::new(store, Arc::new(UnavailableEmbedder));
     assert!(retriever
-        .recall("reviews", Some(&agent_id), 5)
+        .recall("reviews", &filter(Some(&agent_id)), 5)
         .await
         .is_err());
 }
@@ -319,7 +462,7 @@ async fn vector_floor_is_inclusive_and_rejects_invalid_configuration() {
             .unwrap();
         assert_eq!(
             retriever
-                .recall("PR preferences?", Some(&agent_id), 5)
+                .recall("PR preferences?", &filter(Some(&agent_id)), 5)
                 .await
                 .unwrap()
                 .len(),
@@ -471,7 +614,7 @@ async fn keyword_recall_finds_unembedded_fragments_and_respects_agent_filters() 
     assert_eq!(null_count, 2);
     let retriever = KeywordMemoryRetriever::new(store);
     let matches = retriever
-        .recall("reviews", Some(&agent_id), 10)
+        .recall("reviews", &filter(Some(&agent_id)), 10)
         .await
         .unwrap();
     assert_eq!(matches.len(), 1);
@@ -480,29 +623,29 @@ async fn keyword_recall_finds_unembedded_fragments_and_respects_agent_filters() 
     assert!((0.0..1.0).contains(&matches[0].score));
     assert!(matches[0].score > 0.0);
     assert!(retriever
-        .recall("reviews", Some("absent-agent"), 10)
+        .recall("reviews", &filter(Some("absent-agent")), 10)
         .await
         .unwrap()
         .is_empty());
     assert!(retriever
-        .recall("unfindablewordxyz", Some(&agent_id), 10)
+        .recall("unfindablewordxyz", &filter(Some(&agent_id)), 10)
         .await
         .unwrap()
         .is_empty());
     assert!(!retriever
-        .recall("reviews", None, 1)
+        .recall("reviews", &filter(None), 1)
         .await
         .unwrap()
         .is_empty());
     assert!(retriever
-        .recall("the and", Some(&agent_id), 10)
+        .recall("the and", &filter(Some(&agent_id)), 10)
         .await
         .unwrap()
         .is_empty());
 
     let vectors = VectorMemoryRetriever::new(vector_store, Arc::new(QueryEmbedder));
     assert!(vectors
-        .recall("PR preferences?", Some(&agent_id), 10)
+        .recall("PR preferences?", &filter(Some(&agent_id)), 10)
         .await
         .unwrap()
         .is_empty());
@@ -577,7 +720,7 @@ async fn model_free_upgrade_preserves_legacy_vectors_and_model_binding() {
     let retriever = KeywordMemoryRetriever::new(store);
     assert_eq!(
         retriever
-            .recall("reviews", Some("new-agent"), 10)
+            .recall("reviews", &filter(Some("new-agent")), 10)
             .await
             .unwrap()
             .len(),
@@ -603,13 +746,13 @@ async fn vectors_can_be_enabled_after_model_free_writes_without_rewriting_them()
     vector_store.save(&memory("with-model")).await.unwrap();
     let vector_retriever = VectorMemoryRetriever::new(vector_store, Arc::new(QueryEmbedder));
     assert!(vector_retriever
-        .recall("PR preferences?", Some("before-model"), 10)
+        .recall("PR preferences?", &filter(Some("before-model")), 10)
         .await
         .unwrap()
         .is_empty());
     assert_eq!(
         vector_retriever
-            .recall("PR preferences?", Some("with-model"), 10)
+            .recall("PR preferences?", &filter(Some("with-model")), 10)
             .await
             .unwrap()
             .len(),
@@ -617,7 +760,7 @@ async fn vectors_can_be_enabled_after_model_free_writes_without_rewriting_them()
     );
     let keyword_retriever = KeywordMemoryRetriever::new(store);
     let recalled = keyword_retriever
-        .recall("reviews", Some("before-model"), 10)
+        .recall("reviews", &filter(Some("before-model")), 10)
         .await
         .unwrap();
     assert_eq!(recalled.len(), 1);

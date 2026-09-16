@@ -29,6 +29,8 @@ use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod mcp_lifecycle;
+
 const FACTS: [&str; 3] = [
     "User dislikes huge PRs",
     "Team requires reviews",
