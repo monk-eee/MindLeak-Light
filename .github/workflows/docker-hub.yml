@@ -42,7 +42,7 @@ jobs:
             echo "::error::A prerelease cannot update latest."
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: actions/setup-node@v5
         with:
           node-version: 22
