@@ -5,20 +5,13 @@ recall, cached query embeddings, and provider safeguards, plus unreleased
 retry-safe writes, modular storage, response budgets, and ranking diagnostics.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
-```mermaid
-flowchart TD
-        Agent["Agent and MCP client"] --> MCP["Official MCP SDK: stdio or authenticated HTTP"]
-        MCP --> Service["MemoryService"]
-        Service -->|"prepare or preview"| Decomposition["Sentences/lists or optional chat extraction"]
-        Service -->|"prepare write vectors"| Embedding["Optional TextEmbedder"]
-        Service -->|"write or replay"| Store["MemoryStore: receipts and atomic transactions"]
-        Service -->|"recall"| Retrieval["MemoryRetriever: keyword, vector, or hybrid"]
-        Decomposition -.->|"opt-in"| Models["External model providers"]
-        Embedding -.-> Models
-        Retrieval -.->|"embedding misses and optional selection"| Models
-        Store --> Database[("PostgreSQL: memories, fragments, relationships")]
-        Retrieval --> Database
-```
+All four diagrams are editable frames in the
+[Excalidraw architecture board](../assets/architecture.excalidraw). The SVG
+previews include their fonts and scene data, so they can also be opened in
+[Excalidraw](https://excalidraw.com). See the
+[editing guide](../DEVELOPERS.md#architecture-diagrams) when updating them.
+
+![System overview: one MCP executable, optional model providers, and three PostgreSQL tables](../assets/architecture-overview.svg)
 
 ## Storage Module Map
 
@@ -37,27 +30,7 @@ existing store rather than a parallel persistence path:
 
 ## Write
 
-```mermaid
-flowchart TD
-        Input["write_memory arguments"] --> Validate["Validate intrinsic input limits"]
-        Validate --> Key{"requestId supplied?"}
-        Key -->|"yes"| Lookup["Lookup agentId + requestId"]
-        Lookup --> Receipt{"Committed receipt?"}
-        Receipt -->|"same canonical payload"| Replay["Return original result; no inference or lifecycle replay"]
-        Receipt -->|"different payload"| Conflict["Error: requestId conflict"]
-        Receipt -->|"absent"| Prepare["Decompose, bind exact directives, validate vectors"]
-        Key -->|"no"| Prepare
-        Prepare --> Transaction["Begin transaction and insert episode plus receipt"]
-        Transaction --> Insert{"New row inserted?"}
-        Insert -->|"yes"| Persist["Insert fragments; lock target UUIDs in order; apply links"]
-        Persist --> Commit["Commit all data and lifecycle effects"]
-        Commit --> Result["Return memoryId and original fragment receipt"]
-        Insert -->|"concurrent key conflict"| Winner["Read and verify winning committed receipt"]
-        Winner -->|"same payload"| Replay
-        Winner -->|"different payload"| Conflict
-        Prepare -->|"failure"| Failed["Error; no committed key consumed"]
-        Persist -->|"failure"| Rollback["Rollback episode, receipt, fragments, and links"]
-```
+![Write flow: validate and replay before preparation, then atomically commit or roll back the complete memory](../assets/architecture-write.svg)
 
 Validate input and decompose it using the configured strategy. The default uses
 Unicode sentence boundaries and line/list boundaries, preserving the wording.
@@ -112,23 +85,7 @@ cannot prove that a provider has kept its weights unchanged.
 
 ## Recall
 
-```mermaid
-flowchart TD
-        Query["Query, scope, agent, tier, state, and limit"] --> Mode{"Retrieval mode"}
-        Mode -->|"keyword or hybrid"| Keyword["Full-text candidates; filters before limit"]
-        Mode -->|"vector or hybrid"| Cache["Exact query vector cache; embed on miss"]
-        Cache --> Vector["pgvector candidates; filters and cosine floor before limit"]
-        Keyword --> Candidates["Keep branch rank; apply RRF only for hybrid"]
-        Vector --> Candidates
-        Candidates --> Priority["Compute activation and rankingPriority once"]
-        Priority --> Primary["Order primary candidates and apply candidate budget"]
-        Primary --> Context["Reserve primary JSON; allocate bounded related context"]
-        Context --> Selection{"Optional relevance model?"}
-        Selection -->|"off"| Return["Return original score, priority, context, and truncation metadata"]
-        Selection -->|"on"| Evidence["Validate selected indices and exact source quotations"]
-        Evidence -->|"valid selection"| Return
-        Evidence -->|"provider or validation failure"| Error["Error, not empty success"]
-```
+![Read-only recall: filtered candidates, raw rank fusion, lifecycle priority, bounded related context, and optional relevance selection](../assets/architecture-recall.svg)
 
 The relevance wrapper requests at least its configured candidate count from the
 underlying retriever, then filters to the client limit without refilling omitted
@@ -196,14 +153,7 @@ is an interface extension point, not a shipped implementation.
 
 ## Contextual Fact Lifecycle
 
-```mermaid
-stateDiagram-v2
-        [*] --> Active
-        Active --> Archived: archives
-        Archived --> Active: restores
-        Active --> Superseded: supersedes with replacement
-        Archived --> Superseded: supersedes with replacement
-```
+![Fact lifecycle: reversible archival, terminal supersession, and separate retention and evidence claims](../assets/architecture-lifecycle.svg)
 
 State, retention tier, and evidence status are separate concepts. A fact starts
 active; short/long-term tiers affect activation, not truth. Superseded is terminal,

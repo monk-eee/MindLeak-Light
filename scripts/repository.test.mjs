@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
+import { inflateSync } from "node:zlib";
 import test from "node:test";
 import { readAdrs, updateIndex } from "./adr-index.mjs";
 import { readFragments, releaseChangelog, render } from "./changelog.mjs";
@@ -135,11 +136,74 @@ test("README teaches the agent memory policy before the explicit tool smoke test
 
 test("architecture diagrams cover the integrated write and recall contracts", () => {
   const architecture = readFileSync(new URL("../docs/ARCHITECTURE.md", import.meta.url), "utf8");
-  const diagrams = [...architecture.matchAll(/```mermaid\n([\s\S]*?)\n```/g)].map((match) => match[1]);
-  assert.equal(diagrams.length, 4);
-  assert.ok(diagrams.some((diagram) => diagram.includes("requestId") && diagram.includes("committed receipt")));
-  assert.ok(diagrams.some((diagram) => diagram.includes("rankingPriority") && diagram.includes("bounded related context")));
-  assert.ok(diagrams.some((diagram) => diagram.includes("stateDiagram-v2") && diagram.includes("Superseded")));
+  const source = readFileSync(new URL("../assets/architecture.excalidraw", import.meta.url), "utf8");
+  const scene = JSON.parse(source);
+  assert.equal(scene.type, "excalidraw");
+  assert.equal(scene.version, 2);
+  assert.ok(architecture.includes("../assets/architecture.excalidraw"));
+  assert.ok(!architecture.includes("```mermaid"));
+  const elements = new Map(scene.elements.map((element) => [element.id, element]));
+  assert.equal(elements.size, scene.elements.length, "Excalidraw element IDs must be unique");
+  assert.equal(scene.elements.filter((element) => element.type === "frame").length, 4);
+  for (const [name, terms] of [
+    ["overview", ["MemoryService", "MemoryStore", "MemoryRetriever", "PostgreSQL", "memories", "fragments", "relationships"]],
+    ["write", ["requestId", "committed receipt", "Rollback", "lifecycle"]],
+    ["recall", ["rankingPriority", "bounded related context", "32 KiB", "512 KiB"]],
+    ["lifecycle", ["Active", "Archived", "Superseded", "confirmation", "not truth"]],
+  ]) {
+    const frameId = `architecture-${name}`;
+    assert.equal(elements.get(frameId)?.type, "frame", `missing ${name} frame`);
+    const members = scene.elements.filter((element) => element.frameId === frameId);
+    const labels = members.filter((element) => element.type === "text").map((element) => element.text).join("\n");
+    for (const term of terms) assert.ok(labels.includes(term), `${name} must explain ${term}`);
+    for (const label of members.filter((element) => element.type === "text" && element.containerId)) {
+      const container = elements.get(label.containerId);
+      if (container.type === "arrow") continue;
+      assert.equal(label.textAlign, "center");
+      assert.equal(label.verticalAlign, "middle");
+      assert.ok(Math.abs(label.x + label.width / 2 - container.x - container.width / 2) < 0.1,
+        `${label.containerId} label must be horizontally centred`);
+      assert.ok(Math.abs(label.y + label.height / 2 - container.y - container.height / 2) < 0.1,
+        `${label.containerId} label must be vertically centred`);
+      assert.ok(label.width <= container.width - 16 && label.height <= container.height - 10,
+        `${label.containerId} label needs padding`);
+    }
+    const arrows = members.filter((element) => element.type === "arrow");
+    assert.ok(arrows.length > 0, `${name} must contain editable connections`);
+    for (const arrow of arrows) {
+      for (const binding of [arrow.startBinding, arrow.endBinding]) {
+        assert.equal(elements.get(binding?.elementId)?.frameId, frameId, `${arrow.id} must connect within its frame`);
+      }
+    }
+    const preview = `architecture-${name}.svg`;
+    assert.ok(architecture.includes(`../assets/${preview}`), `missing ${name} preview`);
+    const svg = readFileSync(new URL(`../assets/${preview}`, import.meta.url), "utf8");
+    assert.match(svg, /svg-source:excalidraw/);
+    assert.doesNotMatch(svg, /<(?:script|foreignObject)\b/);
+    const payload = /<!-- payload-start -->(.*?)<!-- payload-end -->/s.exec(svg)?.[1];
+    assert.ok(payload, `${name} SVG must include its editable scene`);
+    const encoded = JSON.parse(Buffer.from(payload, "base64").toString("latin1"));
+    assert.equal(encoded.encoding, "bstring");
+    assert.equal(encoded.compressed, true);
+    const embedded = JSON.parse(inflateSync(Buffer.from(encoded.encoded, "latin1")).toString("utf8"));
+    const exported = embedded.elements.filter((element) => element.frameId === frameId);
+    assert.equal(exported.length, members.length, `re-export stale ${name} preview`);
+    for (const actual of exported) {
+      const expected = elements.get(actual.id);
+      assert.ok(expected, `${actual.id} is missing from the editable board`);
+      for (const field of ["type", "frameId", "text", "fontSize", "fontFamily", "textAlign", "verticalAlign", "containerId", "strokeColor", "backgroundColor"]) {
+        assert.equal(actual[field], expected[field], `re-export ${name}: ${actual.id}.${field} differs`);
+      }
+      if (actual.type === "arrow") {
+        assert.equal(actual.startBinding?.elementId, expected.startBinding?.elementId);
+        assert.equal(actual.endBinding?.elementId, expected.endBinding?.elementId);
+      } else {
+        for (const field of ["x", "y", "width", "height"]) {
+          assert.equal(actual[field], expected[field], `re-export ${name}: ${actual.id}.${field} differs`);
+        }
+      }
+    }
+  }
   assert.match(architecture, /persistence\.rs.*receipt lookup\/replay/);
 });
 
