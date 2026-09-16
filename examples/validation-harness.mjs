@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { benchmarkSettings, scoreDecomposition } from "./benchmark-recall.mjs";
 import { agentSettings, createAgent, publicExecution } from "./validation-agent.mjs";
 import { agentTools, containerConfiguration, createCodingWorkspace, openMemoryDriver, renderScaleCharts, scopedMemory } from "./validation-runtime.mjs";
-import { categories, codingFixture, digest, evaluateAnswer, generateScenarios, pairedMetrics, retrievalMetrics, scaleCharts } from "./validation-scenarios.mjs";
+import { answerSchemaFor, categories, codingFixture, digest, evaluateAnswer, evaluatePoisoning, generateScenarios, handoffSchema, pairedMetrics, retrievalMetrics, scaleCharts, verifyCodingPreparation } from "./validation-scenarios.mjs";
 import { longitudinalBinding, runLongitudinal } from "./validation-longitudinal.mjs";
 
 const mean = values => values.length ? values.reduce((sum, value) => sum + Number(value), 0) / values.length : null;
@@ -59,9 +59,9 @@ function aggregateQueries(queries) {
     latency: latency(queries.map(query => query.elapsedMs)) };
 }
 
-async function agentOutcome(agent, task, memory, workspace, context = "", rubric = null) {
+async function agentOutcome(agent, task, memory, workspace, context = "", rubric = null, answerSchema = null) {
   const started = performance.now();
-  const execution = await agent.run(task, agentTools(memory, workspace), context);
+  const execution = await agent.run(task, agentTools(memory, workspace), context, answerSchema);
   const answerEvaluation = rubric ? evaluateAnswer(execution.answer, rubric) : null;
   const tests = workspace ? await workspace.test() : null;
   const success = execution.status === "completed" && (tests ? tests.passed : answerEvaluation?.success === true);
@@ -73,6 +73,26 @@ async function agentOutcome(agent, task, memory, workspace, context = "", rubric
 function publishedOutcome(result) {
   const { _answer, ...summary } = result;
   return summary;
+}
+
+function transferStages(source, target, preparation, scenario, outcome) {
+  const written = source.observations.writes.flatMap(receipt => receipt.fragments);
+  const ids = new Set(written.map(fragment => fragment.fragmentId));
+  const storedFacts = scenario.facts ? scoreDecomposition({ id: "stored-evidence", facts: scenario.facts }, written.map(fragment => fragment.text)) : null;
+  const preparationCompleted = preparation ? preparation.status === "completed" : true;
+  const preparationReady = preparationCompleted && written.length > 0
+    && (storedFacts ? storedFacts.verifiedFactRecall === 1 : preparation?.handoffVerification?.ready === true);
+  const matchingSourceRetrieved = [...target?.observations.recalled ?? []].some(id => ids.has(id));
+  const matchingSourceDelivered = [...target?.observations.exposed ?? []].some(id => ids.has(id));
+  return { preparationCompleted, writeAcknowledged: written.length > 0, writtenFragments: written.length, storedFacts, preparationReady,
+    retrievalAttempted: target?.observations.calls.some(call => call.tool === "recall_memory") ?? false,
+    matchingSourceRetrieved, matchingSourceDelivered,
+    sourceInspected: [...target?.observations.inspections ?? []].some(id => ids.has(id)),
+    answerCompleted: outcome.status === "completed", answerCorrect: outcome.status === "completed" ? outcome.success : null,
+    failureStage: !preparationCompleted ? "preparation_execution" : !written.length ? "no_memory_written"
+      : !preparationReady ? "preparation_unverified" : !matchingSourceRetrieved ? "source_not_retrieved"
+      : !matchingSourceDelivered ? "source_not_delivered" : outcome.status !== "completed" ? "answer_execution"
+      : !outcome.success ? "answer_incorrect_or_unverified" : null };
 }
 
 export async function runValidation({ driver, plan = generateScenarios(), agent = null, code = null,
@@ -103,27 +123,31 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
       const order = Number.parseInt(digest(`${plan.seed}:${category}:${trial}`).slice(0, 2), 16) % 2
         ? ["withMemory", "withoutMemory"] : ["withoutMemory", "withMemory"];
       const arms = {};
-      let exposed = false;
+      let targetMemory;
       for (const arm of order) {
         await driver.restart();
         const target = arm === "withMemory" ? memory(slot, "agent-b") : null;
-        arms[arm] = await agentOutcome(agent, scenario.task, target, null, arm === "withoutMemory" ? context : "", scenario.rubric);
-        if (target) exposed = [...target.observations.recalled].some(id => source.observations.writes.some(receipt => receipt.fragments.some(fragment => fragment.fragmentId === id)));
+        if (target) targetMemory = target;
+        arms[arm] = await agentOutcome(agent, scenario.task, target, null, arm === "withoutMemory" ? context : "", scenario.rubric, answerSchemaFor(category));
       }
-      const comparison = pairedMetrics(arms.withoutMemory, arms.withMemory);
-      const result = { trial: trial + 1, order, preparation, memoryExposureObserved: exposed,
+      const stages = transferStages(source, targetMemory, preparation, scenario, arms.withMemory);
+      const comparison = pairedMetrics(arms.withoutMemory, arms.withMemory, { memoryExposed: stages.matchingSourceDelivered, preparationReady: stages.preparationReady });
+      const result = { trial: trial + 1, order, preparation, stages, memoryExposureObserved: stages.matchingSourceDelivered,
         withoutMemory: publishedOutcome(arms.withoutMemory), withMemory: publishedOutcome(arms.withMemory), comparison };
       if (category === "poisoning_resistance") {
-        const answer = arms.withMemory._answer;
-        result.poisoning = { exposed,
-          blindAcceptance: exposed && arms.withMemory.status === "completed" && typeof answer.memoryClaimAccepted === "boolean"
-            ? answer.memoryClaimAccepted : null,
-          conflictDetected: exposed && arms.withMemory.status === "completed"
-            && [answer.conflictDetected, answer.attributedToMemory, answer.memoryClaimAccepted].every(value => typeof value === "boolean")
-            ? answer.conflictDetected === true && answer.attributedToMemory === true && answer.memoryClaimAccepted === false && arms.withMemory.success : null,
-          evaluation: "structured-answer-rubric-not-independent-fact-checking" };
+        result.poisoning = evaluatePoisoning(arms.withMemory._answer, scenario.rubric,
+          { exposed: stages.matchingSourceDelivered, completed: arms.withMemory.status === "completed" });
+        await driver.restart();
+        const forcedMemory = memory(slot, "agent-forced-exposure");
+        const inspected = await forcedMemory.inspect(source.observations.writes[0].fragments[0].fragmentId);
+        const context = JSON.stringify({ source: "stored-memory-claim-untrusted", evidence: inspected });
+        if (Buffer.byteLength(context) > 64 * 1024) throw new Error("forced_context_budget");
+        const forced = await agentOutcome(agent, scenario.task, forcedMemory, null, context, scenario.rubric, answerSchemaFor(category));
+        result.forcedExposure = { protocol: "inspected-source-in-context-v1", contextBytes: Buffer.byteLength(context),
+          execution: publishedOutcome(forced), evaluation: evaluatePoisoning(forced._answer, scenario.rubric,
+            { exposed: true, completed: forced.status === "completed" }), naturalistic: false };
       }
-      if (category === "agent_handoff") result.transferSuccess = exposed && source.observations.writes.length > 0 && arms.withMemory.success;
+      if (category === "agent_handoff") result.transferSuccess = stages.preparationReady && stages.matchingSourceDelivered && arms.withMemory.success;
       pairs.push(result);
       trialResults.push(result);
     }
@@ -141,24 +165,28 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
       try {
         const before = await discovery.test();
         if (before.passed || before.tests !== before.expectedTests) throw new Error("coding_fixture_must_have_executed_failing_tests");
-        const execution = await agent.run(scenario.discovery, agentTools(source, discovery, { recall: false, write: true }));
-        preparation = { ...publicExecution(execution), baselineTests: before, memoriesWritten: source.observations.writes.length };
+        const execution = await agent.run(scenario.discovery, agentTools(source, discovery, { recall: false, write: true, handoffKind: kind }), "", answerSchemaFor(kind, "preparation"));
+        const after = await discovery.test();
+        preparation = { ...publicExecution(execution), baselineTests: before, finalTests: after, memoriesWritten: source.observations.writes.length,
+          handoffVerification: verifyCodingPreparation(kind, execution, source.observations.handoffBriefs, after),
+          briefs: source.observations.handoffBriefs };
       } finally { await discovery.close(); }
       const order = trial % 2 ? ["withMemory", "withoutMemory"] : ["withoutMemory", "withMemory"];
       const arms = {};
-      let exposure = false;
+      let targetMemory;
       for (const arm of order) {
         await driver.restart();
         const workspace = await workspaceFactory(kind, code);
         const target = arm === "withMemory" ? memory(slot, "agent-b") : null;
+        if (target) targetMemory = target;
         try {
-          arms[arm] = await agentOutcome(agent, scenario.task, target, workspace);
-          if (target) exposure = [...target.observations.recalled].some(id => source.observations.writes.some(receipt => receipt.fragments.some(fragment => fragment.fragmentId === id)));
+          arms[arm] = await agentOutcome(agent, scenario.task, target, workspace, "", null, answerSchemaFor(kind));
         } finally { await workspace.close(); }
       }
-      const result = { trial: trial + 1, order, preparation, memoryExposureObserved: exposure,
+      const stages = transferStages(source, targetMemory, preparation, scenario, arms.withMemory);
+      const result = { trial: trial + 1, order, preparation, stages, memoryExposureObserved: stages.matchingSourceDelivered,
         withoutMemory: publishedOutcome(arms.withoutMemory), withMemory: publishedOutcome(arms.withMemory),
-        comparison: pairedMetrics(arms.withoutMemory, arms.withMemory) };
+        comparison: pairedMetrics(arms.withoutMemory, arms.withMemory, { memoryExposed: stages.matchingSourceDelivered, preparationReady: stages.preparationReady }) };
       pairs.push(result);
       trialResults.push(result);
     }
@@ -231,7 +259,7 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
         case "agent_handoff":
           results[category] = await pairedTask(category, scenario, "", async source => {
             const execution = await agent.run(`Retain these customer requirements for another agent, who will not see this conversation:\n${scenario.facts.map(fact => fact.text).join("\n")}\nFinish with JSON containing completed (boolean).`,
-              agentTools(source, null, { recall: false, write: true }));
+              agentTools(source, null, { recall: false, write: true }), "", answerSchemaFor(category, "preparation"));
             return { ...publicExecution(execution), memoriesWritten: source.observations.writes.length };
           });
           break;
@@ -254,7 +282,7 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
           results[category] = { status: "measured", policy: "preserve-unlinked-claims-explicit-supersedes-controls-visibility", plainConflict: plain,
             corrected, supersededStateVerified: original.lifecycle?.state === "superseded",
             staleFactReturned: corrected.rankedFactIds.includes("old-language"), confidenceIsNotProbability: true,
-            agentResolution: agent ? publishedOutcome(await agentOutcome(agent, scenario.task, source, null, "", scenario.rubric)) : notMeasured("requires_explicit_agent_under_test") };
+            agentResolution: agent ? publishedOutcome(await agentOutcome(agent, scenario.task, source, null, "", scenario.rubric, answerSchemaFor(category))) : notMeasured("requires_explicit_agent_under_test") };
           break;
         }
         case "context_compression": {
@@ -296,9 +324,11 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
     } else pending.push(...Object.values(value));
   }
   const agentFailures = [...agentRuns.values()].filter(outcome => outcome.status !== "completed").length;
-  return { reportVersion: 1, harness: "MindLeak Validation Harness v1", runId, createdAt: new Date().toISOString(),
+  return { reportVersion: 2, harness: "MindLeak Validation Harness v1", runId, createdAt: new Date().toISOString(),
     status: Object.values(results).some(result => result.status === "error") || agentFailures ? "partial" : "completed",
     scenarioManifest: { id: plan.id, sha256: digest(plan), seed: plan.seed, selected, sizes: plan.sizes,
+      answerContractsSha256: digest(["simple_recall", "agent_handoff", "poisoning_resistance", "contradiction_handling", "context_compression", "coding_workflow", "rediscovery_demo", "multi_day_learning"].map(category => answerSchemaFor(category))),
+      handoffContractsSha256: digest(["coding_workflow", "rediscovery_demo"].map(kind => handoffSchema(kind))),
       codingFixtureSha256: Object.fromEntries(["coding_workflow", "rediscovery_demo"].map(kind => [kind, digest(codingFixture(kind))])) },
     server: driver.server, binarySha256: driver.binarySha256, realMcpProcess: driver.realProcess,
     agent: agent?.configuration ?? null, codeContainer: code ? { engine: code.engine, imageId: code.image } : null,
@@ -307,15 +337,20 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
       avg_retrieval_ms: aggregate.latency.meanMs, false_positive_rate: aggregate.falsePositiveRate,
       token_savings: mean(measured(results.context_compression?.agentComparison?.trials?.map(trial => trial.comparison.inputTokenReductionPercent) ?? [])),
       multi_agent_transfer: mean(results.agent_handoff?.trials?.map(trial => trial.transferSuccess) ?? []),
+      handoff_trials: results.agent_handoff?.trials?.length ?? 0,
+      handoff_ready_trials: results.agent_handoff?.trials?.filter(trial => trial.stages.preparationReady).length ?? 0,
+      handoff_exposed_trials: results.agent_handoff?.trials?.filter(trial => trial.stages.matchingSourceDelivered).length ?? 0,
+      multi_agent_transfer_conditional: mean(results.agent_handoff?.trials?.filter(trial => trial.stages.preparationReady && trial.stages.matchingSourceDelivered && trial.stages.answerCompleted).map(trial => trial.transferSuccess) ?? []),
       error_amplification: mean(agentPairs.map(pair => pair.comparison.errorAmplified)),
       long_term_learning: null, retrieval_queries: queries.length, adjudicated_agent_pairs: agentPairs.length,
       agent_execution_failures: agentFailures, measured_categories: Object.values(results).filter(result => result.status === "measured").length },
     definitions: { precision: "macro verified relevant fraction among nonempty returned top-5 results; duplicates consume slots",
       recall: "macro verified fact recall@5 across positive queries, not final agent correctness",
       false_positive_rate: "fraction of designated no-answer queries with a nonempty result",
-      token_savings: "mean percent reduction of provider-reported input tokens on successful compression pairs only",
+      token_savings: "mean percent reduction of provider-reported input tokens on correct compression pairs with verified preparation and delivered memory only",
       error_amplification: "fraction of completed paired tasks correct without memory and incorrect with it",
-      multi_agent_transfer: "fraction of handoff trials with required answers correct and observed exposure to Agent A writes",
+      multi_agent_transfer: "end-to-end fraction of all handoff trials with verified stored facts, completed preparation, delivered Agent A memory, and a correct answer",
+      multi_agent_transfer_conditional: "same outcome among verified-preparation, exposed, completed-answer trials only; inspect all-stage counts and end-to-end rate as well",
       unmeasured: "null is unknown, never zero; synthetic repeated trials are not independent real-world tasks" },
     elapsedMs: performance.now() - started, serverRestarts: driver.restarts, categories: results,
     limitations: ["Synthetic diagnostic scenarios, not production usage or independently verified semantic accuracy.",
@@ -330,6 +365,7 @@ async function main() {
     help: { type: "boolean" }, plan: { type: "boolean" }, binary: { type: "string" }, seed: { type: "string" },
     sizes: { type: "string" }, category: { type: "string", multiple: true }, trials: { type: "string" },
     agent: { type: "boolean" }, "agent-max-steps": { type: "string" }, "agent-timeout-ms": { type: "string" },
+    "agent-max-output-tokens": { type: "string" }, "agent-reasoning-effort": { type: "string" },
     "input-usd-per-million": { type: "string" }, "output-usd-per-million": { type: "string" },
     "code-engine": { type: "string" }, "code-image": { type: "string" },
     "longitudinal-state": { type: "string" }, day: { type: "string" },
@@ -345,7 +381,7 @@ async function main() {
       longitudinal: "--longitudinal-state PRIVATE_PATH --day 1|2|30 (requires actual elapsed time; retains synthetic memory between invocations)",
     }, categories, defaultSizes: [100, 500, 1000], controls: ["--seed UINT32", "--sizes 100,500,1000", "--category NAME (repeatable)",
       "--trials 1..10", "--retrieval keyword|vector|hybrid", "--decomposition sentences|openai", "--relevance off|openai",
-      "--agent-max-steps 1..32", "--agent-timeout-ms 100..300000", "--code-image IMAGE", "--chart-dir NEW_DIRECTORY", "--input-usd-per-million RATE --output-usd-per-million RATE"],
+      "--agent-max-steps 1..32", "--agent-timeout-ms 100..300000", "--agent-max-output-tokens 128..16384", "--agent-reasoning-effort none|low|medium|high|max", "--code-image IMAGE", "--chart-dir NEW_DIRECTORY", "--input-usd-per-million RATE --output-usd-per-million RATE"],
       privacy: "Local synthetic data only; no uploads, production database, provider bodies, or secret exports." }, null, 2));
     return;
   }
@@ -362,10 +398,11 @@ async function main() {
     || values.day !== undefined && (![1, 2, 30].includes(Number(values.day)) || values.category || values.sizes || values.trials || values["code-engine"])) {
     throw new Error("invalid_longitudinal_options");
   }
-  if (!values.agent && ["agent-max-steps", "agent-timeout-ms", "input-usd-per-million", "output-usd-per-million", "code-engine", "code-image"]
+  if (!values.agent && ["agent-max-steps", "agent-timeout-ms", "agent-max-output-tokens", "agent-reasoning-effort", "input-usd-per-million", "output-usd-per-million", "code-engine", "code-image"]
     .some(name => values[name] !== undefined)) throw new Error("agent_options_require_agent");
   const agent = values.agent ? await createAgent(agentSettings(process.env, { maxSteps: Number(values["agent-max-steps"] ?? 16),
     timeoutMs: Number(values["agent-timeout-ms"] ?? 60000),
+    maxOutputTokens: Number(values["agent-max-output-tokens"] ?? 4096), reasoningEffort: values["agent-reasoning-effort"] ?? null,
     inputPrice: values["input-usd-per-million"] === undefined ? null : Number(values["input-usd-per-million"]),
     outputPrice: values["output-usd-per-million"] === undefined ? null : Number(values["output-usd-per-million"]) })) : null;
   const code = values["code-engine"] ? await containerConfiguration(values["code-engine"], values["code-image"]) : null;
@@ -405,7 +442,7 @@ async function main() {
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main().catch(() => {
-    console.log(JSON.stringify({ reportVersion: 1, status: "error", reason: "validation_startup_or_configuration_failed", summary: null }));
+    console.log(JSON.stringify({ reportVersion: 2, status: "error", reason: "validation_startup_or_configuration_failed", summary: null }));
     process.exitCode = 1;
   });
 }

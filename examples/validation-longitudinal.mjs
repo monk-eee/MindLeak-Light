@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { scoreDecomposition } from "./benchmark-recall.mjs";
 import { publicExecution } from "./validation-agent.mjs";
 import { agentTools, scopedMemory } from "./validation-runtime.mjs";
-import { digest, evaluateAnswer, generateScenarios, retrievalMetrics } from "./validation-scenarios.mjs";
+import { answerSchemaFor, digest, evaluateAnswer, generateScenarios, retrievalMetrics } from "./validation-scenarios.mjs";
 
 const dayMs = 24 * 60 * 60 * 1000;
 
@@ -50,7 +50,7 @@ export async function runLongitudinal({ driver, statePath, day, binding, plan = 
     const age = current.getTime() - Date.parse(state.startedAt);
     if (age < 0) throw new Error("longitudinal_clock_moved_backwards");
     const earliest = (day - 1) * dayMs;
-    const envelope = { reportVersion: 1, mode: "longitudinal", runId: state.runId, day,
+    const envelope = { reportVersion: 2, mode: "longitudinal", runId: state.runId, day,
       startedAt: state.startedAt, observedAt: current.toISOString(), elapsedDays: age / dayMs,
       clock: clock ? "injected-test-clock-not-real-time-evidence" : "host-wall-clock",
       realMcpProcess: driver.realProcess, binarySha256: driver.binarySha256, server: driver.server };
@@ -76,7 +76,7 @@ export async function runLongitudinal({ driver, statePath, day, binding, plan = 
         const inspected = await memory.inspect(fragment.fragmentId, true);
         rawPreserved &&= inspected.rawText === scenario.facts[phase - 1].text;
       }
-      const execution = agent ? await agent.run(scenario.task, agentTools(memory, null)) : null;
+      const execution = agent ? await agent.run(scenario.task, agentTools(memory, null), "", answerSchemaFor("multi_day_learning")) : null;
       const evaluation = execution ? evaluateAnswer(execution.answer, scenario.rubric) : null;
       state.observations[day] = { recordedAt: current.toISOString(), binarySha256: driver.binarySha256,
         elapsedDays: age / dayMs, rawPreserved, retrieval: score, retrievalMs: observation.elapsedMs,

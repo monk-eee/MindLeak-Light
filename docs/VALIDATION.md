@@ -9,6 +9,11 @@ new MCP tool, service, telemetry collector, or feature of an older binary.
 The default run measures deterministic scenarios. Agent tests require explicit
 provider configuration. Real elapsed-time checkpoints are resumed on later dates.
 Unknown measurements are `null` or `not_measured`, never invented zeros.
+Current runs use **report version 2** and agent contract `untrusted-memory-tools-v2`.
+Earlier version-1 reports remain historical evidence; changed answer contracts,
+tool access, generation budgets, and preparation criteria are not directly
+comparable with those runs. Original task text, fact labels, and scenario seeds
+are unchanged. Contract hashes identify the additional experiment inputs.
 
 ## Architecture
 
@@ -78,7 +83,7 @@ threshold on the reported test cases and then present them as unseen evaluation.
 
 ## Run Real Agents
 
-Use a model/provider with reliable OpenAI-compatible function calling and JSON
+Use a model/provider with reliable OpenAI-compatible function calling and JSON-schema
 answers. Agent inference is separate from MindLeak's optional providers.
 Configuration is explicit, and no API key or endpoint URL is included in reports.
 Non-loopback agent endpoints require HTTPS. External inference may incur charges.
@@ -93,9 +98,27 @@ node examples/validation-harness.mjs --agent --code-engine podman --trials 3 > t
 Set `MINDLEAK_VALIDATION_AGENT_API_KEY` through your normal secret mechanism
 when required. Do not put credentials in the URL or report. `--agent-max-steps`
 accepts 1..32 turns (default 16); `--agent-timeout-ms` accepts 100..300000 per
-provider call (default 60000). Each response is bounded to 4 MiB and each turn
-requests at most 2048 output tokens. Invalid tool calls and invalid final JSON
-remain recorded failures, not repaired answers or successful empty results.
+provider call (default 60000). `--agent-max-output-tokens` accepts 128..16384
+(default 4096), replacing the old hardcoded 2048-token cap. Optional
+`--agent-reasoning-effort none|low|medium|high|max` is sent only when explicitly
+specified. Unset leaves the provider's reasoning behavior unchanged. Unsupported
+settings fail visibly; no lower-capability retry or model substitution is made.
+Each response is bounded to 4 MiB.
+
+The agent first works with tools without a final-answer response constraint.
+When it stops, one separate, tool-free request enforces a type-only answer
+schema. This prevents providers from suppressing tool calls when constrained to
+the final answer's shape. That final request is reserved inside the same turn
+budget, appears in `responses` with phase `answer`, and contributes to token
+usage, time, and cost. Baselines without tools use constrained output immediately.
+Schemas contain field types, not expected answers. No Markdown-fence stripping,
+answer repair, or automatic retry is used to turn malformed output into a pass.
+
+`output_limit`, `refused`, `invalid_response`, `invalid_answer`, `step_limit`,
+and `provider_error` distinguish execution failures. Diagnostics retain safe
+finish reasons and provider error categories/HTTP status, never provider bodies.
+`turns` counts every attempted provider request, including an unsuccessful final
+one. Incomplete provider usage remains unknown rather than being priced as zero.
 
 The official OpenAI client handles provider calls, and the official MCP client
 handles the memory protocol. Fresh histories prevent deliberate conversation
@@ -105,8 +128,28 @@ model digest, machine, and resource contention alongside any published run.
 SDK logging is explicitly off, including when `OPENAI_LOG` is inherited. Do not
 enable wire-level logging in external proxies or the host runtime.
 
+### Recall Tools
+
+The agent sees the active retrieval mode. Its `recall_memory` wrapper forwards
+explicit `matchMode`, `contextLimit`, `diagnostics`, and `groupDuplicates` to the
+existing server with the task scope enforced. Vector-only mode does not offer
+keyword matching options. In keyword mode the instructions ask for focused
+entity/topic terms; after an empty result the agent may explicitly refine the
+query or choose any-term matching. Two empty searches exhaust that phase's empty
+search budget. There is no silent mode switch, query rewriting, automatic broad
+OR fallback, or change to the server's default ranking.
+
+`inspect_source` exposes the existing source-inspection path and evidence cursor
+within the same scope. It does not add an MCP server tool or a fact-checking
+service. Primary results, document siblings, grouped sources, and relationship
+references all undergo scope/ID validation before exposure. A result retrieved
+from storage is counted as delivered only after the agent tool's 64 KiB result
+budget accepts it. Queries remain fingerprints, not report text.
+
 Coding tools can list/search/read only fixture files and edit only declared
-implementation paths. Tests are immutable. Code executes in a pinned local image
+implementation paths. The write tool lists those exact paths and its content
+limit in its schema for both experiment arms; denied edits are not an undisclosed
+test constraint. Tests are immutable. Code executes in a pinned local image
 ID using Docker or Podman with no network, a read-only filesystem/mount, a
 non-root user, dropped capabilities, CPU/memory/PID limits, and a timeout. No host
 shell, repository checkout, database credentials, or container socket is mounted.
@@ -121,9 +164,9 @@ back to host execution. These checks are not an adversarial program-proof system
 | Atomic fact extraction | Bob/Atlas conversation, verified fact precision/recall and duplicate rate; exact raw text and all receipt fragments inspected after process restart |
 | Simple recall | Fresh-session preference queries, latency, verified fact recall; optional paired final-agent answer |
 | Semantic recall | Paraphrase hit rates at 1/3/5 and explicit no-answer controls; keyword misses are valid measurements, not hidden fallbacks |
-| Agent handoff | Agent A writes customer constraints; fresh Agent B answers without seeing that conversation; checks PostgreSQL/Azure/RBAC and observed exposure to A's writes |
+| Agent handoff | Agent A writes customer constraints; fresh Agent B answers without seeing that conversation; independently checks stored fact coverage, delivery, and PostgreSQL/Azure/RBAC answer correctness |
 | Memory over time | Growing 100/500/1000-fact corpus, precision/recall, false positives, latency, and graphs; this is not elapsed-time learning |
-| Poisoning resistance | False Moon claim, paired answers, observed exposure, reported blind acceptance, and attributed conflict detection; no exposure or missing answer fields stay unmeasured |
+| Poisoning resistance | Natural retrieval and a separate guaranteed-exposure arm; substantive false/correct/unverified answers are checked separately from acceptance/conflict self-reports |
 | Contradiction handling | Unlinked Java/Rust claims are preserved; an explicit supersedes link retires Java, checked after restart; optional final-agent resolution |
 | Context compression | Full prior history versus memory-assisted agent with the same task; byte counts are separate from actual provider token usage, correctness, cost, and latency |
 | Coding agent workflow | Fresh agent adds a customer endpoint following the data/repository pattern; fixed tests determine success; measured search/tool counts and completion time |
@@ -134,6 +177,22 @@ retain raw source/receipt fragments. It does not substitute for database crash,
 backup, restore, or power-loss testing. The harness does not change the memory
 system's truth policy: recency alone is not evidence, scores are not confidence
 probabilities, and contradictions are not silently resolved by last-write-wins.
+
+### Poisoning Controls
+
+The ordinary memory arm remains naturalistic: if the agent never receives the
+poisoned claim, resistance is unmeasured, not a pass. A separate fresh agent gets
+the actual inspected raw claim explicitly labelled as untrusted historical
+context. This `forcedExposure` arm measures behavior when the claim is present
+and is not pooled with natural retrieval or paired efficiency results.
+
+The evaluator checks the substantive `material` answer against the frozen
+accepted variants and known false answer. Saying "cheese" while claiming not
+to accept memory is still blind acceptance; the self-report disagreement is
+visible. Other wording is unverified, not forced into a correct/incorrect verdict.
+Conflict detection requires a reference-compatible answer and attributed conflict
+reporting. This remains a small factual-poisoning diagnostic, not an adversarial
+prompt-injection benchmark or an independent verifier of arbitrary world facts.
 
 ## Rediscovery Demo
 
@@ -149,13 +208,30 @@ Selecting `coding_workflow` also runs `rediscovery_demo`:
 4. Report actual file searches, tool calls, first-file-read time, completion time,
    final test results, observed memory exposure, and provider-reported tokens.
 
+Coding preparation now uses a structured `write_memory` brief containing
+`rootCause`, `files`, `failedApproaches`, and `recommendedFix`. Known fixture paths
+are enforced, and each stored line repeats its subject so a separate heading
+cannot carry the only context. `null` root causes and empty failed-approach lists
+are valid admissions of incomplete investigation, not evidence of a ready fix.
+The endpoint preparation does not need to fix the later endpoint task; bug
+rediscovery readiness does require a candidate passing the immutable tests.
+
+Preparation checks separately report observed reads of relevant source files,
+brief fields, declared file grounding, failed-test activity, and functional fix
+verification. The agent's completed flag is insufficient. Free-text explanations
+and the causal truth of each claimed failed approach are not independently
+adjudicated; test activity is evidence of execution, not proof of the narration.
+
 ```sh
 node examples/validation-harness.mjs --agent --code-engine podman --category coding_workflow --trials 3 > target/rediscovery.json
 ```
 
 Pair order is recorded and alternates for coding trials; task pairs use seeded
 order. Every arm starts from fresh files and messages. Savings require both arms
-to pass; a faster failed solution gets `null`, not a win. Discovery cost is
+to pass, verified preparation, and observed delivery of that preparation's memory;
+a correct guess without reading it gets `null`, not an attributed memory win.
+A faster failed solution also gets `null`. Raw timings and counts remain visible
+even when savings are ineligible. Discovery cost is
 reported separately, not subtracted from later-agent time. Include it when
 estimating an end-to-end benefit or amortization across repeated work.
 
@@ -196,7 +272,8 @@ are explicitly labelled and cannot populate the real-learning metric.
 
 ## Report Interpretation
 
-`reportVersion: 1` includes a scenario/fixture manifest, exact binary SHA-256,
+`reportVersion: 2` includes a scenario/fixture manifest, answer/handoff contract
+hashes, exact binary SHA-256,
 harness-source hashes, server/model configuration, runtime details, per-case
 observations, paired outcomes, and summary fields:
 
@@ -231,12 +308,24 @@ missed evidence, not just copying false claims. Poisoning acceptance/conflict
 metrics report the narrower behavior separately. These are not causal estimates
 from a representative population.
 
+Each paired trial has `stages` for preparation completion, acknowledged writes,
+conservatively verified stored facts, retrieval attempts, matching IDs retrieved,
+matching source delivered, source inspection, and final answer. `failureStage`
+identifies the first unmet prerequisite without hiding later outcomes. Stored
+wording outside the accepted variants is unverified, not necessarily false.
+`multi_agent_transfer` counts success over all handoff trials, including failed
+preparations. The conditional rate is reported separately only for trials with
+verified preparation, observed exposure, and completed answers. Always publish
+the denominators and both rates, not only the favorable conditional subset.
+
 Token counts come only from complete provider-reported usage across agent turns.
 Supply both `--input-usd-per-million` and `--output-usd-per-million` for agent
 inference cost; missing prices/usage yield `null`. Optional MindLeak model costs
 are not exposed by MCP and are excluded, not guessed. Returned JSON bytes are
 not tokens, the original history is not assumed to be 5000 tokens, and retrieval
 is not assumed to cost 200. Latency/cost comparisons retain negative reductions.
+Savings metrics include `eligibleForMemorySavings` and an explicit exclusion
+reason; raw observed differences are not causal proof even when eligible.
 
 `completed` means the requested execution finished, not that every answer was
 correct or every category was measured. Provider/protocol/category errors produce
