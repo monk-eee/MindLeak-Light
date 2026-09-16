@@ -130,9 +130,12 @@ pub fn validate_embeddings(
             "embedding contains a non-finite component"
         );
         let norm_squared: f64 = vector.iter().map(|value| f64::from(*value).powi(2)).sum();
+        let pgvector_norm_squared: f32 = vector.iter().map(|value| value * value).sum();
         ensure!(
-            norm_squared > 0.0 && norm_squared <= f64::from(f32::MAX),
-            "embedding norm must be nonzero and representable as f32"
+            norm_squared >= f64::from(f32::MIN_POSITIVE)
+                && norm_squared <= f64::from(f32::MAX)
+                && pgvector_norm_squared.is_normal(),
+            "embedding squared norm must be finite and normal in f32"
         );
     }
     Ok(())

@@ -5,6 +5,7 @@ pub use relevance::OpenAiRelevanceRetriever;
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{validate_embeddings, TextEmbedder, MAX_FRAGMENTS};
+use mindleak_provider::read_json_response;
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use serde_json::json;
@@ -56,23 +57,31 @@ impl TextEmbedder for OpenAiEmbedder {
         if !self.api_key.is_empty() {
             request = request.bearer_auth(&self.api_key);
         }
-        let response: EmbeddingResponse = request
+        let response = request
             .send()
             .await
             .map_err(reqwest::Error::without_url)
             .context("embedding model request failed")?
             .error_for_status()
             .map_err(reqwest::Error::without_url)
-            .context("embedding model returned an HTTP error")?
-            .json()
+            .context("embedding model returned an HTTP error")?;
+        let response: EmbeddingResponse = read_json_response(response)
             .await
-            .context("embedding model returned invalid JSON")?;
+            .context("embedding model returned an invalid response")?;
+        ensure!(
+            response
+                .model
+                .as_ref()
+                .is_none_or(|model| model == &self.model),
+            "embedding provider model does not match the configured model"
+        );
         ordered_embeddings(response, texts.len(), self.dimensions)
     }
 }
 
 #[derive(Deserialize)]
 struct EmbeddingResponse {
+    model: Option<String>,
     data: Vec<EmbeddingItem>,
 }
 
@@ -161,6 +170,71 @@ mod tests {
         .unwrap();
         assert!(embedder.embed_batch(&["fact".into()]).await.is_err());
         assert!(embedder.embed_batch(&[]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn embedding_model_identity_must_match_when_reported() {
+        for (reported, accepted) in [
+            (None, true),
+            (Some(json!(null)), true),
+            (Some(json!("test-model")), true),
+            (Some(json!("different-test-model")), false),
+            (Some(json!("TEST-MODEL")), false),
+            (Some(json!("")), false),
+            (Some(json!(42)), false),
+        ] {
+            let server = MockServer::start().await;
+            let mut body = json!({"data": [{"index": 0, "embedding": [1.0, 0.0]}]});
+            if let Some(reported) = reported {
+                body["model"] = reported;
+            }
+            Mock::given(method("POST"))
+                .and(body_json(
+                    json!({"model": "test-model", "input": ["fact"], "encoding_format": "float"}),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let embedder = OpenAiEmbedder::new(
+                Client::new(),
+                Url::parse(&server.uri()).unwrap(),
+                "test-model".into(),
+                String::new(),
+                2,
+            )
+            .unwrap();
+            assert_eq!(
+                embedder.embed_batch(&["fact".into()]).await.is_ok(),
+                accepted
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_provider_response_is_rejected() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": "test-model",
+                "data": [{"index": 0, "embedding": [1.0, 0.0]}],
+                "metadata": "x".repeat(4 * 1024 * 1024)
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let embedder = OpenAiEmbedder::new(
+            Client::new(),
+            Url::parse(&server.uri()).unwrap(),
+            "test-model".into(),
+            String::new(),
+            2,
+        )
+        .unwrap();
+        assert!(embedder
+            .embed_batch(&["Synthetic fact".into()])
+            .await
+            .is_err());
     }
 
     #[test]

@@ -243,12 +243,17 @@ impl PostgresMemoryStore {
 }
 
 fn recall_match(row: Row) -> Result<RecallMatch> {
+    let score = row.try_get::<_, f64>("score")?;
+    ensure!(
+        score.is_finite(),
+        "database returned a non-finite recall score"
+    );
     Ok(RecallMatch {
         memory_id: row.try_get("memory_id")?,
         fragment_id: row.try_get("fragment_id")?,
         agent_id: row.try_get("agent_id")?,
         text: row.try_get("text")?,
-        score: row.try_get::<_, f64>("score")?.clamp(-1.0, 1.0),
+        score: score.clamp(-1.0, 1.0),
     })
 }
 

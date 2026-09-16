@@ -1,19 +1,18 @@
 [package]
-name = "mindleak-embeddings"
+name = "mindleak-provider"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-mindleak-memory = { path = "../mindleak-memory" }
-mindleak-provider = { path = "../mindleak-provider" }
 anyhow.workspace = true
-async-trait.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+futures-util = "0.3"
+http = "1"
+reqwest = { workspace = true, features = ["stream"] }
 tokio.workspace = true
-wiremock.workspace = true

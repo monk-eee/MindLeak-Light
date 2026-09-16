@@ -92,6 +92,93 @@ impl TextEmbedder for QueryEmbedder {
 }
 
 #[tokio::test]
+async fn unsafe_vectors_and_non_finite_scores_fail_closed() {
+    struct SmallQueryEmbedder;
+
+    #[async_trait]
+    impl TextEmbedder for SmallQueryEmbedder {
+        fn dimensions(&self) -> usize {
+            2
+        }
+
+        async fn embed_batch(&self, _: &[String]) -> Result<Vec<Vec<f32>>> {
+            Ok(vec![vec![1e-30, 0.0]])
+        }
+    }
+
+    let (admin, url, cleanup) = isolated_database().await;
+    let store = PostgresMemoryStore::connect(url.as_str(), Some(("test-model", 2)), 4, None)
+        .await
+        .unwrap();
+    let (client, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let agent_id = format!("unsafe-vector-{}", Uuid::new_v4());
+    let mut unsafe_memory = memory(&agent_id);
+    unsafe_memory.fragments[0].embedding = Some(vec![1e-30, 0.0]);
+    let write_rejected = store.save(&unsafe_memory).await.is_err();
+    let saved_count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM public.memories WHERE id = $1",
+            &[&unsafe_memory.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let query_rejected = VectorMemoryRetriever::new(store.clone(), Arc::new(SmallQueryEmbedder))
+        .recall("PR preferences?", Some(&agent_id), 5)
+        .await
+        .is_err();
+
+    let original = memory(&agent_id);
+    store.save(&original).await.unwrap();
+    client
+        .execute(
+            "UPDATE public.fragments SET embedding = '[0,1e-30]'::vector WHERE memory_id = $1",
+            &[&original.id],
+        )
+        .await
+        .unwrap();
+    let mut rejected_scores = Vec::new();
+    for hybrid in [false, true] {
+        for floor in [None, Some(0.9)] {
+            let retriever: Box<dyn MemoryRetriever> = if hybrid {
+                Box::new(
+                    HybridMemoryRetriever::new(store.clone(), Arc::new(QueryEmbedder))
+                        .with_min_similarity(floor)
+                        .unwrap(),
+                )
+            } else {
+                Box::new(
+                    VectorMemoryRetriever::new(store.clone(), Arc::new(QueryEmbedder))
+                        .with_min_similarity(floor)
+                        .unwrap(),
+                )
+            };
+            rejected_scores.push(
+                retriever
+                    .recall("PR preferences?", Some(&agent_id), 5)
+                    .await
+                    .is_err(),
+            );
+        }
+    }
+    drop(client);
+    drop(store);
+    admin.batch_execute(&cleanup).await.unwrap();
+
+    assert!(write_rejected, "unsafe write must fail before storage");
+    assert_eq!(saved_count, 0, "unsafe write must not leave a raw memory");
+    assert!(
+        query_rejected,
+        "unsafe query embeddings must fail validation"
+    );
+    assert!(
+        rejected_scores.iter().all(|rejected| *rejected),
+        "vector and hybrid recall must reject non-finite database scores, with or without a floor"
+    );
+}
+
+#[tokio::test]
 async fn roundtrip_uses_pgvector_ranking_and_optional_agent_filter() {
     let (store, client) = setup().await;
     let agent_id = format!("ranking-{}", Uuid::new_v4());

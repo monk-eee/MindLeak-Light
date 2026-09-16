@@ -216,8 +216,17 @@ fn invalid_vectors_are_rejected_before_pgvector() {
         vec![f32::NAN, 1.0],
         vec![f32::INFINITY, 1.0],
         vec![f32::MAX, f32::MAX],
+        vec![1e-30, 0.0],
+        vec![1e-20, 0.0],
+        vec![f32::MIN_POSITIVE, f32::MIN_POSITIVE],
     ] {
         assert!(validate_embeddings(&[vector], 1, 2).is_err());
     }
-    assert!(validate_embeddings(&[vec![1.0, 0.0]], 1, 2).is_ok());
+    for vector in [
+        vec![1.0, 0.0],
+        vec![1e-10, -1e-10],
+        vec![f32::MIN_POSITIVE.sqrt(), 0.0],
+    ] {
+        assert!(validate_embeddings(&[vector], 1, 2).is_ok());
+    }
 }
