@@ -6,11 +6,12 @@ retrieval from verified fact retrieval: the right memory ID does not earn fact
 credit for a fragment that changes a number or drops a qualifier. Gold labels
 and accepted variants are never sent to the server. There is no LLM judge.
 
-This guide describes the **report-version-4 runner** and offline paired report
-comparison. The existing corpora and gold labels have not changed. Headline
-quality now uses the first pass only; repeated passes measure workload/cache
-behaviour rather than increasing the quality sample size. Version 3 reports can
-be compared by reconstructing their first-pass rankings, not trusting saved means.
+This guide describes the **report-version-5 runner** and **comparison-version-2**
+offline audit. The existing corpora and gold labels have not changed. Headline
+quality uses the first pass only; repeated passes measure workload/cache behaviour
+rather than increasing the quality sample size. Version 3 and 4 reports remain
+comparable through first-pass reconstruction, but missing query fingerprints,
+planned-population manifests, and byte measurements are reported as unavailable.
 See [installation](INSTALL.md) for server feature availability and
 [recorded results](BENCHMARK-RESULTS.md) for earlier measurements and limits.
 The older v1 source-ID scores are not comparable with current fact-level scores.
@@ -61,6 +62,15 @@ connection details; diagnose startup failures separately with the normal server.
 Reports also identify the Node version, OS platform, architecture, and available
 CPU parallelism. Record machine details and provider/model weights separately;
 these fields do not establish identical hardware or pin a provider's weights.
+
+Before ingestion, the runner fingerprints the selected query population in
+`querySet`: a count and SHA-256 of query IDs, exact UTF-8 query hashes, categories,
+splits, groups, and sorted gold labels. Each observation includes `querySha256`.
+Changing query order does not change this population fingerprint; per-pass order
+hashes still record the executed schedule. Comparison and calibration check new
+reports against this plan, and comparisons require every pass to retain the same
+query identities. Hashes are consistency evidence, not signatures or encryption;
+short, guessable queries can still be identified by someone testing their hashes.
 
 ## Compare Retrieval Modes
 
@@ -113,7 +123,8 @@ rejected. This matches the current server's fifty-candidate vector search; it
 is not a simulator for arbitrary retrieval implementations.
 
 The calibrator rejects evaluation queries, duplicate observations, repeated
-passes, fused hybrid scores, and already-filtered runs.
+passes, fused hybrid scores, and already-filtered runs. Version 5 observations
+must also match their planned query-set manifest.
 It selects score-gap midpoints to maximize no-answer accuracy subject to the
 declared verified-recall floor, then prefers higher recall/MRR and a lower floor.
 All candidate thresholds, model metadata, corpus/binary hashes, and calibration
@@ -153,7 +164,9 @@ This is offline: no SDK dependencies, database, server, or provider are required
 Every changed configuration dimension must be declared with a repeatable
 `--allow-change`, for example `binary`, `minSimilarity`, `relevance`,
 `embeddingModel`, `embeddingDimensions`, `concurrency`, `querySeed`, or
-`queryOrder`. `--help` lists all fields. Declarations expose confounding; they
+`queryOrder`. Recorded OS, architecture, Node, or CPU-parallelism changes require
+`--allow-change runtime`, including a transition from missing legacy metadata.
+`--help` lists all fields. Declarations expose confounding; they
 do not make a multi-variable change a controlled one-variable experiment.
 
 The comparator rejects mismatched corpus hashes, query IDs, labels, categories,
@@ -162,10 +175,45 @@ It recomputes metrics from each first-pass ranking. Changed or forged headline
 averages therefore do not change comparison results; this is consistency checking,
 not cryptographic authentication of the original observations.
 
+### Audit Against the Corpus
+
+Two reports can omit the same difficult queries and still agree with each other.
+Supply the original input files to check the reports against the complete selected
+corpus, not only against each other:
+
+```sh
+node examples/benchmark-compare.mjs --baseline target/before.json --candidate target/after.json --dataset examples/fixtures/recall-v2.json --allow-change binary > target/audited-comparison.json
+```
+
+When the runs used background memories, also supply the original `--background`
+file. The audit reconstructs the same combined corpus and checks its ID/hash,
+every selected query, gold label, category, split, group, and available exact-query
+hash. It rejects shared omissions even if a report's own manifest was recomputed.
+It never executes background queries or sends labels to a model.
+
+The comparison's `audit` fields distinguish what was checked:
+
+| Field | Meaning |
+|---|---|
+| `corpusVerified` | Both query populations and labels agree with the supplied corpus |
+| `queryTextVerified` | Both sets of query fingerprints also match that corpus |
+| `plannedQuerySetsVerified` | Both reports' observations match their own plans |
+| `queryFingerprintsCompared` | Both reports provide matching query hashes |
+| `runtimeRecorded` | Both reports supply validated runtime metadata |
+
+Without `--dataset`, corpus verification stays false. Legacy reports without
+query hashes cannot establish what wording was executed. These checks cannot
+authenticate fabricated timings/rankings, validate gold-label correctness, or
+prove the selected groups are statistically independent. Keep original captures
+and independently reviewed corpora when making claims.
+
+### Interpreting Differences
+
 Results include per-metric before/after values, paired deltas, counts of improved,
 regressed, and unchanged queries, per-category comparisons, and missed gold IDs
 per query. Latency remains separate for every pass, including p50/p95/p99 and
-the number of rankings that differ from pass 1. More passes never widen the
+the number of rankings that differ from pass 1 and response-size distributions
+where recorded. More passes never widen the
 quality population or become independent accuracy observations.
 
 The reproducible 95% percentile bootstrap resamples paired query groups with
@@ -421,6 +469,35 @@ They are omitted by default. Never compare runs with different reasoning setting
 as if only the prompt changed. They are quality/latency options, not automatic
 optimizations; some models give worse answers with thinking disabled.
 
+### Context Size
+
+Fast retrieval can still return too much context for an agent. Report v5 records
+`resultBytes` for each query: the UTF-8 length of the reserialized JSON results
+array, including IDs, metadata, relationship context, and JSON escaping. It also
+records `primaryTextBytes`, the unescaped UTF-8 text of primary fragments only.
+No extra memory, query, or relationship text is retained in reports.
+
+`responseSize` summarizes the first pass; each `byPass` entry has its own count,
+total, mean, p50/p95/p99, minimum, and maximum byte values. The offline comparator
+recomputes these from observations and reports null where legacy data is missing.
+They are not tokenizer counts, the model's total prompt size, or MCP wire bytes:
+the text-content copy, structured-content wrapper, protocol and HTTP envelopes
+are outside this results-array measurement.
+
+Set an explicit budget in either the runner or comparator:
+
+```sh
+node examples/benchmark-recall.mjs --passes 3 --max-result-bytes 16384 > target/context-budget.json
+node examples/benchmark-compare.mjs --baseline target/before.json --candidate target/after.json --dataset examples/fixtures/recall-v2.json --allow-change binary --max-result-bytes 16384 > target/context-comparison.json
+```
+
+The budget checks every execution in every pass, not just a mean or the first
+pass. The comparator checks the candidate report. An exact-boundary result passes;
+an oversized result exits nonzero while preserving the full report. Missing byte
+measurements cannot pass the gate. The limit accepts integer bytes in 0..67108864;
+16384 is illustrative, not a recommended universal budget. Pair size limits with
+recall and abstention checks so a tiny but useless result is not rewarded.
+
 ### Accuracy Gates
 
 Provider failures, malformed responses, unknown source IDs, and records from
@@ -459,7 +536,7 @@ reranker needs a recall/latency comparison against the exact baseline; synthesis
 alone cannot recover a fact that retrieval never found.
 
 The suite does not measure a final agent's answers, memory-use decisions,
-multilingual recall, concurrent load, automatic supersession, or an adversarial
+multilingual recall, open-loop production load, automatic supersession, or an adversarial
 security guarantee. Keyword search is expected to struggle with full questions.
 Unfiltered vectors always have nearest neighbours, including on missing-answer
 queries. A calibrated floor exposes the recall/rejection trade-off rather than
