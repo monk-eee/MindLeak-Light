@@ -26,3 +26,4 @@ record when the design changes instead of silently rewriting their rationale.
 | [0012](0012-bounded-recall-context.md) | Bounded Recall Context | Accepted |
 | [0013](0013-cancellation-and-recall-snapshots.md) | Cancellation and Final Recall Snapshots | Accepted |
 | [0014](0014-bounded-evidence-inspection.md) | Bounded Evidence and Source Inspection | Accepted |
+| [0015](0015-document-keyword-recall.md) | Document Keyword Recall and Bounded Context | Accepted |

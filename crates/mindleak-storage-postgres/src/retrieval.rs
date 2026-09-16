@@ -6,8 +6,8 @@ use std::{
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{
-    validate_embeddings, validate_text, MemoryRetriever, RecallFilter, RecallMatch, TextEmbedder,
-    MAX_MEMORY_BYTES, MAX_RECALL_LIMIT,
+    validate_embeddings, validate_text, InvalidInput, KeywordMatchMode, MemoryRetriever,
+    RecallDiagnostics, RecallFilter, RecallMatch, TextEmbedder, MAX_MEMORY_BYTES, MAX_RECALL_LIMIT,
 };
 use tokio::sync::OnceCell;
 
@@ -112,12 +112,31 @@ impl MemoryRetriever for VectorMemoryRetriever {
         filter: &RecallFilter,
         limit: usize,
     ) -> Result<Vec<RecallMatch>> {
+        if filter.match_mode != KeywordMatchMode::Websearch {
+            return Err(
+                InvalidInput("matchMode only applies to keyword or hybrid recall".into()).into(),
+            );
+        }
         ensure!(
             (1..=MAX_RECALL_LIMIT).contains(&limit),
             "invalid recall limit"
         );
         let candidates = self.candidates(query, filter, MAX_RECALL_LIMIT).await?;
         self.store.finish_recall(candidates, filter, limit).await
+    }
+
+    async fn query_diagnostics(
+        &self,
+        query: &str,
+        filter: &RecallFilter,
+    ) -> Result<RecallDiagnostics> {
+        validate_text(query, "query", MAX_MEMORY_BYTES)?;
+        filter.validate()?;
+        Ok(RecallDiagnostics {
+            strategy: "vector",
+            keyword: None,
+            relevance_filter: false,
+        })
     }
 }
 
@@ -163,6 +182,18 @@ impl MemoryRetriever for HybridMemoryRetriever {
             .store
             .finish_recall(candidates, filter, limit)
             .await
+    }
+
+    async fn query_diagnostics(
+        &self,
+        query: &str,
+        filter: &RecallFilter,
+    ) -> Result<RecallDiagnostics> {
+        Ok(RecallDiagnostics {
+            strategy: "hybrid",
+            keyword: Some(self.vector.store.keyword_diagnostics(query, filter).await?),
+            relevance_filter: false,
+        })
     }
 }
 
@@ -217,6 +248,18 @@ impl MemoryRetriever for KeywordMemoryRetriever {
             .keyword_search(query, filter, MAX_RECALL_LIMIT)
             .await?;
         self.store.finish_recall(candidates, filter, limit).await
+    }
+
+    async fn query_diagnostics(
+        &self,
+        query: &str,
+        filter: &RecallFilter,
+    ) -> Result<RecallDiagnostics> {
+        Ok(RecallDiagnostics {
+            strategy: "keyword",
+            keyword: Some(self.store.keyword_diagnostics(query, filter).await?),
+            relevance_filter: false,
+        })
     }
 }
 

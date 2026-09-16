@@ -137,6 +137,8 @@ pins, archival state, tiers, and feedback counters/timestamps. The 0.3.0 path
 also verifies a keyed receipt created before the upgrade.
 The candidate must also advertise retry-safe writes and return ranking/truncation
 metadata, `relationshipCountExact`, and model-free original-source inspection.
+The built image also exercises all-term matching, diagnostics, grouped provenance,
+same-episode context, and the migrated combined fragment/metadata search index.
 A second recreation replays a keyed write and verifies its original
 receipt and unchanged row counts. See [review status](docs/REVIEW-STATUS.md) for
 the integrated contracts and remaining quality questions.

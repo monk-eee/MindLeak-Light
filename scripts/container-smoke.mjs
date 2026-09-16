@@ -138,6 +138,31 @@ async function recallPersisted(endpoint, memoryId, retryRequest, expectedRaw) {
     assert.equal(inspected.structuredContent?.fragmentId, original.fragmentId);
     assert.ok(inspected.structuredContent.scannedRelationships <= 128);
     assert.equal(sql("SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN ('relationships_incoming_context_idx', 'relationships_outgoing_context_idx')"), "2");
+    const searchSchema = tools.tools.find((tool) => tool.name === "recall_memory").inputSchema.properties;
+    for (const control of ["matchMode", "diagnostics", "contextLimit", "groupDuplicates"]) {
+      assert.ok(searchSchema[control], `The candidate does not advertise ${control}`);
+    }
+    const expanded = await client.callTool({
+      name: "recall_memory",
+      arguments: {
+        query: original.context.source === "published-image fixture" ? "reviews fixture" : "reviews",
+        agentId: project, limit: 5, matchMode: "all", diagnostics: true,
+        contextLimit: 2, groupDuplicates: true, includeInactive: true,
+      },
+    });
+    assert.ok(!expanded.isError, "Document recall controls failed after upgrade or restart");
+    assert.ok(expanded.structuredContent?.diagnostics, "Requested search diagnostics are missing");
+    const expandedOriginal = expanded.structuredContent.results.find((result) => result.memoryId === memoryId);
+    assert.ok(expandedOriginal, "Combined fragment/metadata query lost the original memory");
+    assert.equal(expandedOriginal.sourceCount, 1);
+    assert.equal(expandedOriginal.relationshipCountExact, true);
+    assert.equal(expandedOriginal.documentContext.orderKnown, true);
+    assert.equal(expandedOriginal.documentContext.fragments.length, 1);
+    assert.equal(expandedOriginal.documentContext.fragments[0].memoryId, memoryId);
+    assert.notEqual(expandedOriginal.documentContext.fragments[0].fragmentId, expandedOriginal.fragmentId);
+    assert.ok(Number.isInteger(expandedOriginal.documentContext.fragments[0].fragmentIndex));
+    assert.equal(sql("SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'fragments_document_search_idx'"), "1");
+    assert.equal(sql("SELECT count(*) FROM public.fragments WHERE search_vector IS NULL"), "0");
     return writeReceipt(client, retryRequest);
   });
 }
@@ -297,7 +322,7 @@ try {
   assert.deepEqual(persistedRecords(), keyedRecords, "A keyed retry changed persisted data");
   assert.deepEqual(lifecycleRecords(), keyedLifecycle, "A keyed retry changed lifecycle metadata");
   assert.deepEqual(requestReceipts(), keyedReceipts, "A keyed retry changed stored request receipts");
-  console.log("Integrated contracts: bounded evidence indexes, exact source inspection, ranking metadata and keyed replay after recreation verified.");
+  console.log("Integrated contracts: bounded evidence, exact source inspection, document search/context/grouping, ranking metadata and keyed replay verified.");
   console.log("All-in-one image: auth, MCP write/recall, socket-only Postgres, and volume persistence verified.");
 } catch (error) {
   console.error(compose("logs", "--no-color", "--tail", "80"));

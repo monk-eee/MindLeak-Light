@@ -11,7 +11,8 @@ embedding model; [models are a recommended optional upgrade](MODELS.md).
 
 This guide targets **v0.4.0**: model-free keyword recall, optional pgvector or
 hybrid recall, contextual fact lifecycle, retry-safe writes, bounded corrective
-evidence, and exact original-source inspection. Models remain optional. Download versioned
+evidence, exact original-source inspection, and document recall controls.
+Models remain optional. Download versioned
 archives from [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
 or get the full all-in-one image from
 [Docker Hub](https://hub.docker.com/r/monkeemagic/mindleak-light), pinned as
@@ -139,9 +140,18 @@ feedback history, and 0.3.0 keyed-write receipts are retained. Facts from 0.1.0
 acquire empty context and active, unconfirmed, short-term lifecycle defaults.
 Unkeyed memories stay unkeyed. No re-embedding or model download is required.
 
-Version 0.4.0 creates two relationship indexes for bounded evidence reads. The
-first build needs additional disk space and can block writes; allow time for
-schema initialization and schedule upgrades appropriately for larger databases.
+Version 0.4.0 creates two relationship indexes, backfills a derived combined
+fragment/metadata search vector and recoverable fragment order, and builds a
+replacement GIN index. The database role needs function/trigger privileges as
+well as schema privileges. The first backfill and index build need additional
+disk space and can block writes; allow time for initialization and schedule
+upgrades appropriately for larger databases. Existing text and embeddings are
+not rewritten. Unknown legacy fragment order stays explicitly unknown.
+
+Keyword candidates now include lower-weight source and summary metadata;
+qualified identifiers can also match their dotted components. Other new search
+controls are opt-in. Default MCP text-array responses remain unchanged;
+`diagnostics: true` returns an object containing results and diagnostics.
 Existing search responses gain `relationshipCountExact`: false means the count
 is a lower bound, not the full total. Clients must not treat a capped count as
 complete. Use the new `fragmentId` inspection mode for paged evidence and exact

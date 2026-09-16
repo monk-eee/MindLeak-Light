@@ -84,6 +84,356 @@ fn call(name: &'static str, arguments: Value) -> CallToolRequestParams {
 }
 
 #[tokio::test]
+async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("duplicate-groups-{}", Uuid::new_v4());
+    let scope = format!("duplicate-scope-{}", Uuid::new_v4());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "sentences".into()),
+        ("MINDLEAK_RETRIEVAL", "keyword".into()),
+        ("MINDLEAK_RELEVANCE", "off".into()),
+    ]);
+    let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+    let mut receipts = Vec::new();
+    for index in 0..3 {
+        let text = if index < 2 {
+            "Restart the application pool."
+        } else {
+            "Never restart the application pool."
+        };
+        let written = client.call_tool(call("write_memory", json!({
+            "agentId": agent_id, "text": format!("{text}\nGuide detail {index}."),
+            "context": {"scope": scope, "source": format!("runbook-{index}"), "sessionId": format!("episode-{index}")},
+            "facts": [{"text": text, "pinned": index == 1}]
+        }))).await.unwrap();
+        assert_ne!(written.is_error, Some(true));
+        receipts.push(written.structured_content.unwrap());
+    }
+    let mut request = json!({"agentId": agent_id, "scope": scope, "query": "restart", "limit": 10, "contextLimit": 1});
+    let original = client
+        .call_tool(call("recall_memory", request.clone()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(original["results"].as_array().unwrap().len(), 3);
+    request["groupDuplicates"] = json!(true);
+    let grouped = client
+        .call_tool(call("recall_memory", request.clone()))
+        .await
+        .unwrap();
+    assert_ne!(grouped.is_error, Some(true));
+    let grouped = grouped.structured_content.unwrap();
+    let groups = grouped["results"].as_array().unwrap();
+    assert_eq!(
+        groups.len(),
+        2,
+        "negation must not be collapsed into an affirmative fact"
+    );
+    let positive = groups
+        .iter()
+        .find(|group| group["text"] == "Restart the application pool.")
+        .unwrap();
+    assert_eq!(positive["sourceCount"], 2);
+    let sources: Vec<_> = std::iter::once(positive)
+        .chain(positive["duplicateSources"].as_array().unwrap())
+        .collect();
+    assert_eq!(sources.len(), 2);
+    for source in sources {
+        let original = original["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["fragmentId"] == source["fragmentId"])
+            .unwrap();
+        for field in [
+            "memoryId",
+            "fragmentId",
+            "agentId",
+            "context",
+            "lifecycle",
+            "score",
+            "activation",
+            "rankingPriority",
+            "relationships",
+            "relationshipCount",
+            "relationshipCountExact",
+            "relationshipsTruncated",
+            "documentContext",
+            "fragmentIndex",
+        ] {
+            assert_eq!(source[field], original[field], "provenance field: {field}");
+        }
+        assert_eq!(source["lifecycle"]["confirmedSessions"], 0);
+    }
+    for search_control in [
+        json!({"matchMode": "any"}),
+        json!({"diagnostics": true}),
+        json!({"contextLimit": 1}),
+        json!({"groupDuplicates": true}),
+    ] {
+        let mut inspection = json!({
+            "fragmentId": receipts[0]["fragments"][0]["fragmentId"],
+            "agentId": agent_id,
+            "scope": scope,
+        });
+        inspection
+            .as_object_mut()
+            .unwrap()
+            .extend(search_control.as_object().unwrap().clone());
+        assert!(client
+            .call_tool(call("recall_memory", inspection))
+            .await
+            .is_err());
+    }
+    let mut limited = request.clone();
+    limited["limit"] = json!(1);
+    let limited = client
+        .call_tool(call("recall_memory", limited))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(limited["results"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        limited["results"][0]["sourceCount"], 1,
+        "group counts cover only the returned working set"
+    );
+    let archived = client.call_tool(call("write_memory", json!({
+        "agentId": agent_id, "text": "Archive the older instruction.", "context": {"scope": scope},
+        "facts": [{"text": "Archive the older instruction.", "links": [{
+            "targetFragmentId": receipts[0]["fragments"][0]["fragmentId"], "relationshipType": "archives"
+        }]}]
+    }))).await.unwrap();
+    assert_ne!(archived.is_error, Some(true));
+    let active = client
+        .call_tool(call("recall_memory", request.clone()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let active_positive = active["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["text"] == "Restart the application pool.")
+        .unwrap();
+    assert_eq!(active_positive["sourceCount"], 1);
+    request["includeInactive"] = json!(true);
+    let history = client
+        .call_tool(call("recall_memory", request))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let historical = history["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["text"] == "Restart the application pool.")
+        .unwrap();
+    assert_eq!(historical["sourceCount"], 2);
+    assert!(historical["duplicateSources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|source| source["lifecycle"]["state"] == "archived"));
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn document_context_returns_bounded_same_episode_steps() {
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("document-context-{}", Uuid::new_v4());
+    let scope = format!("document-scope-{}", Uuid::new_v4());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "sentences".into()),
+        ("MINDLEAK_RETRIEVAL", "keyword".into()),
+        ("MINDLEAK_RELEVANCE", "off".into()),
+    ]);
+    let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+    let written = client
+        .call_tool(call(
+            "write_memory",
+            json!({
+                "agentId": agent_id,
+                "text": "# PoolRecovery\n1. Check permissions.\n2. Restart the application pool.\n3. Verify the health probe.",
+                "context": {"scope": scope, "source": "test-runbook"}
+            }),
+        ))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(written["fragments"].as_array().unwrap().len(), 4);
+    let mut request =
+        json!({"agentId": agent_id, "scope": scope, "query": "PoolRecovery", "limit": 1});
+    let ordinary = client
+        .call_tool(call("recall_memory", request.clone()))
+        .await
+        .unwrap();
+    assert!(ordinary.structured_content.unwrap()["results"][0]
+        .get("documentContext")
+        .is_none());
+    request["contextLimit"] = json!(2);
+    let expanded = client
+        .call_tool(call("recall_memory", request.clone()))
+        .await
+        .unwrap();
+    assert_ne!(expanded.is_error, Some(true));
+    let expanded = expanded.structured_content.unwrap();
+    let primary = &expanded["results"][0];
+    assert_eq!(expanded["results"].as_array().unwrap().len(), 1);
+    assert_eq!(primary["fragmentId"], written["fragments"][0]["fragmentId"]);
+    let context = &primary["documentContext"];
+    assert_eq!(context["fragments"].as_array().unwrap().len(), 2);
+    assert_eq!(context["truncated"], true);
+    for (index, fragment) in context["fragments"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(fragment["memoryId"], written["memoryId"]);
+        assert_eq!(
+            fragment["fragmentId"],
+            written["fragments"][index + 1]["fragmentId"]
+        );
+        assert_eq!(fragment["text"], written["fragments"][index + 1]["text"]);
+        assert_eq!(fragment["fragmentIndex"], index + 1);
+        assert_eq!(fragment["context"]["scope"], scope);
+        assert!(fragment.get("score").is_none());
+    }
+    let archived = client.call_tool(call("write_memory", json!({
+        "agentId": agent_id, "text": "Archive the old permission step.",
+        "context": {"scope": scope},
+        "facts": [{"text": "Archive the old permission step.", "links": [{
+            "targetFragmentId": written["fragments"][1]["fragmentId"], "relationshipType": "archives"
+        }]}]
+    }))).await.unwrap();
+    assert_ne!(archived.is_error, Some(true));
+    let current = client
+        .call_tool(call("recall_memory", request.clone()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    let steps = current["results"][0]["documentContext"]["fragments"]
+        .as_array()
+        .unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(
+        steps[0]["fragmentId"],
+        written["fragments"][2]["fragmentId"]
+    );
+    assert_eq!(
+        steps[1]["fragmentId"],
+        written["fragments"][3]["fragmentId"]
+    );
+    assert_eq!(current["results"][0]["documentContext"]["truncated"], false);
+    request["includeInactive"] = json!(true);
+    let history = client
+        .call_tool(call("recall_memory", request))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(
+        history["results"][0]["documentContext"]["fragments"][0]["lifecycle"]["state"],
+        "archived"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn keyword_match_modes_and_diagnostics_use_the_postgresql_query() {
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("query-options-{}", Uuid::new_v4());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "sentences".into()),
+        ("MINDLEAK_RETRIEVAL", "keyword".into()),
+        ("MINDLEAK_RELEVANCE", "off".into()),
+    ]);
+    let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+    let written = client
+        .call_tool(call(
+            "write_memory",
+            json!({"agentId": agent_id, "text": "Restart the application pool. Check permissions first."}),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(written.is_error, Some(true));
+    for (mode, count) in [("websearch", 0), ("all", 0), ("any", 2)] {
+        let recalled = client
+            .call_tool(call(
+                "recall_memory",
+                json!({
+                    "agentId": agent_id, "query": "restart permissions",
+                    "matchMode": mode, "diagnostics": true
+                }),
+            ))
+            .await
+            .expect("recall must accept explicit matching and diagnostics");
+        assert_ne!(recalled.is_error, Some(true));
+        let response = recalled.structured_content.unwrap();
+        assert_eq!(response["results"].as_array().unwrap().len(), count);
+        let diagnostics = &response["diagnostics"];
+        assert_eq!(diagnostics["strategy"], "keyword");
+        assert_eq!(diagnostics["keyword"]["matchMode"], mode);
+        assert_eq!(
+            diagnostics["keyword"]["terms"],
+            json!(["permiss", "restart"])
+        );
+        let parsed = diagnostics["keyword"]["parsedQuery"].as_str().unwrap();
+        assert!(parsed.contains(if mode == "any" { " | " } else { " & " }));
+    }
+    for query in [
+        "restart' | !permissions",
+        "O'Reilly",
+        "foo\\bar",
+        "foo:*",
+        "\"",
+        "-",
+    ] {
+        let literal = client
+            .call_tool(call(
+                "recall_memory",
+                json!({
+                    "agentId": agent_id, "query": query, "matchMode": "any", "diagnostics": true
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(literal.is_error, Some(true), "literal query: {query}");
+    }
+    let empty = client
+        .call_tool(call(
+            "recall_memory",
+            json!({"agentId": agent_id, "query": "the and", "matchMode": "any", "diagnostics": true}),
+        ))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(empty["results"].as_array().unwrap().is_empty());
+    assert_eq!(empty["diagnostics"]["keyword"]["parsedQuery"], "");
+    assert_eq!(empty["diagnostics"]["keyword"]["terms"], json!([]));
+    assert_eq!(
+        client
+            .call_tool(call(
+                "recall_memory",
+                json!({"query": "restart", "matchMode": "unknown"})
+            ))
+            .await
+            .unwrap()
+            .is_error,
+        Some(true)
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn write_request_replays_committed_result_after_restart_without_model_calls() {
     let provider = provider().await;
     let directory = tempfile::tempdir().unwrap();

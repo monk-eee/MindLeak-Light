@@ -204,15 +204,19 @@ context. Do not bypass client approvals to make the policy appear automatic.
 | Tool | Arguments | Successful Result |
 |---|---|---|
 | `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (v0.3.0+) | `memoryId` and `fragments` with IDs, text, and tier after commit |
-| `recall_memory` | Either `query` for search or `fragmentId` for inspection; optional `agentId`, `scope`, `tier`, `includeInactive`, `limit`; inspection also accepts `after` | Search: array of matches. Inspection (v0.4.0+): original source, selected fact, current lifecycle, and paged direct evidence |
+| `recall_memory` | Either `query` for search or `fragmentId` for inspection; optional `agentId`, `scope`, `tier`, `includeInactive`, `limit`; inspection accepts `after`; search accepts `matchMode`, `diagnostics`, `contextLimit`, `groupDuplicates` (v0.4.0+) | Search: matches with optional diagnostics, document context, and grouped provenance. Inspection (v0.4.0+): original source, selected fact, current lifecycle, and paged direct evidence |
 | `decompose_memory` | `text` | Array of strings; preview only, no database write |
 
 MCP text content contains that JSON. `structuredContent` holds write/inspection
 objects directly and wraps search/preview arrays in `{"results":[...]}`. Search returns fragments, so
 several results may reference one memory. `[]` means no matches, not failure.
+With `diagnostics: true` (v0.4.0+), recall text content instead holds
+an object with `results` and `diagnostics`; `structuredContent` holds that same
+object. The default text-array response is unchanged.
 
 Limits: 32768 UTF-8 bytes per memory/query, 256 bytes per agent ID, 1..64
-fragments of at most 4096 bytes, and 1..50 recall results (default 10).
+fragments of at most 4096 bytes, and 1..50 matched fragments (default 10, before
+optional duplicate grouping).
 Blank inputs are rejected. Raw text and all fragments commit atomically.
 
 Fact directives bind to exact normalized fragment text, not output position or a
@@ -229,13 +233,104 @@ episode and can link to existing fragment IDs explicitly. See
 clients should keep write approval separate from read-only recall.
 
 Keyword search uses English stemming and stop words; `reviews`, `pull requests`,
-or `reviews OR approvals` work well. Normalized keyword ranks are in `[0, 1)`.
+or `reviews OR approvals` work well. Plain terms require all non-stop-word terms;
+`OR` requests alternatives, quotes request a phrase, and `-` excludes a term.
+Normalized keyword ranks are in `[0, 1)`.
 Vector scores are cosine similarity in `[-1, 1]`. Hybrid scores are normalized
 reciprocal rank fusion in `(0, 1]`, with at most fifty candidates per branch.
 None is a confidence probability, and scores from different modes are not
 interchangeable. A configured cosine floor filters semantic candidates; hybrid
 can still return keyword matches without vectors. See [model setup](MODELS.md)
 and [calibration](BENCHMARKS.md) before choosing a floor.
+
+**From v0.4.0:** keyword indexing searches fragment text, `context.source`, and
+`context.summary` together. An all-terms query can span those fields. Metadata
+terms receive one quarter of the per-term weight of fragment text; this is a
+ranking policy, not calibrated confidence. Source paths additionally contribute
+punctuation-separated terms without discarding their original lexemes. Scope,
+session ID, and agent ID do not become keyword fields or authorization boundaries.
+
+Indexing retains qualified fragment tokens and additionally indexes
+their dot-separated components. `TargetInvocationException` can find
+`System.Reflection.TargetInvocationException`; a fully qualified query still
+requires that qualified token. This also applies to the keyword branch of hybrid
+recall. Stored text, source IDs, and embeddings are unchanged. PostgreSQL's
+hostname token boundaries determine these aliases, including dotted domains;
+this is not compiler-aware name resolution or CamelCase substring matching.
+Aliases are extra search terms, not original phrase positions; use the full
+identifier in quoted source phrases.
+
+The first startup on an existing database builds a replacement GIN index over
+existing fragments inside the schema transaction. Budget upgrade time and disk
+space for the index build, which can block writes; later startups skip the DDL.
+The derived search-vector column is backfilled, and database triggers maintain
+it when fragment text or source/summary metadata changes. No re-ingestion, model
+call, or embedding backfill is required.
+
+### Document Recall Controls
+
+These controls are available from **v0.4.0**. Check the server's `recall_memory` input schema;
+v0.3.0 and older packages do not accept these arguments.
+They apply to `query` search. Exact-source inspection with `fragmentId` rejects
+non-default search controls rather than silently ignoring them.
+
+| Argument | Default | Behaviour |
+|---|---|---|
+| `matchMode` | `websearch` | Existing quote/OR/exclusion syntax; `all` or `any` instead matches all or any literal English terms after stemming and stop-word removal |
+| `diagnostics` | `false` | Adds strategy, optional PostgreSQL `parsedQuery` and input lexeme `terms`, and whether relevance filtering is enabled |
+| `contextLimit` | `0` | Returns up to eight nearby fragments from each matched episode as separately labelled `documentContext` |
+| `groupDuplicates` | `false` | Groups exact equal returned text while retaining each additional occurrence in `duplicateSources` |
+
+For example, to find a runbook and inspect its nearby steps:
+
+```json
+{
+  "query": "TargetInvocationException restart",
+  "scope": "project:learn",
+  "matchMode": "all",
+  "contextLimit": 3,
+  "groupDuplicates": true,
+  "diagnostics": true,
+  "limit": 20
+}
+```
+
+`matchMode` controls only the keyword branch, including in hybrid mode; it does
+not impose a lexical filter on semantic candidates. Vector-only recall rejects
+`all` and `any`. Diagnostics show the same PostgreSQL query construction used by
+search, including an empty parsed query when only stop words remain. `terms`
+lists input lexemes, while `parsedQuery` expresses their Boolean/phrase roles.
+Diagnostics are not match counts, proof of relevance, or a corpus-completeness
+claim. They add a query-description lookup only when requested, never a model call.
+
+`documentContext.fragments` keeps complete text, source IDs, context, lifecycle,
+and optional `fragmentIndex`; these are contextual siblings, not scored matches
+or inferred relationships. Expansion uses the same `memoryId`, not an equal
+source URL across separate writes, and obeys the requested agent, scope, tier,
+and inactive-state filters in the final recall snapshot. It never expands again
+from a context fragment. New writes record decomposition order. Legacy order is
+recovered only when every fragment has a distinct literal position in normalized
+raw text; otherwise `orderKnown` is false and selection uses stable IDs.
+
+Existing relationship context receives budget first. Document context shares the
+remaining 32 KiB serialized context budget across all primary results and stays
+inside the 512 KiB response budget. `documentContext.truncated` signals omissions
+due to the per-primary limit or byte budgets. No fragment text is cut to fit.
+Neither a complete context page nor a successful heading match proves that the
+returned steps are correct or applicable to the current incident.
+
+Grouping happens after retrieval, optional model selection, and the fragment
+limit. The first ranked occurrence remains the primary result; every additional
+included occurrence retains its IDs, source context, scores, lifecycle, links,
+relationship-count accuracy, and document context in `duplicateSources`. `sourceCount` includes the primary
+and counts only this returned working set, not every duplicate in the database.
+Different text, including case and negation, is not merged. Grouping can produce
+fewer than `limit` visible groups; it does not refill candidates, modify stored
+facts, combine confirmation counts, or establish independent evidence. An
+oversized grouped response fails rather than silently dropping source provenance.
+See [ADR-0015](../adr.d/0015-document-keyword-recall.md) for the storage contract.
+
+### Retrieval Compatibility
 
 Hybrid recall and cosine floors require v0.2.0 or newer;
 v0.1.0 packages support keyword and unfiltered vector recall only. The

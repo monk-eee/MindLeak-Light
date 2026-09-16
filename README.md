@@ -155,6 +155,11 @@ unapproved status can correct a task's premise. When the server advertises
 to audit the exact raw episode and page through omitted evidence. This inspection
 mode is available from v0.4.0; older packages do not support it.
 
+Version 0.4.0 also searches source/summary metadata and qualified identifiers.
+Use opt-in [document recall controls](docs/INTEGRATION.md#document-recall-controls)
+for all/any matching, query diagnostics, nearby same-episode fragments, and exact
+duplicate grouping that retains the provenance of every included occurrence.
+
 ## Try It
 
 Ask your connected agent:
