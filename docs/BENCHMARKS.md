@@ -6,12 +6,14 @@ retrieval from verified fact retrieval: the right memory ID does not earn fact
 credit for a fragment that changes a number or drops a qualifier. Gold labels
 and accepted variants are never sent to the server. There is no LLM judge.
 
-This guide describes the **unreleased v2 corpus and report-version-3 runner**.
-Build source containing the new retrieval modes before using hybrid or similarity
-thresholds; v0.1.0 packages predate those controls. See [installation](INSTALL.md)
-for availability and [recorded results](BENCHMARK-RESULTS.md) for the measured
-improvements and remaining limitations. The older v1 source-ID scores are not
-directly comparable with the current fact-level scores.
+This guide describes the **report-version-4 runner** and offline paired report
+comparison. The existing corpora and gold labels have not changed. Headline
+quality now uses the first pass only; repeated passes measure workload/cache
+behaviour rather than increasing the quality sample size. Version 3 reports can
+be compared by reconstructing their first-pass rankings, not trusting saved means.
+See [installation](INSTALL.md) for server feature availability and
+[recorded results](BENCHMARK-RESULTS.md) for earlier measurements and limits.
+The older v1 source-ID scores are not comparable with current fact-level scores.
 
 ## Run the Baseline
 
@@ -39,6 +41,9 @@ The runner starts its own stdio MCP server. It does not contact the running HTTP
 server or load the workspace `.env`. The default is explicitly sentence/list
 decomposition and keyword retrieval, even if your shell normally enables models.
 `--binary PATH` selects another native executable. `--help` lists all options.
+The runner hashes the executable bytes and launches a private temporary copy of
+those same bytes. Concurrent builds cannot replace the executable between hashing
+and launch. The copy and isolated `.env` are removed when the client closes.
 
 Each recall invocation gets a unique `agentId`, used on every write and recall. Records
 remain in the disposable database because there is no delete tool. Remove that
@@ -53,6 +58,9 @@ configuration, server version, and corpus/binary SHA-256 hashes, not memory text
 query text, database URLs, API keys, or provider responses. Choose non-sensitive
 corpus IDs and run labels. Child-server stderr is suppressed to avoid leaking
 connection details; diagnose startup failures separately with the normal server.
+Reports also identify the Node version, OS platform, architecture, and available
+CPU parallelism. Record machine details and provider/model weights separately;
+these fields do not establish identical hardware or pin a provider's weights.
 
 ## Compare Retrieval Modes
 
@@ -93,12 +101,19 @@ The default split is `evaluation`. First run **only calibration** with unfiltere
 vectors, declaring the desired recall trade-off before viewing scores:
 
 ```sh
-node examples/benchmark-recall.mjs --retrieval vector --split calibration > target/calibration.json
-node examples/benchmark-recall.mjs --calibrate target/calibration.json --calibration-min-recall 0.8 > target/threshold.json
+node examples/benchmark-recall.mjs --retrieval vector --split calibration --k 50 > target/calibration.json
+node examples/benchmark-recall.mjs --calibrate target/calibration.json --calibration-k 5 --calibration-min-recall 0.8 > target/threshold.json
 ```
 
 The offline calibrator accepts only calibration-split unfiltered vector reports.
-It rejects evaluation queries, fused hybrid scores, and already-filtered runs.
+Capture all fifty bounded candidates with `--k 50`; `--calibration-k` is the
+deployment result cutoff, default 5. Filtering a saved top-five list cannot
+simulate lower-ranked candidates refilling the result, so truncated captures are
+rejected. This matches the current server's fifty-candidate vector search; it
+is not a simulator for arbitrary retrieval implementations.
+
+The calibrator rejects evaluation queries, duplicate observations, repeated
+passes, fused hybrid scores, and already-filtered runs.
 It selects score-gap midpoints to maximize no-answer accuracy subject to the
 declared verified-recall floor, then prefers higher recall/MRR and a lower floor.
 All candidate thresholds, model metadata, corpus/binary hashes, and calibration
@@ -125,6 +140,57 @@ against evaluation results. Version any labels or accepted variants changed afte
 seeing output and disclose that the old holdout was exposed. Further tuning needs
 fresh holdout queries. Record model weights/provider version separately: model
 names alone do not pin the inference implementation.
+
+## Paired Comparisons
+
+Compare two reports over the same corpus, split, cutoff, and query population:
+
+```sh
+node examples/benchmark-compare.mjs --baseline target/vector-unfiltered.json --candidate target/hybrid-unfiltered.json --allow-change retrieval --seed 20260916 --resamples 2000 > target/comparison.json
+```
+
+This is offline: no SDK dependencies, database, server, or provider are required.
+Every changed configuration dimension must be declared with a repeatable
+`--allow-change`, for example `binary`, `minSimilarity`, `relevance`,
+`embeddingModel`, `embeddingDimensions`, `concurrency`, `querySeed`, or
+`queryOrder`. `--help` lists all fields. Declarations expose confounding; they
+do not make a multi-variable change a controlled one-variable experiment.
+
+The comparator rejects mismatched corpus hashes, query IDs, labels, categories,
+splits, and query groups, as well as incomplete or duplicate pass observations.
+It recomputes metrics from each first-pass ranking. Changed or forged headline
+averages therefore do not change comparison results; this is consistency checking,
+not cryptographic authentication of the original observations.
+
+Results include per-metric before/after values, paired deltas, counts of improved,
+regressed, and unchanged queries, per-category comparisons, and missed gold IDs
+per query. Latency remains separate for every pass, including p50/p95/p99 and
+the number of rankings that differ from pass 1. More passes never widen the
+quality population or become independent accuracy observations.
+
+The reproducible 95% percentile bootstrap resamples paired query groups with
+replacement. Add a short `group` ID to queries derived from the same source or
+scenario so correlated questions stay together; group IDs are never sent to the
+server. Without `group`, each query ID is one sampling unit. The point estimate
+is the macro query mean; resampling preserves every query in a selected group.
+An interval is omitted when fewer than two groups contribute to a metric.
+
+These intervals are conditional on the observed corpus and the independence of
+the declared groups. Few groups, correlated sources, narrow domains, or biased
+labels can make them misleading. Identical observed outcomes can produce a
+zero-width interval; that is not certainty about production behaviour. Record
+`--seed` and `--resamples`; do not choose a seed to obtain a preferred interval.
+
+Optional observed-delta regression gates emit the full comparison and exit
+nonzero on a loss greater than the declared tolerance:
+
+```sh
+node examples/benchmark-compare.mjs --baseline target/before.json --candidate target/after.json --allow-change binary --max-recall-drop 0 --max-no-answer-drop 0 > target/regression.json
+```
+
+Missing metric populations cannot pass their gates. These gates use observed
+deltas, not an assertion of statistical equivalence. A passing benchmark still
+does not measure the correctness of a final agent answer or its real task value.
 
 ## Corpus and Metrics
 
@@ -164,6 +230,9 @@ name. This strict no-answer metric evaluates retrieval, not final hallucination.
 
 `--dataset PATH` accepts `schemaVersion: 1`, a dataset `id`, `memories` with unique
 `id`/`text`, and `queries` with `id`, `category`, `split`, `query`, and `relevantIds`.
+An optional short `group` ID identifies related queries for paired uncertainty
+estimation. Named calibration/evaluation splits may not share gold targets or
+declared query families; overlap is rejected before any writes or model calls.
 Atomic memories implicitly define one fact. Multi-fact memories specify `facts`,
 each with a unique `id`, canonical `text`, and optional reviewed `variants`; their
 `category` and `split` select them for extraction-only runs. Query relevance IDs
@@ -196,15 +265,19 @@ number of relevant memories. Unanswerable queries are excluded from those means;
 their abstention score is reported separately. Empty metric populations are
 `null`, not zero or perfect. Category reports use the same rules.
 
-`summary` scores verified facts; `sourceSummary` independently scores source IDs.
+`summary` scores first-pass verified facts; `sourceSummary` independently scores
+first-pass source IDs. `qualityPass: 1` makes that convention explicit, and
+`byCategory` and `unverifiedFragments` use the same first-pass population.
 Per-query results include both, missed fact IDs, unverified ranks, scores, and
 timing. Repeated facts earn credit once while occupying result slots, but distinct
 facts from one source can each earn credit. There is no deduplicate-and-refill
 scoring. A single-relevant-fact query has a maximum Precision@5 of 0.2.
 
-Write/recall mean, p50, and p95 latency include MCP/provider work but exclude
+Write/recall mean, p50, p95, and p99 latency include MCP/provider work but exclude
 server startup. Cold model loading is not separated from individual requests.
-These sequential measurements are not a controlled load benchmark.
+The default workload is sequential. Overall recall latency contains all execution
+passes; compare the individual `byPass` distributions for cold/repeat behaviour.
+On small populations p99 is effectively the maximum, not a stable tail estimate.
 
 ## Independent Extraction Evaluation
 
@@ -237,7 +310,8 @@ running service enables selection. Relevance URL, model, and candidate count
 are explicit settings; secrets never enter the report. A selection-enabled
 report cannot be used for cosine calibration.
 
-Use `--binary` with a stable executable copy during concurrent builds; reject
+Use `--binary` to select the intended executable; the runner snapshots it before
+launch. Reject
 configuration comparisons if binary hashes differ. To test an extraction change,
 keep both before and after binaries and run the same frozen extraction fixture:
 
@@ -298,6 +372,30 @@ passing them or changing a model prompt does not prove reliable model extraction
 
 ## Quality Gates
 
+### Controlled Workloads
+
+```sh
+node examples/benchmark-recall.mjs --retrieval hybrid --concurrency 8 --query-seed 20260916 --passes 3 > target/concurrent-recall.json
+```
+
+`--concurrency` bounds in-flight recalls to 1..32 (default 1). Writes remain
+sequential and finish before query timing begins. `--query-seed` chooses a
+deterministic, different ordering for each pass; omitted means fixture order.
+Reports record the workload settings and each pass's query-order hash, completed
+request count, elapsed wall time, throughput, and latency percentiles. Result
+rows retain schedule order even if requests complete out of order.
+
+This is a closed-loop workload: each worker issues its next request after the
+previous response and local scoring. Per-request latency starts at dispatch, not
+at time spent waiting in the runner's queue. Throughput uses whole-pass wall time
+and includes client/scoring overhead. It does not establish open-loop saturation
+behaviour or production capacity. Use the same machine, configuration, corpus,
+seed, concurrency, and cache state for a controlled before/after comparison.
+
+On failure, the runner stops scheduling new requests and drains active requests
+before throwing; it never returns a successful partial quality report. The
+failure remains a failed execution, not a zero-latency or correct-abstention sample.
+
 ### Fast Recall
 
 Keep `--relevance off` for latency-sensitive recall. To measure repeated queries
@@ -309,9 +407,11 @@ node examples/benchmark-recall.mjs --retrieval hybrid --passes 3 --max-warm-p95-
 
 Pass 1 reports first-seen-query latency; each later pass has its own metrics and
 latency distribution in `byPass`. The gate fails if any later pass exceeds the
-declared p95 budget, while retaining the complete report. Twenty milliseconds
+declared p95 budget, while retaining the complete report. Each pass also reports
+wall time and throughput. Twenty milliseconds
 is a local test target, not a service guarantee. Result quality is scored on
-every pass; repetitions are not independent accuracy samples. Calibration accepts
+every pass, but headline metrics and accuracy gates use only pass 1. Review
+later-pass scores and ranking changes separately. Calibration accepts
 only a single pass. Query caches hold 128 exact strings, so larger working sets
 may evict vectors before reuse. All passes still query current PostgreSQL data.
 

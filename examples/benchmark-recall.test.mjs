@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { benchmarkSettings, calibrateSimilarity, runBenchmark, runDecompositionBenchmark, scoreDecomposition, scoreRanking, summarizeQueries, validateDataset, withBackground } from "./benchmark-recall.mjs";
+import { compareReports } from "./benchmark-compare.mjs";
 
 test("perfect rankings have unit precision, recall, reciprocal rank, and nDCG", () => {
   assert.deepEqual(scoreRanking(["alpha", "beta"], ["alpha", "beta"], 2), {
@@ -166,6 +169,20 @@ test("corpus validation rejects ambiguous IDs, broken labels, and invalid text",
   }
 });
 
+test("calibration and evaluation cannot share a gold target or declared query family", () => {
+  const corpus = structuredClone(dataset);
+  corpus.queries[0].split = "calibration";
+  corpus.queries[1].split = "evaluation";
+  corpus.queries[1].relevantIds = ["alpha"];
+  assert.throws(() => validateDataset(corpus), /gold targets/);
+  corpus.queries[1].relevantIds = ["beta"];
+  corpus.queries[0].group = "same-family";
+  corpus.queries[1].group = "same-family";
+  assert.throws(() => validateDataset(corpus), /query family/);
+  corpus.queries[1].group = "other-family";
+  assert.equal(validateDataset(corpus), corpus);
+});
+
 test("the larger corpus has distinct memories, traceable sources, and disjoint labelled facts", () => {
   const corpus = validateDataset(JSON.parse(readFileSync(new URL("./fixtures/recall-v2.json", import.meta.url), "utf8")));
   assert.ok(corpus.memories.length >= 200);
@@ -226,6 +243,46 @@ test("the runner gives each invocation a fresh namespace", async () => {
   const first = await runBenchmark(mockClient(), dataset);
   const second = await runBenchmark(mockClient(), dataset);
   assert.notEqual(first.agentId, second.agentId);
+});
+
+test("repeat passes cannot dilute quality regressions or inflate the query population", async () => {
+  const client = mockClient([[], ["beta"], ["alpha"], [], ["alpha"], []]);
+  const report = await runBenchmark(client, dataset, { passes: 3 });
+  assert.equal(report.summary.queries, 2);
+  assert.equal(report.summary.recallAtK, 0);
+  assert.equal(report.summary.noAnswerAccuracy, 0);
+  assert.equal(report.sourceSummary.queries, 2);
+  assert.equal(report.byCategory.paraphrase.recallAtK, 0);
+  assert.equal(report.queries.length, 6);
+  assert.equal(report.latency.recall.count, 6);
+  assert.equal(report.byPass[1].summary.recallAtK, 1);
+  assert.equal(report.byPass[2].summary.noAnswerAccuracy, 1);
+});
+
+test("bounded concurrent workloads preserve every query and report per-pass throughput", async () => {
+  const client = mockClient([["alpha"], [], ["alpha"], []]);
+  const original = client.callTool.bind(client);
+  let active = 0;
+  let peak = 0;
+  client.callTool = async (request) => {
+    if (request.name === "write_memory") return original(request);
+    active += 1;
+    peak = Math.max(peak, active);
+    await Promise.resolve();
+    const result = await original(request);
+    active -= 1;
+    return result;
+  };
+  const report = await runBenchmark(client, dataset, { passes: 2, concurrency: 2 });
+  assert.equal(peak, 2);
+  assert.equal(report.workload.concurrency, 2);
+  assert.equal(report.queries.length, 4);
+  assert.equal(report.summary.queries, 2);
+  assert.equal(report.summary.recallAtK, 1);
+  assert.equal(report.byPass[0].completed, 2);
+  assert.ok(report.byPass[0].elapsedMs > 0);
+  assert.ok(report.byPass[0].throughputQps > 0);
+  assert.ok(report.byPass[0].latency.p99Ms >= report.byPass[0].latency.p95Ms);
 });
 
 test("the right source ID cannot earn fact credit for the wrong number", async () => {
@@ -404,7 +461,7 @@ function calibrationReport() {
     reportVersion: 3,
     scoring: "verified-fact-variants",
     split: "calibration",
-    limit: 5,
+    limit: 50,
     configuration: { retrieval: "vector", minSimilarity: null, embeddingModel: "test-model", embeddingDimensions: 2 },
     dataset: { id: "test-corpus", sha256: "test-digest" },
     queries: [
@@ -421,6 +478,20 @@ test("calibration selects a score gap with an explicit recall constraint", () =>
   assert.equal(result.summary.noAnswerAccuracy, 1);
   assert.deepEqual(result.queryIds, ["positive", "negative"]);
   assert.equal(result.embeddingModel, "test-model");
+});
+
+test("calibration requires a full candidate capture and scores the requested result cutoff", () => {
+  const truncated = calibrationReport();
+  truncated.limit = 5;
+  assert.throws(() => calibrateSimilarity(truncated, 1), /candidate.*50/);
+  const captured = calibrationReport();
+  captured.queries[0].rankedIds = ["unrelated", "alpha"];
+  captured.queries[0].scores = [0.60, 0.86];
+  const calibrated = calibrateSimilarity(captured, 1, 1);
+  assert.equal(calibrated.limit, 1);
+  assert.equal(calibrated.candidateLimit, 50);
+  assert.equal(calibrated.summary.precisionAtK, 1);
+  assert.equal(calibrated.summary.noAnswerAccuracy, 1);
 });
 
 test("calibration rejects held-out leakage, fused scores, filtered runs, and invalid data", () => {
@@ -660,4 +731,199 @@ test("repeat passes measure cold and warm queries without rewriting memories", a
     { "max-warm-p95-ms": "20" }, { passes: "2", "max-warm-p95-ms": "0" }]) {
     assert.throws(() => benchmarkSettings(testEnvironment, options));
   }
+});
+
+test("workload settings are explicit and invalid values fail before any model or database calls", async () => {
+  const settings = benchmarkSettings(testEnvironment, { concurrency: "4", "query-seed": "0" });
+  assert.equal(settings.concurrency, 4);
+  assert.equal(settings.querySeed, 0);
+  for (const options of [{ concurrency: "0" }, { concurrency: "33" }, { concurrency: "1.5" },
+    { "query-seed": "-1" }, { "query-seed": "1.5" }, { "query-seed": "4294967296" }]) {
+    assert.throws(() => benchmarkSettings(testEnvironment, options));
+  }
+  for (const options of [{ concurrency: 0 }, { concurrency: 1.5 }, { querySeed: NaN }]) {
+    const client = mockClient();
+    await assert.rejects(runBenchmark(client, dataset, options));
+    assert.equal(client.calls.length, 0);
+  }
+});
+
+test("seeded schedules are reproducible and query groups never enter model requests", async () => {
+  const corpus = structuredClone(dataset);
+  corpus.queries = Array.from({ length: 16 }, (_, index) => ({ ...corpus.queries[1], id: `query-${index}`,
+    query: `Missing field ${index}?`, group: `source-${index % 4}` }));
+  const run = async (querySeed) => {
+    const client = mockClient(Array.from({ length: 32 }, () => []));
+    const report = await runBenchmark(client, corpus, { passes: 2, concurrency: 3, querySeed });
+    assert.ok(client.calls.every(call => call.arguments.group === undefined));
+    return report;
+  };
+  const first = await run(123);
+  const repeated = await run(123);
+  const other = await run(456);
+  assert.deepEqual(first.queries.map(query => [query.id, query.pass, query.group]),
+    repeated.queries.map(query => [query.id, query.pass, query.group]));
+  assert.notEqual(first.byPass[0].queryOrderSha256, other.byPass[0].queryOrderSha256);
+  assert.equal(new Set(first.queries.filter(query => query.pass === 1).map(query => query.id)).size, 16);
+  corpus.queries[0].group = "invalid group";
+  assert.throws(() => validateDataset(corpus), /groups/);
+});
+
+test("concurrent failures drain active calls without scheduling more work or emitting success", async () => {
+  const corpus = structuredClone(dataset);
+  corpus.queries = Array.from({ length: 5 }, (_, index) => ({ ...corpus.queries[0], id: `query-${index}` }));
+  let issued = 0;
+  let drained = false;
+  const client = mockClient();
+  const original = client.callTool.bind(client);
+  client.callTool = async request => {
+    if (request.name === "write_memory") return original(request);
+    issued += 1;
+    if (issued === 1) throw new Error("provider body must not leak");
+    await Promise.resolve();
+    drained = true;
+    return { structuredContent: { results: [] } };
+  };
+  await assert.rejects(runBenchmark(client, corpus, { concurrency: 2 }), error =>
+    /failed/.test(error.message) && !error.message.includes("provider body"));
+  assert.equal(issued, 2);
+  assert.equal(drained, true);
+});
+
+function comparableReport() {
+  return {
+    reportVersion: 3, mode: "recall", scoring: "verified-fact-variants", split: "evaluation", limit: 5,
+    binarySha256: "b".repeat(64), dataset: { id: "paired", sha256: "a".repeat(64) },
+    configuration: { decomposition: "sentences", retrieval: "keyword", minSimilarity: null },
+    queries: [
+      { id: "positive-one", category: "paraphrase", split: "evaluation", relevantIds: ["fact-one"], rankedIds: [], scores: [], recallMs: 10 },
+      { id: "positive-two", category: "paraphrase", split: "evaluation", relevantIds: ["fact-two"], rankedIds: [], scores: [], recallMs: 20 },
+      { id: "negative-one", category: "missing-detail", split: "evaluation", relevantIds: [], rankedIds: ["wrong"], scores: [0.5], recallMs: 30 },
+      { id: "negative-two", category: "missing-detail", split: "evaluation", relevantIds: [], rankedIds: ["wrong"], scores: [0.5], recallMs: 40 },
+    ],
+  };
+}
+
+test("paired comparisons recompute rankings and report reproducible gains with explicit changes", () => {
+  const baseline = comparableReport();
+  const candidate = structuredClone(baseline);
+  candidate.configuration.retrieval = "hybrid";
+  candidate.summary = { recallAtK: -100 };
+  for (const query of candidate.queries) {
+    query.rankedIds = [...query.relevantIds];
+    query.scores = query.rankedIds.map(() => 0.9);
+  }
+  assert.throws(() => compareReports(baseline, candidate), /Undeclared.*retrieval/);
+  const options = { allowChanges: ["retrieval"], resamples: 200, seed: 19 };
+  const report = compareReports(baseline, candidate, options);
+  assert.deepEqual(report, compareReports(baseline, candidate, options));
+  assert.equal(report.uniqueQueries, 4);
+  assert.equal(report.metrics.recallAtK.delta, 1);
+  assert.equal(report.metrics.recallAtK.improved, 2);
+  assert.deepEqual(report.metrics.recallAtK.interval95, [1, 1]);
+  assert.equal(report.metrics.noAnswerAccuracy.delta, 1);
+  assert.equal(report.byCategory.paraphrase.recallAtK.baseline, 0);
+  assert.equal(report.latency.baseline[0].p95Ms, 40);
+  assert.equal(report.latency.baseline[0].p99Ms, 40);
+  assert.ok(!JSON.stringify(report).includes("-100"));
+});
+
+test("comparisons do not count repeat passes or related-query groups as independent samples", () => {
+  const baseline = comparableReport();
+  baseline.queries[0].group = "same-source";
+  baseline.queries[1].group = "same-source";
+  const candidate = structuredClone(baseline);
+  candidate.passes = 2;
+  candidate.queries.push(...candidate.queries.map((query) => ({ ...query, pass: 2,
+    rankedIds: [...query.relevantIds], scores: query.relevantIds.map(() => 1) })));
+  const report = compareReports(baseline, candidate, { resamples: 200 });
+  assert.equal(report.metrics.recallAtK.queries, 2);
+  assert.equal(report.metrics.recallAtK.groups, 1);
+  assert.equal(report.metrics.recallAtK.interval95, null);
+  assert.equal(report.metrics.recallAtK.delta, 0);
+  assert.equal(report.latency.candidate[1].changedRankings, 4);
+  assert.equal(report.uniqueQueries, 4);
+});
+
+test("comparison rejects incompatible provenance and malformed observations", () => {
+  for (const mutate of [
+    report => { report.dataset.sha256 = "c".repeat(64); },
+    report => { report.limit = 1; },
+    report => { report.mode = "decomposition"; },
+    report => { report.scoring = "source-only"; },
+    report => { report.queries.pop(); },
+    report => { report.queries.push(structuredClone(report.queries[0])); },
+    report => { report.queries[0].relevantIds = ["different-label"]; },
+    report => { report.queries[0].category = "different-category"; },
+    report => { report.queries[0].recallMs = NaN; },
+    report => { report.queries[0].recallMs = -1; },
+    report => { report.queries[2].scores = [Infinity]; },
+    report => { report.queries[2].scores = []; },
+    report => { report.passes = 2; },
+    report => { report.binarySha256 = "d".repeat(64); },
+  ]) {
+    const baseline = comparableReport();
+    const candidate = structuredClone(baseline);
+    mutate(candidate);
+    assert.throws(() => compareReports(baseline, candidate, { resamples: 200 }));
+  }
+});
+
+test("paired regression gates fail for quality losses and absent metric populations", () => {
+  const candidate = comparableReport();
+  const baseline = structuredClone(candidate);
+  baseline.queries[0].rankedIds = ["fact-one"];
+  baseline.queries[0].scores = [1];
+  const report = compareReports(baseline, candidate, { resamples: 200, maxRecallDrop: 0 });
+  assert.equal(report.gates.passed, false);
+  assert.equal(report.metrics.recallAtK.regressed, 1);
+  assert.equal(report.metrics.recallAtK.delta, -0.5);
+  assert.equal(compareReports(baseline, candidate, { resamples: 200, maxRecallDrop: 0.5 }).gates.passed, true);
+  baseline.queries = baseline.queries.slice(0, 2);
+  candidate.queries = candidate.queries.slice(0, 2);
+  assert.equal(compareReports(baseline, candidate, { resamples: 200, maxNoAnswerDrop: 0 }).gates.passed, false);
+});
+
+test("offline comparison CLI emits reports on pass and failure without server credentials", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "mindleak-comparison-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const baseline = comparableReport();
+  baseline.queries[0].rankedIds = ["fact-one"];
+  baseline.queries[0].scores = [0.9];
+  const candidate = structuredClone(baseline);
+  const baselinePath = join(directory, "baseline.json");
+  const candidatePath = join(directory, "candidate.json");
+  const script = fileURLToPath(new URL("./benchmark-compare.mjs", import.meta.url));
+  writeFileSync(baselinePath, JSON.stringify(baseline));
+  for (const expectedExit of [0, 1]) {
+    if (expectedExit === 1) { candidate.queries[0].rankedIds = []; candidate.queries[0].scores = []; }
+    writeFileSync(candidatePath, JSON.stringify(candidate));
+    const result = spawnSync(process.execPath, [script, "--baseline", baselinePath, "--candidate", candidatePath,
+      "--resamples", "200", "--seed", "0", "--max-recall-drop", "0"], { encoding: "utf8", timeout: 10000,
+      env: { ...process.env, NODE_OPTIONS: "", MINDLEAK_TEST_DATABASE_URL: undefined } });
+    assert.equal(result.status, expectedExit, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.gates.passed, expectedExit === 0);
+    assert.equal(report.uncertainty.seed, 0);
+  }
+  writeFileSync(candidatePath, "invalid-private-report-content");
+  const invalid = spawnSync(process.execPath, [script, "--baseline", baselinePath, "--candidate", candidatePath],
+    { encoding: "utf8", timeout: 10000 });
+  assert.equal(invalid.status, 1);
+  assert.equal(invalid.stdout, "");
+  assert.ok(!invalid.stderr.includes("invalid-private-report-content"));
+  assert.match(execFileSync(process.execPath, [script, "--help"], { encoding: "utf8" }), /No server, model, or database/);
+});
+
+test("comparison rejects undeclared workload changes and pairs reordered reports explicitly", () => {
+  const baseline = comparableReport();
+  const candidate = structuredClone(baseline);
+  candidate.workload = { concurrency: 4, querySeed: 12 };
+  candidate.queries.reverse();
+  assert.throws(() => compareReports(baseline, candidate), /Undeclared comparison changes/);
+  const report = compareReports(baseline, candidate, {
+    resamples: 200, allowChanges: ["concurrency", "querySeed", "queryOrder"],
+  });
+  assert.equal(report.metrics.recallAtK.delta, 0);
+  assert.deepEqual(report.changes, ["concurrency", "querySeed", "queryOrder"]);
 });

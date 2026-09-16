@@ -1,9 +1,17 @@
 # Recall Quality Experiment: 2026-09-16
 
-These are local diagnostic measurements, not production accuracy estimates.
-Follow the [benchmark guide](BENCHMARKS.md) to reproduce the procedure. The
+These are historical local diagnostic measurements, not production accuracy
+estimates. See the [benchmark guide](BENCHMARKS.md) for the current procedure. The
 corpus was frozen before calibration and evaluation; labels and the floor were
 not adjusted after viewing held-out results.
+
+The experiment used report version 3 and the then-current calibration heuristic,
+which filtered a saved top-five ranking. That heuristic could not account for
+lower-ranked candidates refilling results after filtering. The current calibrator
+requires all fifty bounded candidates and scores a separate deployment cutoff.
+The measurements and selected threshold below remain the original record, not
+results from the corrected calibration procedure. New evaluation needs a fresh
+capture and an unexposed holdout; do not retune these historical results.
 
 ## Experiment Identity
 
