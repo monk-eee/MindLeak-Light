@@ -10,12 +10,99 @@ can keep using Claude or GPT as your agent and use LM Studio for memory processi
 | Feature | Off, the Default | Optional Upgrade |
 |---|---|---|
 | Decomposition | Split sentences and list items; preserve wording | Chat model extracts independent facts |
-| Recall | Indexed PostgreSQL keyword search | Embedding model and pgvector similarity |
+| Recall | Indexed PostgreSQL keyword search | Embedding model with vector or hybrid recall |
+| Relevance filtering | Return ranked candidates without a selection model | Chat model selects existing fragments that may answer the query |
 
-Enable either independently. Chat extraction with keyword recall is valid;
+Decomposition and embeddings are independent. Chat extraction with keyword recall is valid;
 sentence decomposition with vector recall needs an embedding model but no chat
-model. Enabling both normally adds one chat request and one batched embedding
-request per write, and one embedding request per recall.
+model. With relevance filtering off, enabling both normally adds one chat request
+and one batched embedding request per write, and one embedding request per recall.
+The optional relevance stage is independent and adds a recall-time chat request
+when candidates are available.
+
+## Relevance and Hybrid Recall
+
+Hybrid recall and similarity thresholds are unreleased source features, not
+part of v0.1.0. Build a revision containing them before enabling them. For the
+source Compose stack, rebuild with `docker compose up --build --detach --wait`
+after upgrading source. See [installation](INSTALL.md) for package availability
+and all-in-one container configuration.
+
+`MINDLEAK_RETRIEVAL=hybrid` combines keyword and vector candidates by reciprocal
+rank fusion. It keeps exact keyword matches, including memories written before
+embeddings were enabled. It requires the same embedding settings as `vector`.
+Neither mode alone adds a chat call to recall. A failed embedding request is an
+error even if keyword results would have been available.
+
+Set `MINDLEAK_RECALL_MIN_SIMILARITY` to a finite number in [-1, 1] to filter
+semantic candidates. Unset or -1 preserves unfiltered nearest-neighbour recall;
+an empty value passed directly to the binary is invalid when vector or hybrid
+retrieval is enabled. Both Compose templates substitute -1 for unset or empty
+values. The setting is ignored in keyword mode.
+There is deliberately no universal cutoff: calibrate on representative positive
+and negative queries using the [benchmark guide](BENCHMARKS.md), then evaluate
+on held-out queries. Higher floors can reject useful facts too. The floor does
+not gate keyword candidates in hybrid mode, including unembedded memories.
+
+Hybrid scores are normalized fused ranks, not cosine scores. None of these
+scores is a probability of relevance or truth. An empty successful recall means
+no candidate met the configured retrieval rules, not that a fact is disproven.
+Chat extraction remains an independent opt-in for messy prose; use the separate
+extraction benchmark to test qualifiers and atomicity before enabling it.
+
+## Experimental Relevance Filter
+
+`MINDLEAK_RELEVANCE=openai` adds model-based selection after keyword, vector, or
+hybrid retrieval. It is off by default and requires a source build containing
+the filter; it is not included in v0.1.0. Its accuracy and latency are still being
+evaluated, so enabling it is not a guarantee of better recall or correct answers.
+
+For a Compose deployment, set:
+
+```dotenv
+MINDLEAK_RELEVANCE=openai
+MINDLEAK_RELEVANCE_URL=http://host.docker.internal:1234/v1
+MINDLEAK_RELEVANCE_MODEL=your-loaded-relevance-model-id
+MINDLEAK_RELEVANCE_CANDIDATES=20
+```
+
+Use your provider's actual model ID and API base. Set
+`MINDLEAK_RELEVANCE_API_KEY` privately if required; it is independent of the
+decomposition and embedding credentials. Both Compose templates forward these
+settings from the shell or `.env`. Recreate the container after changing them,
+and use `localhost` instead of `host.docker.internal` for a native binary.
+
+The provider receives the query and candidate text and must support structured
+JSON chat responses. It identifies the requested detail and selects indices with
+exact, nonblank quotations from the corresponding candidates. Index-only replies
+or invented quotations are rejected. Returned fragments retain their original
+text, provenance, scores, and order; model-generated text never replaces a fact.
+An empty selection is valid. Provider failures or invalid selections fail recall
+rather than returning unfiltered candidates. No selection request is made for an
+empty candidate list. A matching quotation proves source membership, not that the
+model selected sufficient evidence or that the source is true.
+
+The candidate setting defaults to 20 and accepts 1..50. A recall request for more
+results raises the candidate count to at least that request's limit, still at
+most 50. Query and candidate text together have a 32768-byte budget; exceeding
+it returns an error, not silently truncated context. Keep candidates and queries
+short, and reduce the candidate count for larger fragments.
+
+Filtering can reject useful facts and cannot recover facts outside the candidate
+pool. With vector or hybrid retrieval, a prior cosine floor can already have
+removed useful candidates. Evaluate the combined settings on fresh held-out
+queries; the model's selection is not independent verification of truth.
+
+## Provider Reasoning
+
+`MINDLEAK_LLM_REASONING_EFFORT` and `MINDLEAK_RELEVANCE_REASONING_EFFORT` optionally
+send `reasoning_effort` to the respective chat provider. Both are omitted by
+default; an empty value also leaves the provider default unchanged. Accepted
+values are `none`, `low`, `medium`, `high`, and `max`, but the chosen provider and
+model must support the value. Disabled providers ignore their setting. Both
+Compose templates forward these options independently. Reducing reasoning may
+reduce latency or change output quality; measure it rather than assuming an
+improvement. An unsupported provider response remains an error, not a fallback.
 
 ## LM Studio
 
@@ -94,12 +181,12 @@ is performed.
 
 Changing to model-free mode keeps all existing memories and vectors. Keyword
 search covers fragments whether or not they have embeddings. No model calls
-are made when both optional features are disabled.
+are made with sentence decomposition, keyword retrieval, and relevance filtering off.
 
-The first vector-enabled start binds an embedding model and dimension to the
+The first vector or hybrid start binds an embedding model and dimension to the
 database. You can enable it after model-free writes, but **old unembedded
 fragments are not automatically embedded**. Vector recall only searches fragments
-with vectors. Keep keyword recall if you need those older entries; there is no
+with vectors. Use keyword or hybrid recall for those older entries; there is no
 bulk re-embedding command yet.
 
 Once bound, the embedding model and dimension cannot be changed in place. Use
@@ -107,11 +194,12 @@ the original model or a new database; do not delete stored memories just to
 clear a configuration error. Keep model weights stable even if the provider
 allows changing them under the same model ID.
 
-To switch off both features:
+To switch off all model use:
 
 ```dotenv
 MINDLEAK_DECOMPOSITION=sentences
 MINDLEAK_RETRIEVAL=keyword
+MINDLEAK_RELEVANCE=off
 ```
 
 Run `docker compose up --detach --wait` again. Disabled provider settings are
@@ -128,4 +216,6 @@ sends one batch per memory rather than one request per fragment.
 `MINDLEAK_MODEL_TIMEOUT_SECS` bounds each provider request (default 60, range
 1..300). Increasing it can help a slow model, but makes a stalled operation take
 longer to fail. Give the MCP client enough time for both write-stage requests.
+Vector or hybrid recall with relevance filtering can also make two sequential
+provider requests: query embedding, then candidate selection.
 The server does not claim an inference-speed benchmark for your hardware.

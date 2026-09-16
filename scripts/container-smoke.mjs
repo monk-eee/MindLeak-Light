@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { parseArgs } from "node:util";
 
+const { values } = parseArgs({ options: { "config-only": { type: "boolean" } } });
 const root = fileURLToPath(new URL("../", import.meta.url));
 const engine = process.env.CONTAINER_ENGINE ?? "docker";
 assert.ok(["docker", "podman"].includes(engine), "CONTAINER_ENGINE must be docker or podman");
@@ -19,6 +23,7 @@ const env = {
   MINDLEAK_HTTP_TOKEN: token,
   MINDLEAK_DECOMPOSITION: "sentences",
   MINDLEAK_RETRIEVAL: "keyword",
+  MINDLEAK_RELEVANCE: "off",
   POSTGRES_DB: database,
 };
 
@@ -42,6 +47,64 @@ function snapshot() {
     "'tables', (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'), " +
     "'listen', current_setting('listen_addresses'), 'fsync', current_setting('fsync'))"));
 }
+
+const directory = mkdtempSync(join(tmpdir(), "mindleak-light-compose-"));
+try {
+  const envFile = join(directory, ".env");
+  const defaults = {
+    MINDLEAK_RECALL_MIN_SIMILARITY: "-1",
+    MINDLEAK_LLM_REASONING_EFFORT: "",
+    MINDLEAK_RELEVANCE: "off",
+    MINDLEAK_RELEVANCE_URL: "",
+    MINDLEAK_RELEVANCE_MODEL: "",
+    MINDLEAK_RELEVANCE_API_KEY: "",
+    MINDLEAK_RELEVANCE_CANDIDATES: "20",
+    MINDLEAK_RELEVANCE_REASONING_EFFORT: "",
+  };
+  const relevance = {
+    MINDLEAK_RELEVANCE: "openai",
+    MINDLEAK_RELEVANCE_URL: "http://relevance.example/v1",
+    MINDLEAK_RELEVANCE_MODEL: "test-relevance-model",
+    MINDLEAK_RELEVANCE_API_KEY: "test-relevance-key",
+    MINDLEAK_RELEVANCE_CANDIDATES: "12",
+    MINDLEAK_RELEVANCE_REASONING_EFFORT: "none",
+  };
+  for (const [file, service] of [
+    ["docker-compose.yml", "mcp"],
+    ["docker/compose.all-in-one.yml", "mindleak-light"],
+  ]) {
+    for (const [fileValues, overrides, expected] of [
+      [{}, {}, {}],
+      [{ MINDLEAK_RECALL_MIN_SIMILARITY: "0.8" }, {}, { MINDLEAK_RECALL_MIN_SIMILARITY: "0.8" }],
+      [{ MINDLEAK_RECALL_MIN_SIMILARITY: "" }, {}, {}],
+      [{ MINDLEAK_RECALL_MIN_SIMILARITY: "0.8" }, { MINDLEAK_RECALL_MIN_SIMILARITY: "0" }, { MINDLEAK_RECALL_MIN_SIMILARITY: "0" }],
+      [relevance, {}, relevance],
+      [{ MINDLEAK_RELEVANCE: "", MINDLEAK_RELEVANCE_CANDIDATES: "" }, {}, {}],
+      [relevance, { MINDLEAK_RELEVANCE: "off", MINDLEAK_RELEVANCE_CANDIDATES: "7" },
+        { ...relevance, MINDLEAK_RELEVANCE: "off", MINDLEAK_RELEVANCE_CANDIDATES: "7" }],
+      [{ MINDLEAK_LLM_REASONING_EFFORT: "low", MINDLEAK_RELEVANCE_REASONING_EFFORT: "high" },
+        { MINDLEAK_RELEVANCE_REASONING_EFFORT: "none" },
+        { MINDLEAK_LLM_REASONING_EFFORT: "low", MINDLEAK_RELEVANCE_REASONING_EFFORT: "none" }],
+    ]) {
+      writeFileSync(envFile, Object.entries(fileValues).map(([key, value]) => `${key}=${value}`).join("\n") + "\n");
+      const configurationEnvironment = { ...env };
+      for (const key of Object.keys(defaults)) delete configurationEnvironment[key];
+      Object.assign(configurationEnvironment, overrides);
+      const configuration = JSON.parse(run([
+        "compose", "--env-file", envFile, "--project-name", project,
+        "--file", file, "config", "--format", "json",
+      ], { env: configurationEnvironment }));
+      const environment = configuration.services[service].environment;
+      for (const [key, expectedValue] of Object.entries({ ...defaults, ...expected })) {
+        assert.equal(environment[key], expectedValue, `${file}: ${key} must preserve defaults and explicit settings`);
+      }
+    }
+  }
+} finally {
+  rmSync(directory, { recursive: true, force: true });
+}
+console.log("Both Compose templates: similarity and relevance defaults, .env values, and shell overrides verified.");
+if (values["config-only"]) process.exit(0);
 
 const [imageInfo] = JSON.parse(run(["image", "inspect", image]));
 const healthcheck = engine === "podman" ? imageInfo.Healthcheck : imageInfo.Config.Healthcheck;

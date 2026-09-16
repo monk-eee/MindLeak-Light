@@ -18,3 +18,5 @@ record when the design changes instead of silently rewriting their rationale.
 | [0004](0004-repository-quality-and-releases.md) | Repository Quality and Releases | Accepted |
 | [0005](0005-optional-models-and-model-free-quickstart.md) | Optional Models and Model-Free Quickstart | Accepted |
 | [0006](0006-native-and-all-in-one-distribution.md) | Native and All-in-One Distribution | Accepted |
+| [0007](0007-hybrid-recall-and-calibrated-relevance.md) | Hybrid Recall and Calibrated Relevance | Accepted |
+| [0008](0008-bounded-model-relevance-selection.md) | Bounded Model Relevance Selection | Accepted |

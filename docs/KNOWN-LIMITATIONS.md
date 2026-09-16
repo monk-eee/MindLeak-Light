@@ -12,6 +12,20 @@
   dimensions. An enabled provider failure does not fall back to model-free mode.
 - Vector retrieval is exact cosine search without ANN indexing, reranking, decay,
   RAST, synthesis inside the server, or automatic relationship generation.
+- A configured cosine floor trades recall for rejection; it is model/corpus
+  specific and cannot prove relevance. Hybrid fuses bounded keyword/vector ranks
+  but does not verify truth, resolve contradictory facts, or automatically retire
+  outdated memories. Unset floors leave nearest-neighbour results unfiltered.
+- Optional model-based relevance selection adds recall-time latency and another
+  provider failure path. It cannot recover facts outside its candidate pool or
+  repair incorrect extraction. Model selection is not proof of truth, relevance,
+  or prompt-injection resistance; candidates remain untrusted reference data.
+  Inputs exceeding its explicit text budget fail rather than being truncated.
+- Benchmark fact verification uses reviewed canonical wording and accepted
+  variants. Valid unseen paraphrases are unverified, not necessarily wrong. The
+  synthetic corpus and small per-category samples do not establish population
+  accuracy; independent label review and larger domain-specific holdouts remain
+  necessary for deployment claims.
 - The embedding model is fixed per database. Changing weights under the same
   provider model name cannot be detected; operators must keep it stable. There is
   no re-embedding command or model migration in this initial version. Entries

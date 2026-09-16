@@ -1,3 +1,7 @@
+mod relevance;
+
+pub use relevance::OpenAiRelevanceRetriever;
+
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{validate_embeddings, TextEmbedder, MAX_FRAGMENTS};

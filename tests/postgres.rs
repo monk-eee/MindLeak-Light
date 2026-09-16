@@ -6,7 +6,7 @@ use mindleak_memory::{
     EmbeddedFragment, MemoryRetriever, MemoryStore, PreparedMemory, TextEmbedder,
 };
 use mindleak_storage_postgres::{
-    KeywordMemoryRetriever, PostgresMemoryStore, VectorMemoryRetriever,
+    HybridMemoryRetriever, KeywordMemoryRetriever, PostgresMemoryStore, VectorMemoryRetriever,
 };
 use tokio_postgres::{Client, NoTls};
 use url::Url;
@@ -133,6 +133,119 @@ async fn roundtrip_uses_pgvector_ranking_and_optional_agent_filter() {
     let global = retriever.recall("PR preferences?", None, 3).await.unwrap();
     assert!(!global.is_empty());
     assert!(global.windows(2).all(|pair| pair[0].score >= pair[1].score));
+}
+
+#[tokio::test]
+async fn hybrid_recall_fuses_semantic_and_unembedded_keyword_matches_with_agent_filtering() {
+    let (store, _) = setup().await;
+    let agent_id = format!("hybrid-{}", Uuid::new_v4());
+    let mut embedded = memory(&agent_id);
+    embedded.fragments[0].text = "Small changes are easier to inspect".into();
+    embedded.fragments[1].text = "PR preferences require reviews".into();
+    embedded.fragments[1].embedding = Some(vec![0.8, 0.6]);
+    store.save(&embedded).await.unwrap();
+    let unembedded_store = PostgresMemoryStore::connect(&database_url(), None, 4, None)
+        .await
+        .unwrap();
+    let mut unembedded = memory(&agent_id);
+    unembedded.fragments.truncate(1);
+    unembedded.fragments[0].text = "PR preferences mention identifier code-713".into();
+    unembedded.fragments[0].embedding = None;
+    unembedded_store.save(&unembedded).await.unwrap();
+    let mut foreign = embedded.clone();
+    foreign.id = Uuid::new_v4();
+    foreign.agent_id = format!("foreign-{}", Uuid::new_v4());
+    for fragment in &mut foreign.fragments {
+        fragment.id = Uuid::new_v4();
+    }
+    store.save(&foreign).await.unwrap();
+    let retriever = HybridMemoryRetriever::new(store, Arc::new(QueryEmbedder))
+        .with_min_similarity(Some(0.5))
+        .unwrap();
+    let matches = retriever
+        .recall("PR preferences?", Some(&agent_id), 5)
+        .await
+        .unwrap();
+    assert_eq!(matches.len(), 3);
+    assert_eq!(matches[0].fragment_id, embedded.fragments[1].id);
+    assert!(matches.iter().all(|result| result.agent_id == agent_id));
+    assert!(matches
+        .iter()
+        .any(|result| result.memory_id == unembedded.id));
+    assert_eq!(
+        retriever
+            .recall("PR preferences?", Some(&agent_id), 1)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(retriever
+        .recall("PR preferences?", Some("absent-agent"), 5)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(retriever
+        .recall("PR preferences?", Some(&agent_id), 0)
+        .await
+        .is_err());
+}
+
+struct UnavailableEmbedder;
+
+#[async_trait]
+impl TextEmbedder for UnavailableEmbedder {
+    fn dimensions(&self) -> usize {
+        2
+    }
+
+    async fn embed_batch(&self, _: &[String]) -> Result<Vec<Vec<f32>>> {
+        anyhow::bail!("provider unavailable")
+    }
+}
+
+#[tokio::test]
+async fn hybrid_recall_never_hides_embedding_failure_behind_keyword_results() {
+    let (store, _) = setup().await;
+    let agent_id = format!("hybrid-failure-{}", Uuid::new_v4());
+    store.save(&memory(&agent_id)).await.unwrap();
+    assert!(!KeywordMemoryRetriever::new(store.clone())
+        .recall("reviews", Some(&agent_id), 5)
+        .await
+        .unwrap()
+        .is_empty());
+    let retriever = HybridMemoryRetriever::new(store, Arc::new(UnavailableEmbedder));
+    assert!(retriever
+        .recall("reviews", Some(&agent_id), 5)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn vector_floor_is_inclusive_and_rejects_invalid_configuration() {
+    let (store, _) = setup().await;
+    let agent_id = format!("floor-{}", Uuid::new_v4());
+    store.save(&memory(&agent_id)).await.unwrap();
+    for (minimum, count) in [(0.0, 2), (1.0, 1)] {
+        let retriever = VectorMemoryRetriever::new(store.clone(), Arc::new(QueryEmbedder))
+            .with_min_similarity(Some(minimum))
+            .unwrap();
+        assert_eq!(
+            retriever
+                .recall("PR preferences?", Some(&agent_id), 5)
+                .await
+                .unwrap()
+                .len(),
+            count
+        );
+    }
+    for minimum in [f64::NAN, f64::INFINITY, -1.01, 1.01] {
+        assert!(
+            VectorMemoryRetriever::new(store.clone(), Arc::new(QueryEmbedder))
+                .with_min_similarity(Some(minimum))
+                .is_err()
+        );
+    }
 }
 
 #[tokio::test]

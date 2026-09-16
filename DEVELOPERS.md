@@ -26,10 +26,18 @@ MCP configuration connects to the Compose HTTP server without invoking Cargo.
 Shared configuration preserves MindLeak's `MINDLEAK_LLM_URL`, `MINDLEAK_MODEL`,
 `MINDLEAK_LLM_API_KEY`, `MINDLEAK_EMBED_URL`, `MINDLEAK_EMBED_MODEL`, and
 `MINDLEAK_EMBED_API_KEY`. They are only used when `MINDLEAK_DECOMPOSITION=openai`
-or `MINDLEAK_RETRIEVAL=vector` explicitly enables the corresponding provider.
+or `MINDLEAK_RETRIEVAL=vector`/`hybrid` explicitly enables the corresponding provider.
 Enabled providers require an API base including `/v1`, a model ID, and for
-embeddings, `MINDLEAK_EMBED_DIMENSIONS`. See [optional models](docs/MODELS.md)
+embeddings, `MINDLEAK_EMBED_DIMENSIONS`. The optional
+`MINDLEAK_RECALL_MIN_SIMILARITY` is a calibrated cosine floor, not confidence.
+See [optional models](docs/MODELS.md)
 for LM Studio, Ollama, native/container addresses, and upgrade behavior.
+
+Experimental recall-time selection uses `MINDLEAK_RELEVANCE=openai` (default
+`off`), with independent `MINDLEAK_RELEVANCE_URL`, `MINDLEAK_RELEVANCE_MODEL`, and
+optional `MINDLEAK_RELEVANCE_API_KEY`. `MINDLEAK_RELEVANCE_CANDIDATES` defaults
+to 20 and accepts 1..50; the caller's recall limit can raise the candidate count.
+Both Compose templates forward these settings without enabling the filter by default.
 
 Other settings are `MINDLEAK_DATABASE_URL`, `MINDLEAK_DATABASE_CA_FILE`,
 `MINDLEAK_DB_POOL_SIZE` (1..64, default 8), `MINDLEAK_MODEL_TIMEOUT_SECS`
@@ -100,11 +108,25 @@ The test creates a unique Compose project with a `mindleak_light_test` database,
 checks auth and real MCP calls, recreates the container, verifies persisted rows,
 then deletes only its own volume. The same test is a CI gate.
 
+To check Compose environment forwarding before building an image:
+
+```sh
+MINDLEAK_IMAGE=mindleak-light:all-in-one-test node scripts/container-smoke.mjs --config-only
+```
+
+This renders Compose configuration only; the named image need not exist and no
+container, database, or model is started. It checks both templates for similarity
+and relevance defaults, explicit `.env` values, and shell overrides. These checks
+also run before the full smoke test, which explicitly disables relevance
+filtering to remain model-free even when the caller has enabled it locally.
+Set `CONTAINER_ENGINE=podman` to use Podman Compose.
+
 ## Recall Benchmarks
 
 Use the [recall benchmark guide](docs/BENCHMARKS.md) to measure ranked retrieval
-on a labelled synthetic corpus, compare keyword and model-backed configurations,
-and export per-query JSON results. The runner uses the optional example SDK
+on a labelled 240-memory corpus, calibrate rejection on separate queries, compare
+keyword/vector/hybrid configurations, and evaluate multi-fact extraction without
+confusing source hits with verified facts. The runner uses the optional example SDK
 dependencies and a native server against an explicit disposable `*_test`
 database; it never writes to the running quickstart HTTP server. Scoring tests
 need no npm packages, model, or database and run in `make script-test` and `make ci`.

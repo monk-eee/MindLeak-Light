@@ -1,5 +1,9 @@
 # Architecture
 
+This describes the current source, including unreleased hybrid recall and
+similarity thresholds. See [installation](INSTALL.md) for release availability
+and the features included in v0.1.0.
+
 ```text
 Claude / GPT / agents
         |
@@ -10,7 +14,7 @@ MindLeak Light (one executable)
                 -> MemoryDecomposer -> sentences/lists, or optional chat endpoint
                 -> TextEmbedder     -> optional embedding endpoint
     -> MemoryStore     -> PostgreSQL transaction
-                -> MemoryRetriever -> keyword search, or optional pgvector search
+                -> MemoryRetriever -> keyword, vector, or hybrid rank fusion
         |
         v
 PostgreSQL: memories, fragments, relationships
@@ -21,8 +25,8 @@ PostgreSQL: memories, fragments, relationships
 Validate input and decompose it using the configured strategy. The default uses
 Unicode sentence boundaries and line/list boundaries, preserving the wording.
 Optional model mode extracts atomic facts from structured JSON output. Normalize
-whitespace and remove exact duplicates. If vector retrieval is enabled, embed
-the batch and validate ordering and vector shape before opening a transaction.
+whitespace and remove exact duplicates. If vector or hybrid retrieval is enabled,
+embed the batch and validate ordering and vector shape before opening a transaction.
 
 Insert the exact raw memory followed by every fragment, using NULL for disabled
 embeddings. Commit, then return the memory ID. Enabled model work happens before
@@ -45,6 +49,35 @@ vectors by PostgreSQL's cosine-distance operator. NULL embeddings are excluded,
 not filled with fake vectors. Both paths filter by agent before limiting. Vector
 search is exact and has no approximate-vector index yet.
 
+`MINDLEAK_RECALL_MIN_SIMILARITY` optionally filters vector candidates by cosine
+similarity before limiting. It must be finite and in [-1, 1]; unset/-1 is
+unfiltered. Calibrate it for the actual model and corpus rather than treating
+cosine as confidence. Empty recall results are valid.
+
+Optional `HybridMemoryRetriever` gets up to fifty candidates from each existing
+search path and fuses them by fragment ID with reciprocal rank fusion (constant
+60). It normalizes by the maximum score of two top-ranked matches, sorts by
+fused score then fragment UUID, and applies the requested limit. A keyword hit
+can survive without an embedding or below the cosine floor; the floor gates the
+semantic branch only. Different facts from one memory remain distinct. Enabled
+provider failures are propagated, never hidden behind keyword results.
+See [ADR-0007](../adr.d/0007-hybrid-recall-and-calibrated-relevance.md).
+
+`MINDLEAK_RELEVANCE=openai` optionally wraps any candidate retriever with
+`OpenAiRelevanceRetriever`. It asks a configured model to select existing
+fragment indices with exact quotations supporting the requested detail, never
+to generate a recalled fact. It validates nonblank requested detail, unique
+indices, and nonblank evidence contained in the corresponding candidate.
+Index-only replies and invented quotations are rejected. This verifies source
+membership, not semantic relevance or truth. It preserves selected
+text, provenance, scores, and original order, then applies the caller's limit.
+The candidate budget is 20 by default (1..50), raised to at least the requested
+limit. Query plus candidate text must fit 32768 UTF-8 bytes or recall fails;
+fragments are not truncated. Empty candidate lists skip inference. Invalid
+indices, duplicate candidates, scope violations, truncated replies, and provider
+failures are errors, not successful empty recalls. The default is `off`.
+See [ADR-0008](../adr.d/0008-bounded-model-relevance-selection.md).
+
 The client agent performs synthesis from returned fragments and their provenance.
 Replacing the retriever does not change the MCP tools or write pipeline. RAST
 is an interface extension point, not a shipped implementation.
@@ -58,8 +91,8 @@ lock. The original schema remains unchanged; the explicit
 relaxes nullability and adds the keyword index. Existing data is not rewritten.
 
 Model-free startup does not bind or require an embedding model. On first vector
-startup, model and dimensions are recorded in the fragments table comment; the
-empty vector column can adopt that dimension. Later mismatches refuse startup.
+or hybrid startup, model and dimensions are recorded in the fragments table
+comment; the empty vector column can adopt that dimension. Later mismatches refuse startup.
 Model-free processes can still read/write NULL-vector fragments in that database.
 There is no automatic re-embedding of earlier entries.
 

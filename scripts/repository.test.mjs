@@ -92,9 +92,68 @@ test("quickstart documentation and editor config agree on a model-free setup", (
   const defaults = parseEnv(readFileSync(join(root, ".env.example"), "utf8"));
   assert.equal(defaults.MINDLEAK_DECOMPOSITION, "sentences");
   assert.equal(defaults.MINDLEAK_RETRIEVAL, "keyword");
+  assert.equal(defaults.MINDLEAK_RELEVANCE, "off");
   assert.equal(defaults.MINDLEAK_MODEL, undefined);
   assert.equal(defaults.MINDLEAK_EMBED_MODEL, undefined);
+  assert.equal(defaults.MINDLEAK_RELEVANCE_MODEL, undefined);
 });
+
+for (const operation of ["write_memory", "recall_memory"]) {
+  test(`agent example budgets ${operation} for sequential model requests`, (context) => {
+    const directory = fixture(context);
+    const sdk = join(directory, "node_modules", "@modelcontextprotocol", "sdk");
+    mkdirSync(sdk, { recursive: true });
+    writeFileSync(join(sdk, "package.json"), JSON.stringify({
+      type: "module",
+      exports: {
+        "./client/index.js": "./client.js",
+        "./client/streamableHttp.js": "./transport.js",
+      },
+    }));
+    writeFileSync(join(sdk, "transport.js"), "export class StreamableHTTPClientTransport {}\n");
+    writeFileSync(join(sdk, "client.js"), `
+      import assert from "node:assert/strict";
+      export class Client {
+        async connect() {}
+        async listTools() {
+          return { tools: ["write_memory", "recall_memory", "decompose_memory"].map(name => ({ name })) };
+        }
+        async callTool(request, schema, options) {
+          if (request.name === ${JSON.stringify(operation)}) {
+            assert.equal(options?.timeout, 660000, request.name + " must allow the server request budget");
+          }
+          if (request.name === "write_memory") {
+            this.agentId = request.arguments.agentId;
+            return { structuredContent: { memoryId: "test-memory" } };
+          }
+          assert.equal(request.name, "recall_memory");
+          assert.equal(request.arguments.agentId, this.agentId);
+          return { structuredContent: { results: [{ memoryId: "test-memory" }] } };
+        }
+        async close() { console.log("Mock MCP client closed."); }
+      }
+    `);
+    const example = join(directory, "agent-memory.mjs");
+    writeFileSync(example, readFileSync(new URL("../examples/agent-memory.mjs", import.meta.url)));
+    const output = execFileSync(process.execPath, [example], {
+      cwd: directory,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: "",
+        MINDLEAK_MCP_URL: "http://127.0.0.1:8088/mcp",
+        MINDLEAK_HTTP_TOKEN: "example-test-token",
+        MINDLEAK_AGENT_ID: "example-test-agent",
+      },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10_000,
+    });
+    assert.match(output, /Connected: 3 memory tools available\./);
+    assert.match(output, /Saved memory: test-memory/);
+    assert.match(output, /Recall verified: 1 matching fragment\(s\)\./);
+    assert.match(output, /Mock MCP client closed\./);
+  });
+}
 
 test("local Markdown links are checked but URLs and code samples are excluded", (context) => {
   const directory = fixture(context);

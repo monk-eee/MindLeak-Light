@@ -78,6 +78,87 @@ export function summarizeQueries(results) {
   };
 }
 
+function factText(text) {
+  return text.trim().replace(/\s+/g, " ").replace(/\.$/, "");
+}
+
+function memoryFacts(memory) {
+  return memory.facts ?? [{ id: memory.id, text: memory.text }];
+}
+
+function verifiedFact(memory, text) {
+  return memoryFacts(memory).find((fact) => [fact.text, ...fact.variants ?? []]
+    .some((variant) => factText(variant) === factText(text)));
+}
+
+export function scoreDecomposition(memory, fragments) {
+  if (!Array.isArray(fragments) || fragments.some((fragment) => typeof fragment !== "string" || !fragment.trim())) {
+    throw new Error("Decomposition returned malformed fragments.");
+  }
+  const verifiedIds = new Set();
+  const unverified = [];
+  let duplicates = 0;
+  for (const [index, text] of fragments.entries()) {
+    const fact = verifiedFact(memory, text);
+    if (!fact) {
+      unverified.push({ rank: index + 1, sha256: createHash("sha256").update(text).digest("hex") });
+    } else if (verifiedIds.has(fact.id)) {
+      duplicates += 1;
+    } else {
+      verifiedIds.add(fact.id);
+    }
+  }
+  return {
+    id: memory.id,
+    category: memory.category ?? "atomic",
+    expectedFacts: memoryFacts(memory).length,
+    returnedFragments: fragments.length,
+    verifiedIds: [...verifiedIds],
+    unverified,
+    duplicateFragments: duplicates,
+    missingIds: memoryFacts(memory).filter((fact) => !verifiedIds.has(fact.id)).map((fact) => fact.id),
+    verifiedFactRecall: verifiedIds.size / memoryFacts(memory).length,
+    verifiedFragmentPrecision: fragments.length ? verifiedIds.size / fragments.length : 0,
+  };
+}
+
+export async function runDecompositionBenchmark(client, dataset, split = "evaluation") {
+  validateDataset(dataset);
+  if (!["all", "calibration", "evaluation"].includes(split)) throw new Error("Invalid query split.");
+  const memories = dataset.memories.filter((memory) => memory.facts && (split === "all" || memory.split === split));
+  if (!memories.length) throw new Error("No decomposition cases in the selected split.");
+  const cases = [];
+  for (const memory of memories) {
+    const started = performance.now();
+    let response;
+    try {
+      response = await client.callTool({ name: "decompose_memory", arguments: { text: memory.text } }, undefined, { timeout: 310000 });
+    } catch {
+      throw new Error(`MCP decompose_memory failed for case ${memory.id}; no extraction report was produced.`);
+    }
+    if (response?.isError || !Array.isArray(response?.structuredContent?.results)) {
+      throw new Error(`MCP decompose_memory failed for case ${memory.id} or returned no structured fragments.`);
+    }
+    cases.push({ ...scoreDecomposition(memory, response.structuredContent.results), elapsedMs: performance.now() - started });
+  }
+  const summary = (items) => ({
+    cases: items.length,
+    verifiedFactRecall: items.reduce((sum, item) => sum + item.verifiedFactRecall, 0) / items.length,
+    verifiedFragmentPrecision: items.reduce((sum, item) => sum + item.verifiedFragmentPrecision, 0) / items.length,
+    unverifiedFragments: items.reduce((sum, item) => sum + item.unverified.length, 0),
+    missingFacts: items.reduce((sum, item) => sum + item.missingIds.length, 0),
+  });
+  return {
+    split,
+    scoring: "verified-fact-variants",
+    summary: summary(cases),
+    byCategory: Object.fromEntries([...new Set(cases.map((item) => item.category))]
+      .map((category) => [category, summary(cases.filter((item) => item.category === category))])),
+    latency: latencySummary(cases.map((item) => item.elapsedMs)),
+    cases,
+  };
+}
+
 export function validateDataset(dataset) {
   const identifier = (value) => typeof value === "string" && /^[a-z0-9][a-z0-9_.-]{0,127}$/i.test(value);
   const text = (value) => typeof value === "string" && value.trim() && Buffer.byteLength(value, "utf8") <= 32768;
@@ -96,74 +177,147 @@ export function validateDataset(dataset) {
       identifiers.add(entry.id);
     }
   }
-  const memories = new Set(dataset.memories.map((memory) => memory.id));
   if (dataset.memories.some((memory) => !text(memory.text))) {
     throw new Error("Memory text must be nonempty and at most 32768 UTF-8 bytes.");
   }
+  const facts = new Set();
+  for (const memory of dataset.memories) {
+    if (memory.facts !== undefined && (!identifier(memory.category) || !["calibration", "evaluation"].includes(memory.split))) {
+      throw new Error("Decomposition cases need a category and calibration/evaluation split.");
+    }
+    if (!Array.isArray(memoryFacts(memory)) || !memoryFacts(memory).length) {
+      throw new Error("Every memory needs at least one gold fact.");
+    }
+    const variants = new Set();
+    for (const fact of memoryFacts(memory)) {
+      if (!identifier(fact?.id) || facts.has(fact.id) || !text(fact.text)
+        || (fact.variants !== undefined && (!Array.isArray(fact.variants) || fact.variants.some((variant) => !text(variant))))) {
+        throw new Error("Gold facts need unique IDs, nonempty text, and valid accepted variants.");
+      }
+      facts.add(fact.id);
+      for (const variant of [fact.text, ...fact.variants ?? []]) {
+        const normalized = factText(variant);
+        if (variants.has(normalized)) throw new Error("Fact variants must be unambiguous within each memory.");
+        variants.add(normalized);
+      }
+    }
+  }
+  const querySplits = new Map();
   for (const query of dataset.queries) {
     if (!text(query.query) || !identifier(query.category)) {
       throw new Error("Queries need nonempty text and a valid category.");
     }
     if (!Array.isArray(query.relevantIds)
       || new Set(query.relevantIds).size !== query.relevantIds.length
-      || query.relevantIds.some((identifier) => !memories.has(identifier))) {
-      throw new Error("Relevance labels must be unique IDs from the corpus; use [] for unanswerable queries.");
+      || query.relevantIds.some((identifier) => !facts.has(identifier))) {
+      throw new Error("Relevance labels must be unique fact IDs from the corpus; use [] for unanswerable queries.");
     }
+    if (query.split !== undefined && !["calibration", "evaluation"].includes(query.split)) {
+      throw new Error("Query split must be calibration or evaluation.");
+    }
+    const normalized = query.query.trim().replace(/\s+/g, " ").toLowerCase();
+    if (querySplits.has(normalized) && querySplits.get(normalized) !== query.split) {
+      throw new Error("The same query cannot appear in different splits.");
+    }
+    querySplits.set(normalized, query.split);
   }
   return dataset;
 }
 
-export async function runBenchmark(client, dataset, { limit = 5, agentId = `recall-benchmark-${randomUUID()}` } = {}) {
+export function withBackground(dataset, background) {
+  validateDataset(dataset);
+  validateDataset(background);
+  return validateDataset({
+    ...dataset,
+    sources: [...dataset.sources ?? [], ...background.sources ?? []],
+    memories: [...dataset.memories, ...background.memories],
+  });
+}
+
+function latencySummary(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  return {
+    count: sorted.length,
+    meanMs: sorted.length ? sorted.reduce((sum, value) => sum + value, 0) / sorted.length : null,
+    p50Ms: sorted[Math.ceil(sorted.length * 0.5) - 1] ?? null,
+    p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1] ?? null,
+  };
+}
+
+export async function runBenchmark(client, dataset, { limit = 5, split = "all", agentId = `recall-benchmark-${randomUUID()}` } = {}) {
   validateDataset(dataset);
   validateLimit(limit);
+  if (!["all", "calibration", "evaluation"].includes(split)) throw new Error("Invalid query split.");
+  const selectedQueries = dataset.queries.filter((query) => split === "all" || query.split === split);
+  if (!selectedQueries.length) throw new Error("The selected split contains no queries.");
   if (typeof agentId !== "string" || !agentId.trim() || Buffer.byteLength(agentId, "utf8") > 256) {
     throw new Error("Benchmark agent ID must be nonempty and at most 256 UTF-8 bytes.");
   }
-  const call = async (name, args) => {
+  const call = async (name, args, identifier) => {
     let response;
     try {
       response = await client.callTool({ name, arguments: args }, undefined, { timeout: 610000 });
     } catch {
-      throw new Error(`MCP ${name} failed; no benchmark report was produced.`);
+      throw new Error(`MCP ${name} failed for ${identifier}; no benchmark report was produced.`);
     }
     if (response?.isError || !response?.structuredContent) {
-      throw new Error(`MCP ${name} failed or returned no structured content.`);
+      throw new Error(`MCP ${name} failed for ${identifier} or returned no structured content.`);
     }
     return response.structuredContent;
   };
 
   const memoryIds = new Map();
+  const factSources = new Map(dataset.memories.flatMap((memory) => memoryFacts(memory).map((fact) => [fact.id, memory.id])));
+  const writeTimes = [];
   for (const memory of dataset.memories) {
-    const written = await call("write_memory", { agentId, text: memory.text });
+    const started = performance.now();
+    const written = await call("write_memory", { agentId, text: memory.text }, memory.id);
+    writeTimes.push(performance.now() - started);
     if (typeof written.memoryId !== "string" || !written.memoryId.trim() || memoryIds.has(written.memoryId)) {
       throw new Error("Memory writes must return distinct, nonempty IDs.");
     }
-    memoryIds.set(written.memoryId, memory.id);
+    memoryIds.set(written.memoryId, memory);
   }
 
   const queries = [];
-  for (const query of dataset.queries) {
-    const response = await call("recall_memory", { query: query.query, agentId, limit });
+  for (const query of selectedQueries) {
+    const started = performance.now();
+    const response = await call("recall_memory", { query: query.query, agentId, limit }, query.id);
+    const recallMs = performance.now() - started;
     if (!Array.isArray(response.results) || response.results.length > limit) {
       throw new Error("Recall returned a malformed or oversized ranking.");
     }
     const fragments = new Set();
-    const rankedIds = response.results.map((result) => {
+    const unverifiedRanks = [];
+    const rankedMemoryIds = [];
+    const rankedIds = response.results.map((result, index) => {
       if (!result || result.agentId !== agentId || !memoryIds.has(result.memoryId)) {
         throw new Error("Recall returned a memory outside this benchmark run.");
       }
       if (typeof result.fragmentId !== "string" || !result.fragmentId.trim()
-        || fragments.has(result.fragmentId) || !Number.isFinite(result.score)) {
+        || fragments.has(result.fragmentId) || !Number.isFinite(result.score)
+        || typeof result.text !== "string" || !result.text.trim()) {
         throw new Error("Recall returned malformed or duplicate fragments.");
       }
       fragments.add(result.fragmentId);
-      return memoryIds.get(result.memoryId);
+      const memory = memoryIds.get(result.memoryId);
+      rankedMemoryIds.push(memory.id);
+      const matched = verifiedFact(memory, result.text);
+      if (matched) return matched.id;
+      unverifiedRanks.push(index + 1);
+      return `unverified:${index + 1}`;
     });
     queries.push({
       id: query.id,
       category: query.category,
+      split: query.split ?? "unspecified",
       relevantIds: query.relevantIds,
       rankedIds,
+      rankedMemoryIds,
+      unverifiedRanks,
+      sourceMetrics: scoreRanking(rankedMemoryIds, query.relevantIds.map((identifier) => factSources.get(identifier)), limit),
+      scores: response.results.map((result) => result.score),
+      recallMs,
       missedIds: query.relevantIds.filter((identifier) => !rankedIds.includes(identifier)),
       ...scoreRanking(rankedIds, query.relevantIds, limit),
     });
@@ -172,12 +326,82 @@ export async function runBenchmark(client, dataset, { limit = 5, agentId = `reca
   return {
     agentId,
     limit,
+    split,
+    scoring: "verified-fact-variants",
+    latency: { write: latencySummary(writeTimes), recall: latencySummary(queries.map((query) => query.recallMs)) },
     summary: summarizeQueries(queries),
+    sourceSummary: summarizeQueries(queries.map((query) => query.sourceMetrics)),
+    unverifiedFragments: queries.reduce((total, query) => total + query.unverifiedRanks.length, 0),
     byCategory: Object.fromEntries(categories.map((category) => [
       category, summarizeQueries(queries.filter((query) => query.category === category)),
     ])),
     queries,
   };
+}
+
+export function calibrateSimilarity(report, minimumRecall = 0.8) {
+  if (!Number.isFinite(minimumRecall) || minimumRecall < 0 || minimumRecall > 1) {
+    throw new Error("Calibration minimum recall must be in 0..1.");
+  }
+  if (report?.reportVersion !== 3 || report.scoring !== "verified-fact-variants" || report.split !== "calibration"
+    || report.configuration?.retrieval !== "vector" || report.configuration.minSimilarity !== null
+    || (report.configuration.relevance ?? "off") !== "off"
+    || !Array.isArray(report.queries) || !report.queries.length) {
+    throw new Error("Calibration requires an unfiltered vector report from the calibration split only.");
+  }
+  validateLimit(report.limit);
+  const scores = new Set();
+  for (const query of report.queries) {
+    if (query.split !== "calibration" || !Array.isArray(query.scores)
+      || query.scores.length !== query.rankedIds?.length
+      || query.scores.some((score) => !Number.isFinite(score) || score < -1 || score > 1)) {
+      throw new Error("Calibration report contains invalid scores or non-calibration queries.");
+    }
+    scoreRanking(query.rankedIds, query.relevantIds, report.limit);
+    for (const score of query.scores) scores.add(score);
+  }
+  if (!report.queries.some((query) => query.relevantIds.length)
+    || !report.queries.some((query) => !query.relevantIds.length)) {
+    throw new Error("Calibration needs both answerable and unanswerable queries.");
+  }
+  const ordered = [...scores].sort((left, right) => left - right);
+  const thresholds = [-1, ...ordered.slice(1).map((score, index) => (score + ordered[index]) / 2), 1];
+  const candidates = thresholds.map((minimum) => ({
+    minSimilarity: minimum,
+    summary: summarizeQueries(report.queries.map((query) => scoreRanking(
+      query.rankedIds.filter((identifier, index) => query.scores[index] >= minimum),
+      query.relevantIds,
+      report.limit,
+    ))),
+  }));
+  const eligible = candidates.filter((candidate) => candidate.summary.recallAtK >= minimumRecall);
+  eligible.sort((left, right) => right.summary.noAnswerAccuracy - left.summary.noAnswerAccuracy
+    || right.summary.recallAtK - left.summary.recallAtK
+    || right.summary.mrrAtK - left.summary.mrrAtK
+    || left.minSimilarity - right.minSimilarity);
+  if (!eligible.length) throw new Error("No calibration threshold meets the requested recall floor.");
+  return {
+    calibrationVersion: 1,
+    dataset: report.dataset,
+    binarySha256: report.binarySha256,
+    embeddingModel: report.configuration.embeddingModel,
+    embeddingDimensions: report.configuration.embeddingDimensions,
+    limit: report.limit,
+    minimumRecall,
+    queryIds: report.queries.map((query) => query.id),
+    ...eligible[0],
+    candidates,
+  };
+}
+
+function numericOption(value, name, minimum, maximum) {
+  if (value === undefined) return null;
+  const number = Number(value);
+  if (typeof value !== "string" || !value.trim() || !Number.isFinite(number)
+    || number < minimum || number > maximum) {
+    throw new Error(`${name} must be a number in ${minimum}..${maximum}.`);
+  }
+  return number;
 }
 
 export function benchmarkSettings(environment, options = {}) {
@@ -199,18 +423,36 @@ export function benchmarkSettings(environment, options = {}) {
   validateLimit(limit);
   const decomposition = options.decomposition ?? "sentences";
   const retrieval = options.retrieval ?? "keyword";
-  if (!["sentences", "openai"].includes(decomposition) || !["keyword", "vector"].includes(retrieval)) {
-    throw new Error("Choose --decomposition sentences|openai and --retrieval keyword|vector.");
+  if (!["sentences", "openai"].includes(decomposition) || !["keyword", "vector", "hybrid"].includes(retrieval)) {
+    throw new Error("Choose --decomposition sentences|openai and --retrieval keyword|vector|hybrid.");
   }
+  const relevance = options.relevance ?? "off";
+  if (!["off", "openai"].includes(relevance)) throw new Error("Choose --relevance off|openai.");
+  const relevanceCandidates = numericOption(options["relevance-candidates"], "--relevance-candidates", 1, 50) ?? 20;
+  if (!Number.isInteger(relevanceCandidates)) throw new Error("Relevance candidate count must be an integer.");
+  if (options["relevance-candidates"] !== undefined && relevance === "off") {
+    throw new Error("--relevance-candidates requires --relevance openai.");
+  }
+  const reasoningEffort = (name, enabled) => {
+    const value = options[name];
+    if (value === undefined) return null;
+    if (!enabled || !["none", "low", "medium", "high", "max"].includes(value)) {
+      throw new Error(`--${name} requires an enabled chat provider and none|low|medium|high|max.`);
+    }
+    return value;
+  };
+  const decompositionReasoningEffort = reasoningEffort("decomposition-reasoning-effort", decomposition === "openai");
+  const relevanceReasoningEffort = reasoningEffort("relevance-reasoning-effort", relevance === "openai");
   const label = options.label ?? `${decomposition}-${retrieval}`;
   if (!/^[a-z0-9][a-z0-9_.-]{0,127}$/i.test(label)) {
     throw new Error("Benchmark label must be a short identifier.");
   }
-  const minimumRecall = options["min-recall"] === undefined ? null : Number(options["min-recall"]);
-  if (minimumRecall !== null && (typeof options["min-recall"] !== "string" || !options["min-recall"].trim()
-    || !Number.isFinite(minimumRecall) || minimumRecall < 0 || minimumRecall > 1)) {
-    throw new Error("--min-recall must be a number in 0..1.");
-  }
+  const minimumRecall = numericOption(options["min-recall"], "--min-recall", 0, 1);
+  const minimumNoAnswer = numericOption(options["min-no-answer"], "--min-no-answer", 0, 1);
+  const minSimilarity = numericOption(options["min-similarity"], "--min-similarity", -1, 1);
+  if (minSimilarity !== null && retrieval === "keyword") throw new Error("A similarity floor requires vector or hybrid retrieval.");
+  const split = options.split ?? "evaluation";
+  if (!["all", "calibration", "evaluation"].includes(split)) throw new Error("Invalid query split.");
   const timeout = Number(environment.MINDLEAK_MODEL_TIMEOUT_SECS ?? 60);
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 300) {
     throw new Error("MINDLEAK_MODEL_TIMEOUT_SECS must be an integer in 1..300.");
@@ -219,9 +461,13 @@ export function benchmarkSettings(environment, options = {}) {
     MINDLEAK_DATABASE_URL: databaseUrl,
     MINDLEAK_DECOMPOSITION: decomposition,
     MINDLEAK_RETRIEVAL: retrieval,
+    MINDLEAK_RELEVANCE: relevance,
     MINDLEAK_DB_POOL_SIZE: "8",
     MINDLEAK_MODEL_TIMEOUT_SECS: String(timeout),
   };
+  if (minSimilarity !== null) serverEnvironment.MINDLEAK_RECALL_MIN_SIMILARITY = String(minSimilarity);
+  if (decompositionReasoningEffort !== null) serverEnvironment.MINDLEAK_LLM_REASONING_EFFORT = decompositionReasoningEffort;
+  if (relevanceReasoningEffort !== null) serverEnvironment.MINDLEAK_RELEVANCE_REASONING_EFFORT = relevanceReasoningEffort;
   for (const key of ["MINDLEAK_DATABASE_CA_FILE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]) {
     if (environment[key]) serverEnvironment[key] = environment[key];
   }
@@ -247,9 +493,13 @@ export function benchmarkSettings(environment, options = {}) {
   const decompositionModel = decomposition === "openai"
     ? provider("MINDLEAK_LLM_URL", "MINDLEAK_MODEL", "MINDLEAK_LLM_API_KEY")
     : null;
+  const relevanceModel = relevance === "openai"
+    ? provider("MINDLEAK_RELEVANCE_URL", "MINDLEAK_RELEVANCE_MODEL", "MINDLEAK_RELEVANCE_API_KEY")
+    : null;
+  if (relevanceModel) serverEnvironment.MINDLEAK_RELEVANCE_CANDIDATES = String(relevanceCandidates);
   let embeddingModel = null;
   let embeddingDimensions = null;
-  if (retrieval === "vector") {
+  if (retrieval !== "keyword") {
     embeddingModel = provider("MINDLEAK_EMBED_URL", "MINDLEAK_EMBED_MODEL", "MINDLEAK_EMBED_API_KEY");
     embeddingDimensions = Number(environment.MINDLEAK_EMBED_DIMENSIONS);
     if (!Number.isInteger(embeddingDimensions) || embeddingDimensions < 1 || embeddingDimensions > 2000) {
@@ -259,9 +509,13 @@ export function benchmarkSettings(environment, options = {}) {
   }
   return {
     limit,
+    split,
     minimumRecall,
+    minimumNoAnswer,
     serverEnvironment,
-    configuration: { label, decomposition, retrieval, decompositionModel, embeddingModel, embeddingDimensions, modelTimeoutSecs: timeout },
+    configuration: { label, decomposition, retrieval, minSimilarity, decompositionModel, embeddingModel, embeddingDimensions,
+      relevance, relevanceModel, relevanceCandidates: relevanceModel ? relevanceCandidates : null, modelTimeoutSecs: timeout },
+    reasoning: { decomposition: decompositionReasoningEffort, relevance: relevanceReasoningEffort },
   };
 }
 
@@ -272,12 +526,23 @@ async function main() {
       options: {
         help: { type: "boolean", short: "h" },
         dataset: { type: "string" },
+        background: { type: "string" },
         binary: { type: "string" },
         k: { type: "string" },
         decomposition: { type: "string" },
         retrieval: { type: "string" },
+        relevance: { type: "string" },
+        "relevance-candidates": { type: "string" },
+        "decomposition-reasoning-effort": { type: "string" },
+        "relevance-reasoning-effort": { type: "string" },
         label: { type: "string" },
         "min-recall": { type: "string" },
+        "min-no-answer": { type: "string" },
+        "min-similarity": { type: "string" },
+        split: { type: "string" },
+        calibrate: { type: "string" },
+        "calibration-min-recall": { type: "string" },
+        "extraction-only": { type: "boolean" },
       },
     }));
   } catch {
@@ -290,22 +555,53 @@ Requires MINDLEAK_TEST_DATABASE_URL naming a disposable *_test database.
 Starts its own stdio server; does not use the running HTTP server or workspace .env.
 Writes namespaced benchmark records which remain until the database is cleaned up.
 
-  --dataset PATH              Labelled JSON corpus (default: fixtures/recall-v1.json)
+  --dataset PATH              Labelled JSON corpus (default: fixtures/recall-v2.json)
+  --background PATH           Additional distractor memories; its queries are never executed
   --binary PATH               Native server executable (default: target/debug/mindleak-light)
   --k NUMBER                  Ranking cutoff, 1..50 (default: 5)
   --decomposition MODE        sentences (default) or openai
-  --retrieval MODE            keyword (default) or vector
+  --retrieval MODE            keyword (default), vector, or hybrid
+  --relevance MODE            off (default) or openai candidate relevance filtering
+  --relevance-candidates N    Candidate budget, 1..50 (default: 20; at least k)
+  --decomposition-reasoning-effort MODE  Explicit chat reasoning effort (provider support required)
+  --relevance-reasoning-effort MODE      none, low, medium, high, or max; omitted by default
+  --split NAME                evaluation (default), calibration, or all
+  --min-similarity NUMBER     Explicit cosine floor for vector candidates, -1..1
   --label NAME                Identifier recorded in the report
   --min-recall NUMBER         Exit nonzero if macro Recall@k is below this value
+  --min-no-answer NUMBER      Exit nonzero if no-answer accuracy is below this value
+  --calibrate REPORT          Select a cosine floor from a calibration vector report; no server needed
+  --calibration-min-recall N   Recall floor during calibration (default: 0.8)
+  --extraction-only           Preview labelled multi-fact cases without writing memories
 
 Enabled model modes require their MINDLEAK_* provider variables explicitly.
 JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS.md.`);
     return;
   }
 
+  if (values.calibrate) {
+    if (Object.keys(values).some((key) => !["calibrate", "calibration-min-recall"].includes(key))) {
+      throw new Error("--calibrate only accepts --calibration-min-recall alongside it.");
+    }
+    const minimum = numericOption(values["calibration-min-recall"], "--calibration-min-recall", 0, 1) ?? 0.8;
+    let report;
+    try {
+      report = JSON.parse(await readFile(values.calibrate, "utf8"));
+    } catch {
+      throw new Error("Cannot read calibration report JSON.");
+    }
+    console.log(JSON.stringify(calibrateSimilarity(report, minimum), null, 2));
+    return;
+  }
+  if (values["calibration-min-recall"] !== undefined) throw new Error("--calibration-min-recall requires --calibrate.");
+  if (values["extraction-only"] && (values.retrieval && values.retrieval !== "keyword"
+    || values["min-recall"] !== undefined || values["min-no-answer"] !== undefined || values["min-similarity"] !== undefined
+    || values.background !== undefined || values.relevance !== undefined || values["relevance-candidates"] !== undefined)) {
+    throw new Error("--extraction-only does not accept retrieval modes or ranking quality gates.");
+  }
   const settings = benchmarkSettings(process.env, values);
-  const corpusPath = values.dataset ?? new URL("./fixtures/recall-v1.json", import.meta.url);
-  const corpusSource = await readFile(corpusPath);
+  const corpusPath = values.dataset ?? new URL("./fixtures/recall-v2.json", import.meta.url);
+  let corpusSource = await readFile(corpusPath);
   let dataset;
   try {
     dataset = JSON.parse(corpusSource.toString("utf8"));
@@ -313,6 +609,20 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
     throw new Error("Cannot parse benchmark dataset JSON.");
   }
   validateDataset(dataset);
+  const inputs = [{ id: dataset.id, sha256: createHash("sha256").update(corpusSource).digest("hex") }];
+  if (values.background) {
+    let background;
+    let source;
+    try {
+      source = await readFile(values.background);
+      background = JSON.parse(source.toString("utf8"));
+    } catch {
+      throw new Error("Cannot read background corpus JSON.");
+    }
+    dataset = withBackground(dataset, background);
+    inputs.push({ id: background.id, sha256: createHash("sha256").update(source).digest("hex") });
+    corpusSource = Buffer.from(JSON.stringify(dataset));
+  }
   const root = fileURLToPath(new URL("../", import.meta.url));
   const binary = resolve(values.binary ?? join(root, "target", "debug", `mindleak-light${process.platform === "win32" ? ".exe" : ""}`));
   let binaryDigest;
@@ -348,19 +658,24 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
     }
     const agentId = `recall-benchmark-${randomUUID()}`;
     console.error(`Benchmark ${settings.configuration.label}: ${dataset.memories.length} memories, ${dataset.queries.length} queries; namespace ${agentId}.`);
-    const result = await runBenchmark(client, dataset, { limit: settings.limit, agentId });
+    const result = values["extraction-only"]
+      ? await runDecompositionBenchmark(client, dataset, settings.split)
+      : await runBenchmark(client, dataset, { limit: settings.limit, split: settings.split, agentId });
     report = {
-      reportVersion: 1,
+      reportVersion: 3,
+      mode: values["extraction-only"] ? "decomposition" : "recall",
       createdAt: new Date().toISOString(),
       dataset: {
         id: dataset.id,
         sha256: createHash("sha256").update(corpusSource).digest("hex"),
         memories: dataset.memories.length,
         queries: dataset.queries.length,
+        inputs,
       },
       server: client.getServerVersion(),
       binarySha256: binaryDigest,
       configuration: settings.configuration,
+      reasoning: settings.reasoning,
       ...result,
     };
   } finally {
@@ -374,6 +689,11 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
   if (settings.minimumRecall !== null
     && (report.summary.recallAtK === null || report.summary.recallAtK < settings.minimumRecall)) {
     console.error(`Recall@${settings.limit} did not meet --min-recall ${settings.minimumRecall}.`);
+    process.exitCode = 1;
+  }
+  if (settings.minimumNoAnswer !== null
+    && (report.summary.noAnswerAccuracy === null || report.summary.noAnswerAccuracy < settings.minimumNoAnswer)) {
+    console.error(`No-answer accuracy did not meet --min-no-answer ${settings.minimumNoAnswer}.`);
     process.exitCode = 1;
   }
 }
