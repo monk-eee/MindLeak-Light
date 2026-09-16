@@ -108,6 +108,12 @@ impl PostgresMemoryStore {
             .batch_execute(include_str!("../migrations/0004-idempotent-writes.sql"))
             .await
             .context("initialize retry-safe writes")?;
+        transaction
+            .batch_execute(include_str!(
+                "../migrations/0005-bounded-relationship-reads.sql"
+            ))
+            .await
+            .context("initialize bounded relationship reads")?;
         let Some(space) = &self.space else {
             transaction.commit().await?;
             return Ok(());

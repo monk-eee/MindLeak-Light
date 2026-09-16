@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "useful-negative-evidence-v1",
+  "description": "Policy regression for direct answers, explicit unknowns, prohibitions and false-premise corrections. These are exposed fictional development cases, not an independent accuracy holdout. Historical v2/v3 labels and reports are unchanged.",
+  "sources": [
+    { "kind": "synthetic", "note": "The Ilex approved-date case deliberately revises the relevance policy of exposed v3 case h3-n09 in a new corpus: unapproved status is useful corrective evidence, not an approved date. Other cases exercise the same policy without claiming population coverage." }
+  ],
+  "memories": [
+    { "id": "ilex-approval", "text": "Ilex has proposed remote backups but has not approved their rollout." },
+    { "id": "rill-retention", "text": "Rill's audit-log retention period is explicitly unknown." },
+    { "id": "haven-credentials", "text": "Haven does not retry requests rejected for invalid credentials." },
+    { "id": "pavo-rollback", "text": "Pavo's proposed rollback was rejected because it failed integration tests." },
+    { "id": "cedar-credentials", "text": "Cedar migration requires rotated credentials, which have not yet been issued." },
+    { "id": "elara-port", "text": "Elara must not use port 8301 because it is reserved." },
+    { "id": "eon-cache", "text": "Eon uses SQLite for its offline cache." },
+    { "id": "flux-tls", "text": "Flux accepts TLS 1.3 on its public listener." }
+  ],
+  "queries": [
+    { "id": "ilex-approved-date", "split": "evaluation", "category": "corrective_evidence", "query": "What is the approved date for Ilex's remote-backup rollout?", "relevantIds": ["ilex-approval"] },
+    { "id": "rill-retention-days", "split": "evaluation", "category": "explicit_unknown", "query": "How many days should Rill retain audit logs?", "relevantIds": ["rill-retention"] },
+    { "id": "haven-retry-credentials", "split": "evaluation", "category": "negative_evidence", "query": "Should Haven retry a request after invalid credentials?", "relevantIds": ["haven-credentials"] },
+    { "id": "pavo-approved-rollback", "split": "evaluation", "category": "corrective_evidence", "query": "Can I apply Pavo's approved rollback?", "relevantIds": ["pavo-rollback"] },
+    { "id": "cedar-ready", "split": "evaluation", "category": "negative_evidence", "query": "Is Cedar ready to migrate with the available credentials?", "relevantIds": ["cedar-credentials"] },
+    { "id": "elara-listener-port", "split": "evaluation", "category": "negative_evidence", "query": "Can I bind Elara's listener to port 8301?", "relevantIds": ["elara-port"] },
+    { "id": "eon-cache-engine", "split": "evaluation", "category": "direct_answer", "query": "What database does Eon use for its offline cache?", "relevantIds": ["eon-cache"] },
+    { "id": "flux-public-tls", "split": "evaluation", "category": "direct_answer", "query": "Which TLS version does Flux accept publicly?", "relevantIds": ["flux-tls"] },
+    { "id": "ilex-region", "split": "evaluation", "category": "unanswerable", "query": "In which region is Ilex's development database hosted?", "relevantIds": [] },
+    { "id": "rill-port", "split": "evaluation", "category": "unanswerable", "query": "What is Rill's database port?", "relevantIds": [] },
+    { "id": "eon-cache-version", "split": "evaluation", "category": "unanswerable", "query": "Which SQLite version does Eon's offline cache require?", "relevantIds": [] },
+    { "id": "flux-certificate", "split": "evaluation", "category": "unanswerable", "query": "Which certificate authority issued Flux's certificate?", "relevantIds": [] }
+  ]
+}

@@ -16,6 +16,22 @@ See [installation](INSTALL.md) for server feature availability and
 [recorded results](BENCHMARK-RESULTS.md) for earlier measurements and limits.
 The older v1 source-ID scores are not comparable with current fact-level scores.
 
+## Useful Negative Evidence
+
+Relevance is not restricted to a positive value. A directly relevant prohibition,
+explicit unknown, missing prerequisite, or correction to the question's premise
+can help an agent act correctly. Use
+[recall-evidence-v1.json](../examples/fixtures/recall-evidence-v1.json) to check this
+policy with the same runner (`--dataset examples/fixtures/recall-evidence-v1.json`).
+It separates direct answers, negative/corrective evidence, explicit unknowns, and
+unrelated queries. It is a small exposed policy regression, not a fresh holdout.
+
+The Ilex approved-date query deliberately credits the known unapproved status in
+this new fixture. Its historical v3 counterpart required an empty result. Those
+old labels and reports remain unchanged and do not measure this revised policy.
+Do not improve historical scores by silently changing their gold labels; use
+versioned corpora and compare only reports with the same corpus hash.
+
 ## Run the Baseline
 
 Requirements: Node.js 22+, a native Rust build, and a disposable PostgreSQL

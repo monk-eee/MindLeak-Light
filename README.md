@@ -149,6 +149,12 @@ arguments per logical write before sending it; ambiguous outcomes can then use
 the [same-key retry protocol](docs/INTEGRATION.md#retry-safe-writes). Do not apply
 that protocol to older servers or generate a fresh key for each retry.
 
+Useful negatives are worth recalling too: an explicit unknown, prohibition, or
+unapproved status can correct a task's premise. When the server advertises
+`recall_memory.fragmentId`, use [source inspection](docs/INTEGRATION.md#inspect-original-sources)
+to audit the exact raw episode and page through omitted evidence. This inspection
+mode is an unreleased source feature, not part of v0.3.0 packages.
+
 ## Try It
 
 Ask your connected agent:

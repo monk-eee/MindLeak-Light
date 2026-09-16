@@ -15,12 +15,11 @@
   wording plus reviewed variants undercounts unseen valid paraphrases. The GLM
   extraction run had six unverified fragments. Independent semantic review and
   fresh, broader extraction cases remain needed before claims of factual accuracy.
-- The optional selector currently asks for direct property values and rejects
-  unknown/unapproved statements for date questions. Useful negative or corrective
-  evidence is not the same as an unrelated hit. This policy and its evaluation
-  labels need a versioned distinction between direct answers, useful negative
-  evidence, and unrelated context. Preserve earlier results rather than silently
-  relabeling exposed holdouts. Keep the experimental selector off by default.
+- The current source fixes the direct-answer-only policy: the selector permits
+  useful negative/corrective claims and explicit unknowns, with a separate
+  [policy regression corpus](../examples/fixtures/recall-evidence-v1.json).
+  Historical labels/results are unchanged. Independent evaluation of this revised
+  policy remains open; prompt and scoring regressions are not model accuracy.
 - Fast-path caching and concurrent hybrid lookup reduce repeat-query latency
   without changing scores. Source-grounded extraction improved accepted-variant
   coverage from 75% to 87.5% on eight fresh cases, not an independent semantic

@@ -236,43 +236,30 @@ impl PostgresMemoryStore {
             return Ok(facts);
         }
         let identifiers: Vec<_> = facts.iter().map(|fact| fact.fragment_id).collect();
-        let rows = transaction.query(
-            "SELECT owners.id AS owner_id, linked.* FROM unnest($1::uuid[]) AS owners(id) \
-             JOIN public.fragments AS owner ON owner.id = owners.id \
-             JOIN public.memories AS owner_memory ON owner_memory.id = owner.memory_id \
-             CROSS JOIN LATERAL ( \
-                SELECT related.id AS fragment_id, related.memory_id, related.text, related.state, \
-                       context_memory.agent_id, context_memory.context::text AS context, links.relationship_type, \
-                       CASE WHEN links.source_fragment = owner.id THEN 'outgoing' ELSE 'incoming' END AS direction, \
-                       count(*) OVER() AS total_links \
-                FROM public.relationships AS links \
-                JOIN public.fragments AS related ON related.id = CASE WHEN links.source_fragment = owner.id \
-                    THEN links.target_fragment ELSE links.source_fragment END \
-                JOIN public.memories AS context_memory ON context_memory.id = related.memory_id \
-                WHERE (links.source_fragment = owner.id OR links.target_fragment = owner.id) \
-                  AND (context_memory.context->>'scope') IS NOT DISTINCT FROM (owner_memory.context->>'scope') \
-                  AND ($2::text IS NULL OR context_memory.agent_id = $2) \
-                ORDER BY links.relationship_type, related.id LIMIT $3 \
-             ) AS linked",
-            &[&identifiers, &filter.agent_id, &(MAX_FACT_LINKS as i64)],
-        ).await.context("load direct fact relationships")?;
-        let mut relations: HashMap<Uuid, (i64, Vec<RelatedFact>)> = HashMap::new();
-        for row in rows {
-            let entry = relations.entry(row.try_get("owner_id")?).or_default();
-            entry.0 = row.try_get("total_links")?;
-            entry.1.push(RelatedFact {
-                fragment_id: row.try_get("fragment_id")?,
-                memory_id: row.try_get("memory_id")?,
-                agent_id: row.try_get("agent_id")?,
-                text: row.try_get("text")?,
-                context: serde_json::from_str(&row.try_get::<_, String>("context")?)?,
-                relationship_type: serde_json::from_value(serde_json::Value::String(
-                    row.try_get("relationship_type")?,
-                ))?,
-                direction: row.try_get("direction")?,
-                state: serde_json::from_value(serde_json::Value::String(row.try_get("state")?))?,
-            });
-        }
+        let relations = crate::relationships::read_windows(
+            &transaction,
+            &identifiers,
+            filter,
+            None,
+            MAX_FACT_LINKS,
+        )
+        .await?
+        .into_iter()
+        .map(|(owner, window)| {
+            (
+                owner,
+                (
+                    window.eligible_count,
+                    window.count_exact,
+                    window
+                        .references
+                        .into_iter()
+                        .map(|(_, fact)| fact)
+                        .collect(),
+                ),
+            )
+        })
+        .collect();
         allocate_related_context(&mut facts, relations)?;
         transaction
             .commit()
@@ -284,12 +271,15 @@ impl PostgresMemoryStore {
 
 fn allocate_related_context(
     facts: &mut [RecallMatch],
-    mut relations: HashMap<Uuid, (i64, Vec<RelatedFact>)>,
+    mut relations: HashMap<Uuid, (i64, bool, Vec<RelatedFact>)>,
 ) -> Result<()> {
     let mut pending = Vec::with_capacity(facts.len());
     for fact in facts.iter_mut() {
-        let (count, relationships) = relations.remove(&fact.fragment_id).unwrap_or_default();
+        let (count, exact, relationships) = relations
+            .remove(&fact.fragment_id)
+            .unwrap_or_else(|| (0, true, Vec::new()));
         fact.relationship_count = count;
+        fact.relationship_count_exact = exact;
         fact.relationships.clear();
         fact.relationships_truncated = false;
         pending.push(relationships.into_iter());
@@ -316,7 +306,8 @@ fn allocate_related_context(
         }
     }
     for fact in facts {
-        fact.relationships_truncated = fact.relationship_count > fact.relationships.len() as i64;
+        fact.relationships_truncated = !fact.relationship_count_exact
+            || fact.relationship_count > fact.relationships.len() as i64;
     }
     Ok(())
 }
@@ -470,6 +461,7 @@ mod tests {
                     fact.fragment_id,
                     (
                         8,
+                        true,
                         (0..8)
                             .map(|index| related(index + 10, text.clone()))
                             .collect(),
@@ -509,6 +501,7 @@ mod tests {
                     fact.fragment_id,
                     (
                         8,
+                        true,
                         (0..8)
                             .map(|index| related(index + 100, "\u{0001}".repeat(1500)))
                             .collect(),
@@ -551,6 +544,7 @@ mod tests {
                 facts[0].fragment_id,
                 (
                     9,
+                    true,
                     (0..8)
                         .map(|index| related(index + 10, "Reference".into()))
                         .collect(),
@@ -558,7 +552,7 @@ mod tests {
             ),
             (
                 facts[1].fragment_id,
-                (1, vec![related(20, "Complete reference".into())]),
+                (1, true, vec![related(20, "Complete reference".into())]),
             ),
         ]);
         allocate_related_context(&mut facts, relations).unwrap();
