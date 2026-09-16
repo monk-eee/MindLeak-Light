@@ -20,6 +20,21 @@ MindLeak Light (one executable)
 PostgreSQL: memories, fragments, relationships
 ```
 
+## Storage Module Map
+
+The PostgreSQL crate keeps its existing public store/retriever names at the crate
+root. Internal modules separate the responsibilities without adding another store
+or changing the query/write contracts:
+
+| Module | Responsibility |
+|---|---|
+| [lib.rs](../crates/mindleak-storage-postgres/src/lib.rs) | Store types and public retriever re-exports |
+| [connection.rs](../crates/mindleak-storage-postgres/src/connection.rs) | TLS, pooling, schema initialization, model binding, and health |
+| [persistence.rs](../crates/mindleak-storage-postgres/src/persistence.rs) | Validated atomic episode/fragment writes |
+| [queries.rs](../crates/mindleak-storage-postgres/src/queries.rs) | Filtered SQL searches and result decoding |
+| [retrieval.rs](../crates/mindleak-storage-postgres/src/retrieval.rs) | Keyword/vector/hybrid strategies, query cache, and rank fusion |
+| [lifecycle.rs](../crates/mindleak-storage-postgres/src/lifecycle.rs) | Explicit feedback updates, activation priority, and bounded relationship reads |
+
 ## Write
 
 Validate input and decompose it using the configured strategy. The default uses
