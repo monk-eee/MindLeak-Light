@@ -8,10 +8,11 @@ use uuid::Uuid;
 
 use crate::{
     normalize_fragments, validate_embeddings, validate_text, EmbeddedFragment, FragmentInspection,
-    InvalidInput, MemoryDecomposer, MemoryRetriever, MemoryStore, MemoryTier, PreparedMemory,
-    PreparedRelationship, RecallFilter, RecallMatch, RelationshipCursor, TextEmbedder,
-    WriteMemoryResult, WriteOptions, WriteRequest, MAX_FACT_LINKS, MAX_FRAGMENTS,
-    MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES, MAX_MEMORY_LINKS, MAX_RECALL_LIMIT,
+    InvalidInput, KeywordMatchMode, MemoryDecomposer, MemoryRetriever, MemoryStore, MemoryTier,
+    PreparedMemory, PreparedRelationship, RecallFilter, RecallMatch, RecallResponse,
+    RelationshipCursor, TextEmbedder, WriteMemoryResult, WriteOptions, WriteRequest,
+    MAX_FACT_LINKS, MAX_FRAGMENTS, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES, MAX_MEMORY_LINKS,
+    MAX_RECALL_LIMIT, MAX_RECALL_RESULT_BYTES,
 };
 
 #[derive(Clone)]
@@ -167,6 +168,17 @@ impl MemoryService {
         limit: usize,
     ) -> Result<FragmentInspection> {
         filter.validate()?;
+        if filter.match_mode != KeywordMatchMode::Websearch
+            || filter.diagnostics
+            || filter.context_limit != 0
+            || filter.group_duplicates
+        {
+            return Err(InvalidInput(
+                "matchMode, diagnostics, contextLimit, and groupDuplicates only apply to search"
+                    .into(),
+            )
+            .into());
+        }
         if !(1..=MAX_FACT_LINKS).contains(&limit) {
             return Err(InvalidInput("inspection limit must be in 1..=8".into()).into());
         }
@@ -188,12 +200,51 @@ impl MemoryService {
         query: &str,
         filter: &RecallFilter,
         limit: usize,
-    ) -> Result<Vec<RecallMatch>> {
+    ) -> Result<RecallResponse> {
         validate_text(query, "query", MAX_MEMORY_BYTES)?;
         filter.validate()?;
         if !(1..=MAX_RECALL_LIMIT).contains(&limit) {
             return Err(InvalidInput(format!("limit must be in 1..={MAX_RECALL_LIMIT}")).into());
         }
-        self.retriever.recall(query, filter, limit).await
+        let mut results = self.retriever.recall(query, filter, limit).await?;
+        if filter.group_duplicates {
+            results = group_duplicates(results);
+        }
+        let diagnostics = if filter.diagnostics {
+            Some(self.retriever.query_diagnostics(query, filter).await?)
+        } else {
+            None
+        };
+        let response = RecallResponse {
+            results,
+            diagnostics,
+        };
+        if serde_json::to_vec(&response)?.len() > MAX_RECALL_RESULT_BYTES {
+            return Err(InvalidInput(
+                "recall exceeds the 512 KiB response budget; lower limit or disable diagnostics"
+                    .into(),
+            )
+            .into());
+        }
+        Ok(response)
     }
+}
+
+fn group_duplicates(facts: Vec<RecallMatch>) -> Vec<RecallMatch> {
+    let mut groups: Vec<RecallMatch> = Vec::new();
+    let mut by_text = HashMap::new();
+    for mut fact in facts {
+        if let Some(&index) = by_text.get(&fact.text) {
+            let group: &mut RecallMatch = &mut groups[index];
+            let duplicates = std::mem::take(&mut fact.duplicate_sources);
+            group.duplicate_sources.push(fact.into());
+            group.duplicate_sources.extend(duplicates);
+            group.source_count = Some(1 + group.duplicate_sources.len());
+        } else {
+            by_text.insert(fact.text.clone(), groups.len());
+            fact.source_count = Some(1 + fact.duplicate_sources.len());
+            groups.push(fact);
+        }
+    }
+    groups
 }

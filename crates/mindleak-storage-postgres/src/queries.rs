@@ -1,9 +1,17 @@
 use anyhow::{ensure, Context, Result};
-use mindleak_memory::{MemoryTier, RecallFilter, RecallMatch};
+use mindleak_memory::{
+    validate_text, KeywordQueryDiagnostics, MemoryTier, RecallFilter, RecallMatch, MAX_MEMORY_BYTES,
+};
 use pgvector::Vector;
 use tokio_postgres::Row;
 
 use crate::{lifecycle, PostgresMemoryStore};
+
+const KEYWORD_QUERY: &str = "CASE $2::text \
+    WHEN 'all' THEN plainto_tsquery('english', $1) \
+    WHEN 'any' THEN (SELECT COALESCE(string_agg(quote_literal(term), ' | '), '')::tsquery \
+        FROM unnest(tsvector_to_array(to_tsvector('english', $1))) AS terms(term)) \
+    ELSE websearch_to_tsquery('english', $1) END";
 
 impl PostgresMemoryStore {
     pub(super) async fn search(
@@ -54,19 +62,48 @@ impl PostgresMemoryStore {
         let limit = i64::try_from(limit)?;
         let rows = connection.query(
                 &format!("SELECT memories.id AS memory_id, fragments.id AS fragment_id, memories.agent_id, \
-                    fragments.text, ts_rank_cd(to_tsvector('english', fragments.text), query, 32)::double precision AS score, {} \
+                    fragments.text, ts_rank_cd(ARRAY[0.025, 0.1, 0.4, 1.0]::real[], fragments.search_vector, query, 32)::double precision AS score, {} \
              FROM public.fragments AS fragments \
              JOIN public.memories AS memories ON memories.id = fragments.memory_id \
-             CROSS JOIN websearch_to_tsquery('english', $1) AS query \
-             WHERE to_tsvector('english', fragments.text) @@ query \
-               AND ($2::text IS NULL OR memories.agent_id = $2) \
-                             AND ($4::text IS NULL OR memories.context->>'scope' = $4) \
-                             AND ($5::text IS NULL OR fragments.tier = $5) \
-                             AND ($6::boolean OR fragments.state = 'active') \
-                         ORDER BY score DESC, fragments.id LIMIT $3", lifecycle::LIFECYCLE_COLUMNS),
-                        &[&query, &filter.agent_id, &limit, &filter.scope, &filter.tier.map(MemoryTier::as_str), &filter.include_inactive],
+             CROSS JOIN (SELECT {KEYWORD_QUERY} AS query) AS parsed \
+             WHERE fragments.search_vector @@ query \
+               AND ($3::text IS NULL OR memories.agent_id = $3) \
+                             AND ($5::text IS NULL OR memories.context->>'scope' = $5) \
+                             AND ($6::text IS NULL OR fragments.tier = $6) \
+                             AND ($7::boolean OR fragments.state = 'active') \
+                         ORDER BY score DESC, fragments.id LIMIT $4", lifecycle::LIFECYCLE_COLUMNS),
+                        &[&query, &filter.match_mode.as_str(), &filter.agent_id, &limit, &filter.scope, &filter.tier.map(MemoryTier::as_str), &filter.include_inactive],
         ).await.context("recall fragments with PostgreSQL full-text search")?;
         rows.into_iter().map(recall_match).collect()
+    }
+
+    pub(super) async fn keyword_diagnostics(
+        &self,
+        query: &str,
+        filter: &RecallFilter,
+    ) -> Result<KeywordQueryDiagnostics> {
+        validate_text(query, "query", MAX_MEMORY_BYTES)?;
+        filter.validate()?;
+        let connection = self
+            .pool
+            .get()
+            .await
+            .context("acquire database connection")?;
+        let row = connection
+            .query_one(
+                &format!(
+                    "SELECT ({KEYWORD_QUERY})::text AS parsed_query, \
+                tsvector_to_array(to_tsvector('english', $1)) AS terms"
+                ),
+                &[&query, &filter.match_mode.as_str()],
+            )
+            .await
+            .context("describe PostgreSQL keyword query")?;
+        Ok(KeywordQueryDiagnostics {
+            match_mode: filter.match_mode,
+            parsed_query: row.try_get("parsed_query")?,
+            terms: row.try_get("terms")?,
+        })
     }
 }
 
@@ -91,5 +128,9 @@ pub(super) fn recall_match(row: Row) -> Result<RecallMatch> {
         relationship_count: 0,
         relationship_count_exact: true,
         relationships_truncated: false,
+        fragment_index: row.try_get("fragment_index")?,
+        document_context: None,
+        source_count: None,
+        duplicate_sources: Vec::new(),
     })
 }

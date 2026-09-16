@@ -1,7 +1,9 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::{validate_text, RecallMatch};
+use crate::{
+    validate_text, InvalidInput, KeywordMatchMode, RecallMatch, MAX_DOCUMENT_CONTEXT_FRAGMENTS,
+};
 
 const DAY_SECONDS: f64 = 86_400.0;
 
@@ -119,10 +121,24 @@ pub struct RecallFilter {
     pub tier: Option<MemoryTier>,
     #[serde(default)]
     pub include_inactive: bool,
+    #[serde(default)]
+    pub match_mode: KeywordMatchMode,
+    #[serde(default)]
+    pub diagnostics: bool,
+    #[serde(default)]
+    pub context_limit: usize,
+    #[serde(default)]
+    pub group_duplicates: bool,
 }
 
 impl RecallFilter {
     pub fn validate(&self) -> Result<()> {
+        if self.context_limit > MAX_DOCUMENT_CONTEXT_FRAGMENTS {
+            return Err(InvalidInput(format!(
+                "contextLimit must be in 0..={MAX_DOCUMENT_CONTEXT_FRAGMENTS}"
+            ))
+            .into());
+        }
         for (name, value) in [
             ("agentId", self.agent_id.as_deref()),
             ("scope", self.scope.as_deref()),

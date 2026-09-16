@@ -1033,6 +1033,273 @@ async fn keyword_recall_finds_unembedded_fragments_and_respects_agent_filters() 
 }
 
 #[tokio::test]
+async fn keyword_recall_matches_qualified_identifiers_without_rewriting_sources() {
+    let (vector_store, database) = setup().await;
+    let store = PostgresMemoryStore::connect(&database_url(), None, 4, None)
+        .await
+        .unwrap();
+    let agent_id = format!("keyword-identifier-{}", Uuid::new_v4());
+    let mut original = memory(&agent_id);
+    original.fragments.truncate(1);
+    original.fragments[0].text =
+        "System.Reflection.TargetInvocationException wraps the underlying error.".into();
+    original.fragments[0].embedding = None;
+    original.raw_text = original.fragments[0].text.clone();
+    original.context.scope = Some(format!("identifier-scope-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    let retriever = KeywordMemoryRetriever::new(store);
+    let scoped = RecallFilter {
+        agent_id: Some(agent_id.clone()),
+        scope: original.context.scope.clone(),
+        ..Default::default()
+    };
+    for query in [
+        "System.Reflection.TargetInvocationException",
+        "TargetInvocationException",
+        "TargetInvocationException error",
+    ] {
+        let recalled = retriever.recall(query, &scoped, 10).await.unwrap();
+        assert_eq!(recalled.len(), 1, "query: {query}");
+        assert_eq!(recalled[0].memory_id, original.id);
+        assert_eq!(recalled[0].fragment_id, original.fragments[0].id);
+        assert_eq!(recalled[0].text, original.fragments[0].text);
+        assert_eq!(recalled[0].context, original.context);
+        assert!(recalled[0].score.is_finite() && recalled[0].score > 0.0);
+    }
+    for query in [
+        "Acme.Reflection.TargetInvocationException",
+        "TargetInvocationException unfindablewordxyz",
+        "error -TargetInvocationException",
+        "InvocationException",
+    ] {
+        assert!(
+            retriever
+                .recall(query, &scoped, 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "query: {query}"
+        );
+    }
+    for excluded in [
+        RecallFilter {
+            agent_id: Some("absent-agent".into()),
+            ..scoped.clone()
+        },
+        RecallFilter {
+            scope: Some("absent-scope".into()),
+            ..scoped.clone()
+        },
+        RecallFilter {
+            tier: Some(MemoryTier::LongTerm),
+            ..scoped.clone()
+        },
+    ] {
+        assert!(retriever
+            .recall("TargetInvocationException", &excluded, 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    let hybrid =
+        HybridMemoryRetriever::new(vector_store, Arc::new(CountingQueryEmbedder::default()));
+    let hybrid_matches = hybrid
+        .recall("TargetInvocationException", &scoped, 10)
+        .await
+        .unwrap();
+    assert_eq!(hybrid_matches.len(), 1);
+    assert_eq!(hybrid_matches[0].fragment_id, original.fragments[0].id);
+    let stored: String = database
+        .query_one(
+            "SELECT raw_text FROM public.memories WHERE id = $1",
+            &[&original.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(stored, original.raw_text);
+    database
+        .execute(
+            "UPDATE public.fragments SET state = 'archived' WHERE id = $1",
+            &[&original.fragments[0].id],
+        )
+        .await
+        .unwrap();
+    assert!(retriever
+        .recall("TargetInvocationException", &scoped, 10)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn keyword_recall_matches_source_metadata_and_text_together() {
+    let (_vector_store, database) = setup().await;
+    let store = PostgresMemoryStore::connect(&database_url(), None, 4, None)
+        .await
+        .unwrap();
+    let agent_id = format!("metadata-search-{}", Uuid::new_v4());
+    let mut original = memory(&agent_id);
+    original.fragments.truncate(1);
+    original.fragments[0].embedding = None;
+    original.fragments[0].text = "Restart the application pool.".into();
+    original.raw_text = original.fragments[0].text.clone();
+    original.context = MemoryContext {
+        scope: Some(format!("metadata-scope-{}", Uuid::new_v4())),
+        source: Some(
+            "https://runbooks.test/Guides/System.Reflection.TargetInvocationException.md".into(),
+        ),
+        summary: Some("Zephyr remediation guide".into()),
+        ..Default::default()
+    };
+    store.save(&original).await.unwrap();
+    let retriever = KeywordMemoryRetriever::new(store);
+    let scoped = RecallFilter {
+        agent_id: Some(agent_id),
+        scope: original.context.scope.clone(),
+        ..Default::default()
+    };
+    for query in [
+        "TargetInvocationException",
+        "Guides",
+        "Zephyr",
+        "Zephyr restart",
+    ] {
+        let recalled = retriever.recall(query, &scoped, 5).await.unwrap();
+        assert_eq!(recalled.len(), 1, "query: {query}");
+        assert_eq!(recalled[0].fragment_id, original.fragments[0].id);
+        assert_eq!(recalled[0].text, original.fragments[0].text);
+        assert_eq!(recalled[0].context, original.context);
+    }
+    for excluded in [
+        RecallFilter {
+            agent_id: Some("absent-agent".into()),
+            ..scoped.clone()
+        },
+        RecallFilter {
+            scope: Some("absent-scope".into()),
+            ..scoped.clone()
+        },
+        RecallFilter {
+            tier: Some(MemoryTier::LongTerm),
+            ..scoped.clone()
+        },
+    ] {
+        assert!(retriever
+            .recall("Zephyr", &excluded, 5)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    database
+        .execute(
+            "UPDATE public.memories SET context = jsonb_set(context, '{summary}', to_jsonb($2::text)) WHERE id = $1",
+            &[&original.id, &"Nimbus remediation guide"],
+        )
+        .await
+        .unwrap();
+    assert!(retriever
+        .recall("Zephyr", &scoped, 5)
+        .await
+        .unwrap()
+        .is_empty());
+    let updated = retriever
+        .recall("Nimbus restart", &scoped, 5)
+        .await
+        .unwrap();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(
+        updated[0].context.summary.as_deref(),
+        Some("Nimbus remediation guide")
+    );
+    database
+        .execute(
+            "UPDATE public.fragments SET state = 'archived' WHERE id = $1",
+            &[&original.fragments[0].id],
+        )
+        .await
+        .unwrap();
+    assert!(retriever
+        .recall("Nimbus", &scoped, 5)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn vector_only_recall_rejects_keyword_modes_before_embedding() {
+    let (store, _) = setup().await;
+    let embedder = Arc::new(CountingQueryEmbedder::default());
+    let retriever = VectorMemoryRetriever::new(store, embedder.clone());
+    for match_mode in [
+        mindleak_memory::KeywordMatchMode::All,
+        mindleak_memory::KeywordMatchMode::Any,
+    ] {
+        let options = RecallFilter {
+            match_mode,
+            ..Default::default()
+        };
+        assert!(retriever
+            .recall("restart", &options, 5)
+            .await
+            .unwrap_err()
+            .is::<InvalidInput>());
+    }
+    assert_eq!(embedder.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn keyword_identifier_index_preserves_literals_and_uses_gin() {
+    let (_store, mut database) = setup().await;
+    for text in [
+        "The team requires reviews.",
+        "Use Rust 1.88.0 at 127.0.0.1. Allow 1.5 seconds.",
+        "Contact maintainers@example.test for access.",
+    ] {
+        let unchanged: bool = database
+            .query_one(
+                "SELECT public.mindleak_keyword_vector($1) = to_tsvector('english', $1)",
+                &[&text],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(unchanged, "text: {text}");
+    }
+    let indexes: i64 = database
+        .query_one(
+            "SELECT count(*) FROM pg_index JOIN pg_class ON pg_class.oid = indexrelid \
+         JOIN pg_am ON pg_am.oid = pg_class.relam \
+         WHERE indrelid = 'public.fragments'::regclass AND pg_am.amname = 'gin'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        indexes, 1,
+        "obsolete keyword indexes must not be rebuilt on startup"
+    );
+    let transaction = database.transaction().await.unwrap();
+    transaction
+        .batch_execute("SET LOCAL enable_seqscan = off")
+        .await
+        .unwrap();
+    let plan = transaction
+        .query(
+            "EXPLAIN SELECT id FROM public.fragments \
+             WHERE search_vector @@ websearch_to_tsquery('english', $1)",
+            &[&"TargetInvocationException"],
+        )
+        .await
+        .unwrap();
+    assert!(plan.iter().any(|row| row
+        .get::<_, String>(0)
+        .contains("Bitmap Index Scan on fragments_document_search_idx")));
+    transaction.rollback().await.unwrap();
+}
+
+#[tokio::test]
 async fn model_free_upgrade_preserves_legacy_vectors_and_model_binding() {
     let (admin, url, cleanup) = isolated_database().await;
     let (database, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
@@ -1052,7 +1319,10 @@ async fn model_free_upgrade_preserves_legacy_vectors_and_model_binding() {
         )
         .await
         .unwrap();
-    let legacy = memory("legacy");
+    let mut legacy = memory("legacy");
+    legacy.fragments[0].text =
+        "System.Reflection.TargetInvocationException wraps the underlying error".into();
+    legacy.raw_text = format!("{}. Team requires reviews.", legacy.fragments[0].text);
     database
         .execute(
             "INSERT INTO public.memories(id, agent_id, raw_text) VALUES($1, $2, $3)",
@@ -1107,6 +1377,19 @@ async fn model_free_upgrade_preserves_legacy_vectors_and_model_binding() {
             .len(),
         1
     );
+    for query in [
+        "System.Reflection.TargetInvocationException",
+        "TargetInvocationException",
+    ] {
+        let recalled = retriever
+            .recall(query, &filter(Some("legacy")), 10)
+            .await
+            .unwrap();
+        assert_eq!(recalled.len(), 1, "query: {query}");
+        assert_eq!(recalled[0].memory_id, legacy.id);
+        assert_eq!(recalled[0].fragment_id, fragment.id);
+        assert_eq!(recalled[0].text, fragment.text);
+    }
     admin.batch_execute(&cleanup).await.unwrap();
 }
 

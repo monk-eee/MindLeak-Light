@@ -11,9 +11,25 @@
   Shorter or more numerous fragments are not a substitute for faithful meaning.
 - Keyword recall uses English stemming and stop words, with no synonym inference.
   Natural-language questions work better with the optional embedding model.
+  Unreleased dotted-identifier aliases follow PostgreSQL hostname tokenization,
+  not a programming-language parser, and do not preserve source phrase positions.
+  Source path splitting does not decode percent-encoded URLs. Lower-weight source
+  and summary matches broaden candidates, but are not proof of relevance.
 - Several facts from the same source episode can occupy result slots. There is
   no per-episode diversity cap; imposing one can discard relevant independent
   facts and needs workload-specific evaluation.
+- Unreleased duplicate grouping covers only the returned working set, after the
+  original fragment limit and optional relevance selection. It retains every
+  included source, but does not report every matching occurrence in the corpus,
+  refill result slots, merge records, or prove independent evidence.
+- Unreleased document context is bounded to the same stored episode, not all
+  memories sharing a source URL. It can omit steps due to visibility filters,
+  the eight-fragment per-primary maximum, or the shared context byte budget.
+  Legacy order is unknown when literal source positions cannot be recovered.
+  Context is not a scored match, a procedure-validity check, or recursive retrieval.
+- Unreleased query diagnostics expose parsing and strategy, not exhaustive match
+  counts or relevance confidence. All/any modes affect only the keyword branch;
+  hybrid semantic candidates remain eligible independently.
 - Models are optional external providers, not bundled processes. Enabled chat
   providers must support JSON-schema responses; embeddings must match configured
   dimensions. An enabled provider failure does not fall back to model-free mode.
@@ -76,6 +92,8 @@
   reported by `relationshipsTruncated` and `relationshipCount`. This is not a
   recursive graph. Lifecycle cannot rescue facts outside the retrieval candidate
   pool. No automatic deduplication or re-embedding accompanies consolidation.
+  Unreleased document context shares that 32 KiB budget after links are allocated;
+  grouped provenance and requested diagnostics also fit the final 512 KiB payload.
 - Writes can archive, restore, or supersede existing facts through explicit
   links; original episodes/text remain immutable. There is no destructive delete
   or automatic expiry tool. Operators manage backups and data erasure in Postgres;
@@ -101,5 +119,8 @@
   appropriate trusted client for clients that cannot send custom HTTP headers.
 - Startup applies the initial schema and explicit keyword, lifecycle, and
   idempotency/evidence-index migrations transactionally. It needs permission to alter tables
-  and create indexes. This is not a general-purpose migration framework; future changes need
+  and create indexes, functions, and triggers. The unreleased document-search
+  migration backfills derived search vectors and recoverable fragment order,
+  builds one replacement GIN index, and can block writes during that upgrade.
+  This is not a general-purpose migration framework; future changes need
   explicit reviewed migrations, and operators should back up before upgrades.

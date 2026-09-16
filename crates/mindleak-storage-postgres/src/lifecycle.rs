@@ -2,16 +2,17 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{ensure, Context, Result};
 use mindleak_memory::{
-    FactLifecycle, FactState, InvalidInput, MemoryTier, PreparedMemory, RecallFilter, RecallMatch,
-    RelatedFact, RelationshipType, MAX_FACT_LINKS, MAX_MEMORY_LINKS, MAX_RECALL_RESULT_BYTES,
-    MAX_RELATED_CONTEXT_BYTES,
+    DocumentContext, FactLifecycle, FactState, InvalidInput, MemoryTier, PreparedMemory,
+    RecallFilter, RecallMatch, RelatedFact, RelationshipType, MAX_FACT_LINKS, MAX_MEMORY_LINKS,
+    MAX_RECALL_RESULT_BYTES, MAX_RELATED_CONTEXT_BYTES,
 };
 use tokio_postgres::{IsolationLevel, Row, Transaction};
 use uuid::Uuid;
 
-use crate::PostgresMemoryStore;
+use crate::{documents, PostgresMemoryStore};
 
 pub(super) const LIFECYCLE_COLUMNS: &str = "memories.context::text AS context, \
+    fragments.fragment_index, \
     fragments.tier, fragments.state, fragments.evidence, fragments.pinned, fragments.importance, \
     fragments.useful_sessions, fragments.confirmed_sessions, \
     extract(epoch from memories.created_at)::bigint AS created_at, \
@@ -236,6 +237,12 @@ impl PostgresMemoryStore {
             return Ok(facts);
         }
         let identifiers: Vec<_> = facts.iter().map(|fact| fact.fragment_id).collect();
+        if filter.context_limit > 0 {
+            for fact in &mut facts {
+                fact.document_context = Some(DocumentContext::default());
+            }
+        }
+        let document_context = documents::load(&transaction, &facts, filter).await?;
         let relations = crate::relationships::read_windows(
             &transaction,
             &identifiers,
@@ -261,6 +268,7 @@ impl PostgresMemoryStore {
         })
         .collect();
         allocate_related_context(&mut facts, relations)?;
+        documents::allocate(&mut facts, document_context, filter.context_limit)?;
         transaction
             .commit()
             .await
@@ -291,8 +299,10 @@ fn allocate_related_context(
         )
         .into());
     }
-    let mut remaining = (MAX_RECALL_RESULT_BYTES - primary_bytes)
-        .min(MAX_RELATED_CONTEXT_BYTES.saturating_sub(2 * facts.len()));
+    let mut remaining = (MAX_RECALL_RESULT_BYTES - primary_bytes).min(
+        MAX_RELATED_CONTEXT_BYTES
+            .saturating_sub(2 * facts.len() + documents::context_bytes(facts)?),
+    );
     for _ in 0..MAX_FACT_LINKS {
         for (fact, candidates) in facts.iter_mut().zip(&mut pending) {
             if let Some(related) = candidates.next() {
