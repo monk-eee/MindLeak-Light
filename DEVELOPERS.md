@@ -89,6 +89,28 @@ The JavaScript integration example is optional and isolated from the server:
 test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 `npm --prefix examples run memory`. It writes one sample memory per run.
 
+### Architecture Diagrams
+
+The [architecture board](assets/architecture.excalidraw) contains four editable
+Excalidraw frames: overview, write, recall, and lifecycle. Open it in
+[Excalidraw](https://excalidraw.com) or a compatible editor. Keep labels bound
+to their shapes with horizontal centre and vertical middle alignment; wait for
+the Excalifont font to load before adjusting text or exporting.
+
+Save the board and export each changed frame as SVG with background and
+**Embed scene** enabled, replacing its matching preview linked from the
+[architecture page](docs/ARCHITECTURE.md). SVG previews embed their fonts and
+remain readable without loading a CDN. They also retain editable scene data.
+Run the focused check after saving both source and previews:
+
+```sh
+node --test --test-name-pattern='architecture diagrams' scripts/repository.test.mjs
+```
+
+The check covers required concepts, bindings, centred labels, padding, and the
+embedded previews' agreement with the editable board. Preview the SVGs as well;
+font rendering and line crossings need a visual check.
+
 ### Distribution Checks
 
 The Dockerfile has two runtime targets: `app` for an external database and
