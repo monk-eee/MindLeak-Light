@@ -104,6 +104,10 @@ impl PostgresMemoryStore {
             .batch_execute(include_str!("../migrations/0003-fact-lifecycle.sql"))
             .await
             .context("initialize contextual fact lifecycle")?;
+        transaction
+            .batch_execute(include_str!("../migrations/0004-idempotent-writes.sql"))
+            .await
+            .context("initialize retry-safe writes")?;
         let Some(space) = &self.space else {
             transaction.commit().await?;
             return Ok(());

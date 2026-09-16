@@ -244,6 +244,40 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_fusion_has_stable_fifty_candidate_boundaries() {
+        let keyword: Vec<_> = (1..=50)
+            .map(|identifier| fragment(identifier, 0.1))
+            .collect();
+        let vector: Vec<_> = (101..=150)
+            .map(|identifier| fragment(identifier, 0.9))
+            .collect();
+        let single_branch = fuse_rankings([keyword.clone(), vec![]], 50);
+        assert_eq!(single_branch.len(), 50);
+        assert_eq!(single_branch[49].fragment_id, Uuid::from_u128(50));
+        assert_eq!(single_branch[49].score, 30.5 / 110.0);
+
+        let results = fuse_rankings([keyword.clone(), vector.clone()], 50);
+        assert_eq!(results.len(), 50);
+        assert_eq!(results[48].fragment_id, Uuid::from_u128(25));
+        assert_eq!(results[49].fragment_id, Uuid::from_u128(125));
+        assert_eq!(results[49].score, 30.5 / 85.0);
+        assert!(!results
+            .iter()
+            .any(|fact| fact.fragment_id == Uuid::from_u128(26)));
+        let reversed = fuse_rankings([vector, keyword], 50);
+        assert_eq!(
+            results
+                .iter()
+                .map(|fact| (fact.fragment_id, fact.score))
+                .collect::<Vec<_>>(),
+            reversed
+                .iter()
+                .map(|fact| (fact.fragment_id, fact.score))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn hybrid_fusion_handles_empty_branches_limits_and_distinct_facts_from_one_memory() {
         assert!(fuse_rankings([vec![], vec![]], 5).is_empty());
         let results = fuse_rankings([vec![], vec![fragment(1, 0.1), fragment(2, 0.05)]], 5);

@@ -101,7 +101,11 @@ In both cases, the first and latest feedback must be at least 24 hours apart.
 Waiting after a burst of feedback does not satisfy that spacing. Repeating the
 same target/type/session is a no-op for counters, timestamps, and promotion,
 including concurrent calls from different agents. The additional raw feedback
-episode is still saved; whole writes are not idempotent.
+episode is still saved for an unkeyed write. In source builds supporting
+`requestId`, replaying the same keyed request returns the original receipt and
+does not create another episode or reapply lifecycle actions. Feedback uniqueness
+and whole-write retry safety are different guarantees; see
+[retry-safe writes](INTEGRATION.md#retry-safe-writes).
 
 These thresholds are conservative initial policies, not biological constants.
 Usefulness-based promotion can leave evidence unconfirmed. A confirmed state

@@ -67,7 +67,7 @@ function persistedRecords() {
     'embedding_model', obj_description('public.fragments'::regclass, 'pg_class'))`));
 }
 
-async function recallPersisted(endpoint, memoryId) {
+async function recallPersisted(endpoint, memoryId, retryRequest) {
   const require = createRequire(new URL("../examples/package.json", import.meta.url));
   const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/sdk/client/streamableHttp.js");
@@ -80,11 +80,23 @@ async function recallPersisted(endpoint, memoryId) {
       name: "recall_memory", arguments: { query: "reviews", agentId: project, limit: 5 },
     });
     assert.ok(!recalled.isError, "Recall failed after upgrade");
-    assert.ok(recalled.structuredContent?.results?.some((result) => result.memoryId === memoryId),
-      "The upgraded server cannot recall the original memory");
+    const original = recalled.structuredContent?.results?.find((result) => result.memoryId === memoryId);
+    assert.ok(original, "The upgraded server cannot recall the original memory");
+    assert.ok(Number.isFinite(original.rankingPriority), "Recall has no finite rankingPriority");
+    assert.equal(original.rankingPriority,
+      original.score - Math.abs(original.score) * 0.25 * (1 - original.activation));
+    assert.equal(original.relationshipsTruncated,
+      original.relationshipCount > original.relationships.length);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(),
       ["decompose_memory", "recall_memory", "write_memory"]);
+    assert.ok(tools.tools.find((tool) => tool.name === "write_memory").inputSchema.properties.requestId,
+      "The candidate does not advertise retry-safe writes");
+    const written = await client.callTool({ name: "write_memory", arguments: retryRequest });
+    assert.ok(!written.isError, "Keyed write or replay failed");
+    assert.equal(typeof written.structuredContent?.memoryId, "string");
+    assert.equal(written.structuredContent.fragments.length, 1);
+    return written.structuredContent;
   } finally {
     await client.close();
   }
@@ -188,12 +200,30 @@ try {
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
   assert.deepEqual(snapshot(), counts, "Recreating the container lost persisted memory");
   assert.deepEqual(persistedRecords(), before, "Upgrade changed original records or embedding metadata");
-  await recallPersisted(`http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id);
   if (upgradeFrom) {
     assert.equal(sql("SELECT count(*) FROM public.memories WHERE context = '{}'::jsonb"), "1");
     assert.equal(sql("SELECT count(*) FROM public.fragments WHERE tier = 'short_term' AND state = 'active' AND evidence = 'unconfirmed'"), "2");
+  }
+  const retryRequest = {
+    agentId: project,
+    requestId: randomUUID(),
+    text: "Retry-safe writes survive container recreation.",
+  };
+  const receipt = await recallPersisted(
+    `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest);
+  if (upgradeFrom) {
     console.log("Published-image upgrade: exact raw text, IDs, vectors, links, model metadata, lifecycle defaults, and MCP recall verified.");
   }
+  const keyedCounts = snapshot();
+  const keyedRecords = persistedRecords();
+  compose("down");
+  compose("up", "--detach", "--wait", "--wait-timeout", "120");
+  assert.deepEqual(await recallPersisted(
+    `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest),
+  receipt, "Replaying after container recreation changed the committed receipt");
+  assert.deepEqual(snapshot(), keyedCounts, "A keyed retry created extra rows");
+  assert.deepEqual(persistedRecords(), keyedRecords, "A keyed retry changed persisted data");
+  console.log("Integrated contracts: ranking metadata and immutable keyed replay after container recreation verified.");
   console.log("All-in-one image: auth, MCP write/recall, socket-only Postgres, and volume persistence verified.");
 } catch (error) {
   console.error(compose("logs", "--no-color", "--tail", "80"));

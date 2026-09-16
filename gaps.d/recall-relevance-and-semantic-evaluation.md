@@ -4,7 +4,7 @@
   solely on calibration rejected 30/32 held-out negative queries, but verified
   Recall@5 fell from 92.86% unfiltered to 75.00% vector or 76.79% hybrid. The
   configurable gate is implemented; high-recall rejection is not solved.
-- `PostgresMemoryStore::search` and `HybridMemoryRetriever` use cosine/rank
+- `VectorMemoryRetriever` and `HybridMemoryRetriever` use cosine/rank
   signals, not a semantic relevance verifier. An optional bounded evidence-selector
   stage is now implemented, but local model experiments have not established a
   reliable speed/accuracy improvement. Keep it off in the fast profile. GLM with

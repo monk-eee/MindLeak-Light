@@ -11,6 +11,9 @@
   Shorter or more numerous fragments are not a substitute for faithful meaning.
 - Keyword recall uses English stemming and stop words, with no synonym inference.
   Natural-language questions work better with the optional embedding model.
+- Several facts from the same source episode can occupy result slots. There is
+  no per-episode diversity cap; imposing one can discard relevant independent
+  facts and needs workload-specific evaluation.
 - Models are optional external providers, not bundled processes. Enabled chat
   providers must support JSON-schema responses; embeddings must match configured
   dimensions. An enabled provider failure does not fall back to model-free mode.
@@ -50,8 +53,12 @@
 - Reported embedding-model IDs must match configuration exactly; implicit alias
   resolution is not supported. Providers may omit model metadata, so identity
   cannot always be verified from their response.
-- Writes are atomic but not idempotent. A timeout after commit can leave a saved
-  memory without a received ID; blind retries may create duplicates.
+- Unkeyed writes are atomic but not idempotent; blind retries can duplicate a
+  committed memory. The unreleased `requestId` option protects matching retries
+  only when the client retains its original ID, agent ID, and payload. Receipts
+  live with their memory rows and report original write-time tiers, not current
+  lifecycle state. Concurrent first attempts can duplicate provider work even
+  though only one episode commits. This is not a general exactly-once guarantee.
 - Lifecycle retention, evidence links, and read-time decay are source features,
   not a biological simulation or a measured longitudinal quality improvement.
   The half-lives, spaced-feedback thresholds, and priority discount are explicit
@@ -74,7 +81,7 @@
 - HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.
-- Startup applies the initial schema and the explicit nullable-vector/keyword
-  migration transactionally. It needs permission to alter tables and create the
-  index. This is not a general-purpose migration framework; future changes need
+- Startup applies the initial schema and explicit keyword, lifecycle, and
+  idempotency migrations transactionally. It needs permission to alter tables
+  and create indexes. This is not a general-purpose migration framework; future changes need
   explicit reviewed migrations, and operators should back up before upgrades.

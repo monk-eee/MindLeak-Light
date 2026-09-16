@@ -144,6 +144,10 @@ Save nothing when nothing durable was learned.
 Keep mandatory rules in version-controlled instructions; memory complements them,
 not overrides them. See the [full learning policy and verification checklist](docs/INTEGRATION.md#put-memory-into-the-agents-routine)
 for examples, stale-memory handling, and checking that the policy is loaded.
+When the server advertises `write_memory.requestId`, retain one UUID and the exact
+arguments per logical write before sending it; ambiguous outcomes can then use
+the [same-key retry protocol](docs/INTEGRATION.md#retry-safe-writes). Do not apply
+that protocol to older servers or generate a fresh key for each retry.
 
 ## Try It
 
@@ -188,6 +192,15 @@ calibration on your data and does not filter hybrid's keyword matches.
 
 Hybrid recall and similarity thresholds are included in v0.2.0. Upgrade older
 packages before enabling them; changing settings does not upgrade an executable.
+
+The subsequent hardening changes are not in the published v0.2.0 image: optional
+`write_memory.requestId` provides retry-safe committed-result replay, and recall
+adds `rankingPriority` and `relationshipsTruncated` with shared context budgets.
+Use a source build containing the changes and the [current tool contract](docs/INTEGRATION.md#tool-contract).
+The [architecture diagrams](docs/ARCHITECTURE.md) show the complete write, recall,
+and lifecycle paths; the [review status](docs/REVIEW-STATUS.md) separates fixes,
+existing safeguards, deliberate boundaries, and open quality questions. Do not
+infer a release upgrade from new documentation alone.
 
 Exact pgvector search is not a demonstrated million-memory service. The current
 benchmarks establish behaviour on small diagnostic corpora, not large-corpus

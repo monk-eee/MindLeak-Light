@@ -133,6 +133,16 @@ test("README teaches the agent memory policy before the explicit tool smoke test
   assert.ok(readme.slice(0, policyStart).includes("#give-your-agent-a-memory-policy"));
 });
 
+test("architecture diagrams cover the integrated write and recall contracts", () => {
+  const architecture = readFileSync(new URL("../docs/ARCHITECTURE.md", import.meta.url), "utf8");
+  const diagrams = [...architecture.matchAll(/```mermaid\n([\s\S]*?)\n```/g)].map((match) => match[1]);
+  assert.equal(diagrams.length, 4);
+  assert.ok(diagrams.some((diagram) => diagram.includes("requestId") && diagram.includes("committed receipt")));
+  assert.ok(diagrams.some((diagram) => diagram.includes("rankingPriority") && diagram.includes("bounded related context")));
+  assert.ok(diagrams.some((diagram) => diagram.includes("stateDiagram-v2") && diagram.includes("Superseded")));
+  assert.match(architecture, /persistence\.rs.*receipt lookup\/replay/);
+});
+
 for (const operation of ["write_memory", "recall_memory"]) {
   test(`agent example budgets ${operation} for sequential model requests`, (context) => {
     const directory = fixture(context);

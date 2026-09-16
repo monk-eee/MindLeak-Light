@@ -8,6 +8,7 @@ struct Backend {
     fragments: Vec<String>,
     embeddings: Vec<Vec<f32>>,
     fail_embedding: bool,
+    fail_lookup: bool,
 }
 
 impl Default for Backend {
@@ -18,6 +19,7 @@ impl Default for Backend {
             fragments: vec!["Keep PRs small".into(), "Reviews are required".into()],
             embeddings: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
             fail_embedding: false,
+            fail_lookup: false,
         }
     }
 }
@@ -51,10 +53,16 @@ impl TextEmbedder for Backend {
 
 #[async_trait]
 impl MemoryStore for Backend {
-    async fn save(&self, memory: &PreparedMemory) -> Result<()> {
+    async fn lookup_write(&self, _: &WriteRequest) -> Result<Option<WriteMemoryResult>> {
+        self.events.lock().unwrap().push("lookup");
+        ensure!(!self.fail_lookup, "storage unavailable");
+        Ok(None)
+    }
+
+    async fn save(&self, memory: &PreparedMemory) -> Result<WriteMemoryResult> {
         self.events.lock().unwrap().push("save");
         self.saved.lock().unwrap().push(memory.clone());
-        Ok(())
+        Ok(memory.write_result())
     }
 }
 
@@ -79,6 +87,79 @@ impl MemoryRetriever for Backend {
             ..Default::default()
         }])
     }
+}
+
+#[tokio::test]
+async fn invalid_idempotent_requests_fail_before_lookup_or_models() {
+    let backend = Arc::new(Backend::default());
+    for importance in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+        let error = backend
+            .service()
+            .write_memory(
+                "claude",
+                "fact",
+                WriteOptions {
+                    request_id: Some(Uuid::new_v4()),
+                    facts: vec![FactDirective {
+                        text: "Keep PRs small".into(),
+                        importance: Some(importance),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.is::<InvalidInput>());
+    }
+    assert!(backend.events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn idempotent_lookup_failure_does_not_fall_through_to_models() {
+    let backend = Arc::new(Backend {
+        fail_lookup: true,
+        ..Default::default()
+    });
+    assert!(backend
+        .service()
+        .write_memory(
+            "claude",
+            "fact",
+            WriteOptions {
+                request_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
+    assert_eq!(*backend.events.lock().unwrap(), ["lookup"]);
+    assert!(backend.saved.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn idempotent_provider_failure_never_saves_a_request() {
+    let backend = Arc::new(Backend {
+        fail_embedding: true,
+        ..Default::default()
+    });
+    assert!(backend
+        .service()
+        .write_memory(
+            "claude",
+            "fact",
+            WriteOptions {
+                request_id: Some(Uuid::new_v4()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        *backend.events.lock().unwrap(),
+        ["lookup", "decompose", "embed"]
+    );
+    assert!(backend.saved.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -275,6 +356,7 @@ async fn fact_directives_preserve_context_and_exact_source_fact_links() {
             "claude",
             "raw episode",
             WriteOptions {
+                request_id: None,
                 context: context.clone(),
                 facts: vec![FactDirective {
                     text: "Keep PRs small".into(),
@@ -301,6 +383,68 @@ async fn fact_directives_preserve_context_and_exact_source_fact_links() {
 }
 
 #[tokio::test]
+async fn directives_bind_after_normalization_deduplication_and_reordering() {
+    let backend = Arc::new(Backend {
+        fragments: vec![
+            "  Reviews are required\n".into(),
+            " Keep PRs small ".into(),
+            "Reviews are required".into(),
+        ],
+        ..Default::default()
+    });
+    let target = Uuid::new_v4();
+    let result = backend
+        .service()
+        .write_memory(
+            "claude",
+            "raw episode",
+            WriteOptions {
+                request_id: Some(Uuid::new_v4()),
+                facts: vec![
+                    FactDirective {
+                        text: "Keep PRs small".into(),
+                        pinned: true,
+                        links: vec![FactLink {
+                            target_fragment_id: target,
+                            relationship_type: RelationshipType::Supports,
+                        }],
+                        ..Default::default()
+                    },
+                    FactDirective {
+                        text: "Reviews are required".into(),
+                        importance: Some(0.25),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        *backend.events.lock().unwrap(),
+        ["lookup", "decompose", "embed", "save"]
+    );
+    let saved = backend.saved.lock().unwrap();
+    let prepared = &saved[0];
+    assert_eq!(prepared.fragments.len(), 2);
+    assert_eq!(prepared.fragments[0].text, "Reviews are required");
+    assert_eq!(prepared.fragments[0].importance, 0.25);
+    assert_eq!(prepared.fragments[0].tier, MemoryTier::ShortTerm);
+    assert_eq!(prepared.fragments[0].embedding, Some(vec![1.0, 0.0]));
+    assert_eq!(prepared.fragments[1].text, "Keep PRs small");
+    assert_eq!(prepared.fragments[1].tier, MemoryTier::LongTerm);
+    assert!(prepared.fragments[1].pinned);
+    assert_eq!(prepared.fragments[1].embedding, Some(vec![0.0, 1.0]));
+    assert_eq!(prepared.relationships.len(), 1);
+    assert_eq!(
+        prepared.relationships[0].source_fragment,
+        result.fragments[1].fragment_id
+    );
+    assert_eq!(prepared.relationships[0].target_fragment, target);
+}
+
+#[tokio::test]
 async fn mismatched_fact_directives_never_attach_links_to_a_different_model_output() {
     for text in ["Keep PRs small.", "Unknown fact"] {
         let backend = Arc::new(Backend::default());
@@ -310,16 +454,29 @@ async fn mismatched_fact_directives_never_attach_links_to_a_different_model_outp
                 "claude",
                 "raw",
                 WriteOptions {
-                    facts: vec![FactDirective {
-                        text: text.into(),
-                        ..Default::default()
-                    }],
+                    facts: vec![
+                        FactDirective {
+                            text: "Reviews are required".into(),
+                            pinned: true,
+                            ..Default::default()
+                        },
+                        FactDirective {
+                            text: text.into(),
+                            ..Default::default()
+                        },
+                    ],
                     ..Default::default()
                 },
             )
             .await;
-        assert!(result.unwrap_err().is::<InvalidInput>());
+        let error = result.unwrap_err();
+        assert!(error.is::<InvalidInput>());
+        assert_eq!(
+            error.to_string(),
+            "facts[1].text must match a decomposed fragment exactly"
+        );
         assert_eq!(*backend.events.lock().unwrap(), ["decompose"]);
+        assert!(backend.saved.lock().unwrap().is_empty());
     }
 }
 
@@ -345,5 +502,5 @@ async fn feedback_without_a_session_is_rejected_before_embedding_or_storage() {
         )
         .await;
     assert!(result.unwrap_err().is::<InvalidInput>());
-    assert_eq!(*backend.events.lock().unwrap(), ["decompose"]);
+    assert!(backend.events.lock().unwrap().is_empty());
 }

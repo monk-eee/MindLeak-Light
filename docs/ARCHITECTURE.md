@@ -1,41 +1,63 @@
 # Architecture
 
-This describes v0.2.0, including contextual fact lifecycle, hybrid recall,
-similarity thresholds, cached query embeddings, and provider response bounds.
+This describes the integrated source: v0.2.0 contextual fact lifecycle, hybrid
+recall, cached query embeddings, and provider safeguards, plus unreleased
+retry-safe writes, modular storage, response budgets, and ranking diagnostics.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
-```text
-Claude / GPT / agents
-        |
-        | MCP: stdio or authenticated Streamable HTTP
-        v
-MindLeak Light (one executable)
-  MemoryService
-        -> MemoryDecomposer -> sentences/lists, or optional chat endpoint
-        -> TextEmbedder     -> optional embedding endpoint
-    -> MemoryStore     -> PostgreSQL transaction
-        -> MemoryRetriever -> keyword, vector, or hybrid rank fusion + lifecycle priority
-        |
-        v
-PostgreSQL: memories, fragments, relationships
+```mermaid
+flowchart TD
+        Agent["Agent and MCP client"] --> MCP["Official MCP SDK: stdio or authenticated HTTP"]
+        MCP --> Service["MemoryService"]
+        Service -->|"prepare or preview"| Decomposition["Sentences/lists or optional chat extraction"]
+        Service -->|"prepare write vectors"| Embedding["Optional TextEmbedder"]
+        Service -->|"write or replay"| Store["MemoryStore: receipts and atomic transactions"]
+        Service -->|"recall"| Retrieval["MemoryRetriever: keyword, vector, or hybrid"]
+        Decomposition -.->|"opt-in"| Models["External model providers"]
+        Embedding -.-> Models
+        Retrieval -.->|"embedding misses and optional selection"| Models
+        Store --> Database[("PostgreSQL: memories, fragments, relationships")]
+        Retrieval --> Database
 ```
 
 ## Storage Module Map
 
 The PostgreSQL crate keeps its existing public store/retriever names at the crate
-root. Internal modules separate the responsibilities without adding another store
-or changing the query/write contracts:
+root. Internal modules separate responsibilities; retry receipts stay in the
+existing store rather than a parallel persistence path:
 
 | Module | Responsibility |
 |---|---|
 | [lib.rs](../crates/mindleak-storage-postgres/src/lib.rs) | Store types and public retriever re-exports |
 | [connection.rs](../crates/mindleak-storage-postgres/src/connection.rs) | TLS, pooling, schema initialization, model binding, and health |
-| [persistence.rs](../crates/mindleak-storage-postgres/src/persistence.rs) | Validated atomic episode/fragment writes |
+| [persistence.rs](../crates/mindleak-storage-postgres/src/persistence.rs) | Validated atomic writes, request-key arbitration, and immutable receipt lookup/replay |
 | [queries.rs](../crates/mindleak-storage-postgres/src/queries.rs) | Filtered SQL searches and result decoding |
 | [retrieval.rs](../crates/mindleak-storage-postgres/src/retrieval.rs) | Keyword/vector/hybrid strategies, query cache, and rank fusion |
 | [lifecycle.rs](../crates/mindleak-storage-postgres/src/lifecycle.rs) | Explicit feedback updates, activation priority, and bounded relationship reads |
 
 ## Write
+
+```mermaid
+flowchart TD
+        Input["write_memory arguments"] --> Validate["Validate intrinsic input limits"]
+        Validate --> Key{"requestId supplied?"}
+        Key -->|"yes"| Lookup["Lookup agentId + requestId"]
+        Lookup --> Receipt{"Committed receipt?"}
+        Receipt -->|"same canonical payload"| Replay["Return original result; no inference or lifecycle replay"]
+        Receipt -->|"different payload"| Conflict["Error: requestId conflict"]
+        Receipt -->|"absent"| Prepare["Decompose, bind exact directives, validate vectors"]
+        Key -->|"no"| Prepare
+        Prepare --> Transaction["Begin transaction and insert episode plus receipt"]
+        Transaction --> Insert{"New row inserted?"}
+        Insert -->|"yes"| Persist["Insert fragments; lock target UUIDs in order; apply links"]
+        Persist --> Commit["Commit all data and lifecycle effects"]
+        Commit --> Result["Return memoryId and original fragment receipt"]
+        Insert -->|"concurrent key conflict"| Winner["Read and verify winning committed receipt"]
+        Winner -->|"same payload"| Replay
+        Winner -->|"different payload"| Conflict
+        Prepare -->|"failure"| Failed["Error; no committed key consumed"]
+        Persist -->|"failure"| Rollback["Rollback episode, receipt, fragments, and links"]
+```
 
 Validate input and decompose it using the configured strategy. The default uses
 Unicode sentence boundaries and line/list boundaries, preserving the wording.
@@ -48,6 +70,23 @@ Insert the exact raw memory followed by every fragment, using NULL for disabled
 embeddings. Commit, then return the memory ID. Enabled model work happens before
 the transaction so inference does not hold database connections. No failed
 provider call is replaced with another strategy.
+
+With a client `requestId`, validate intrinsic input constraints and look up a
+committed receipt before model work. The key is a UUID scoped by `agentId`, not
+an authentication boundary. A matching canonical request replays its immutable
+write result. Changed text, context, or directives fail with invalid parameters.
+Typed defaults are normalized; raw text and ordered directive/link lists remain
+part of identity. Requests without a key retain the original write-per-call
+behaviour.
+
+The `memories` insert stores the canonical typed request and original result in
+the same transaction as all fragments, vectors, and lifecycle effects. A partial
+unique index on `(agent_id, request_id)` arbitrates concurrent inserts. A losing
+insert reads and verifies the committed payload, returning its receipt without
+inserting fragments or reapplying relationships. No reservation or database lock
+is held during inference; simultaneous initial requests may duplicate model
+work. Provider failures and rolled-back transactions do not consume a key.
+See [ADR-0011](../adr.d/0011-idempotent-memory-writes.md).
 
 Raw text is preserved exactly. Memory text is limited to 32768 UTF-8 bytes;
 decomposition produces 1..64 fragments of at most 4096 bytes each. Empty facts,
@@ -72,6 +111,29 @@ verified. Model aliases are not resolved implicitly, and stable model names stil
 cannot prove that a provider has kept its weights unchanged.
 
 ## Recall
+
+```mermaid
+flowchart TD
+        Query["Query, scope, agent, tier, state, and limit"] --> Mode{"Retrieval mode"}
+        Mode -->|"keyword or hybrid"| Keyword["Full-text candidates; filters before limit"]
+        Mode -->|"vector or hybrid"| Cache["Exact query vector cache; embed on miss"]
+        Cache --> Vector["pgvector candidates; filters and cosine floor before limit"]
+        Keyword --> Candidates["Keep branch rank; apply RRF only for hybrid"]
+        Vector --> Candidates
+        Candidates --> Priority["Compute activation and rankingPriority once"]
+        Priority --> Primary["Order primary candidates and apply candidate budget"]
+        Primary --> Context["Reserve primary JSON; allocate bounded related context"]
+        Context --> Selection{"Optional relevance model?"}
+        Selection -->|"off"| Return["Return original score, priority, context, and truncation metadata"]
+        Selection -->|"on"| Evidence["Validate selected indices and exact source quotations"]
+        Evidence -->|"valid selection"| Return
+        Evidence -->|"provider or validation failure"| Error["Error, not empty success"]
+```
+
+The relevance wrapper requests at least its configured candidate count from the
+underlying retriever, then filters to the client limit without refilling omitted
+related context. All recall paths are read-only. The cache stores only vectors;
+current database data and lifecycle filters are always re-evaluated.
 
 `MemoryRetriever` owns the query-to-results boundary. `KeywordMemoryRetriever`
 uses PostgreSQL's English text-search configuration, `websearch_to_tsquery`, and
@@ -125,6 +187,20 @@ is an interface extension point, not a shipped implementation.
 
 ## Contextual Fact Lifecycle
 
+```mermaid
+stateDiagram-v2
+        [*] --> Active
+        Active --> Archived: archives
+        Archived --> Active: restores
+        Active --> Superseded: supersedes with replacement
+        Archived --> Superseded: supersedes with replacement
+```
+
+State, retention tier, and evidence status are separate concepts. A fact starts
+active; short/long-term tiers affect activation, not truth. Superseded is terminal,
+while archived is reversible. A replacement is a new fact committed with its
+supersedes link. Confirmation is a caller-reported claim; recall is never feedback.
+
 The source episode stores optional scope, session ID, source, and summary as
 bounded context. Fragments have independent short/long-term retention, state,
 evidence status, salience, pin, and feedback timestamps/counters. The lifecycle
@@ -176,6 +252,14 @@ The [lifecycle migration](../crates/mindleak-storage-postgres/migrations/0003-fa
 adds metadata columns, context, typed relationship actions, and feedback uniqueness.
 Existing facts default to short-term/active/unconfirmed with creation-time activation;
 their raw text, identities, relationships, and vector types/values are preserved.
+
+The [retry-safety migration](../crates/mindleak-storage-postgres/migrations/0004-idempotent-writes.sql)
+adds nullable request ID, canonical payload, and result columns plus the unique
+key and all-or-none metadata constraint to `memories`. Existing rows stay unkeyed;
+no legacy IDs, fragments, vectors, or lifecycle metadata are rewritten. Receipts
+last as long as their memory row, including while facts are archived or superseded.
+Changes to the canonical request representation need an explicit compatibility
+decision so future upgrades do not silently change request identity.
 
 Model-free startup does not bind or require an embedding model. On first vector
 or hybrid startup, model and dimensions are recorded in the fragments table

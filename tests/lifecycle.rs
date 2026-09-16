@@ -1,5 +1,7 @@
 use super::*;
-use mindleak_memory::{EvidenceStatus, FactState, PreparedRelationship, RelationshipType};
+use mindleak_memory::{
+    EvidenceStatus, FactLink, FactState, PreparedRelationship, RelationshipType,
+};
 
 fn episode(
     original: &PreparedMemory,
@@ -20,6 +22,174 @@ fn episode(
         relationship_type: relation,
     });
     evidence
+}
+
+#[tokio::test]
+async fn idempotent_lifecycle_retry_preserves_receipt_without_reapplying_links() {
+    let (store, database) = setup().await;
+    let original = memory(&format!("idempotent-lifecycle-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    let mut archive = episode(&original, RelationshipType::Archives, None);
+    archive.request = Some(WriteRequest {
+        request_id: Uuid::new_v4(),
+        agent_id: archive.agent_id.clone(),
+        text: archive.raw_text.clone(),
+        context: archive.context.clone(),
+        facts: vec![FactDirective {
+            text: archive.fragments[0].text.clone(),
+            links: vec![FactLink {
+                target_fragment_id: original.fragments[0].id,
+                relationship_type: RelationshipType::Archives,
+            }],
+            ..Default::default()
+        }],
+    });
+    let receipt = store.save(&archive).await.unwrap();
+    store
+        .save(&episode(&original, RelationshipType::Restores, None))
+        .await
+        .unwrap();
+    database
+        .execute(
+            "UPDATE public.fragments SET tier = 'long_term' WHERE memory_id = $1",
+            &[&archive.id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.fragments[0].tier, MemoryTier::ShortTerm);
+    assert_eq!(
+        store
+            .lookup_write(archive.request.as_ref().unwrap())
+            .await
+            .unwrap(),
+        Some(receipt.clone())
+    );
+    let mut retried = archive.clone();
+    retried.id = Uuid::new_v4();
+    retried.fragments[0].id = Uuid::new_v4();
+    retried.relationships[0].source_fragment = retried.fragments[0].id;
+    assert_eq!(store.save(&retried).await.unwrap(), receipt);
+    let state: String = database
+        .query_one(
+            "SELECT state FROM public.fragments WHERE id = $1",
+            &[&original.fragments[0].id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        state, "active",
+        "retry must not archive a subsequently restored fact"
+    );
+    let links: i64 = database.query_one(
+        "SELECT count(*) FROM public.relationships WHERE target_fragment = $1 AND relationship_type = 'archives'",
+        &[&original.fragments[0].id],
+    ).await.unwrap().get(0);
+    assert_eq!(links, 1);
+    let recalled = HybridMemoryRetriever::new(store, Arc::new(QueryEmbedder))
+        .recall("PR preferences?", &filter(Some(&original.agent_id)), 5)
+        .await
+        .unwrap();
+    let active = recalled
+        .iter()
+        .find(|fact| fact.fragment_id == original.fragments[0].id)
+        .unwrap();
+    assert_eq!(active.lifecycle.state, FactState::Active);
+    assert_eq!(active.relationship_count, 2);
+    assert!(!active.relationships_truncated);
+    assert_eq!(
+        active.ranking_priority,
+        active.score - active.score.abs() * 0.25 * (1.0 - active.activation)
+    );
+    assert!(active
+        .relationships
+        .iter()
+        .any(|fact| fact.memory_id == receipt.memory_id));
+}
+
+#[tokio::test]
+async fn concurrent_distinct_feedback_serializes_promotion_without_losing_evidence() {
+    let (store, database) = setup().await;
+    let original = memory(&format!("promotion-race-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    store
+        .save(&episode(
+            &original,
+            RelationshipType::Confirms,
+            Some("first"),
+        ))
+        .await
+        .unwrap();
+    database
+        .execute(
+            "UPDATE fragments SET first_evidence_at = now() - interval '25 hours' WHERE id = $1",
+            &[&original.fragments[0].id],
+        )
+        .await
+        .unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut tasks = tokio::task::JoinSet::new();
+    for session in ["second", "third"] {
+        let store = store.clone();
+        let feedback = episode(&original, RelationshipType::Confirms, Some(session));
+        let barrier = barrier.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            store.save(&feedback).await
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap().unwrap();
+    }
+    let facts = KeywordMemoryRetriever::new(store)
+        .recall("small", &filter(Some(&original.agent_id)), 5)
+        .await
+        .unwrap();
+    assert_eq!(facts[0].lifecycle.confirmed_sessions, 3);
+    assert_eq!(facts[0].lifecycle.tier, MemoryTier::LongTerm);
+    assert_eq!(facts[0].relationship_count, 3);
+    assert_eq!(facts[0].text, original.fragments[0].text);
+}
+
+#[tokio::test]
+async fn opposite_relationship_orders_lock_targets_consistently() {
+    let (store, database) = setup().await;
+    let original = memory(&format!("ordered-locks-{}", Uuid::new_v4()));
+    store.save(&original).await.unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (session, reverse) in [("first", false), ("second", true)] {
+        let mut feedback = episode(&original, RelationshipType::Confirms, Some(session));
+        feedback.relationships.push(PreparedRelationship {
+            source_fragment: feedback.fragments[0].id,
+            target_fragment: original.fragments[1].id,
+            relationship_type: RelationshipType::Confirms,
+        });
+        if reverse {
+            feedback.relationships.reverse();
+        }
+        let store = store.clone();
+        let barrier = barrier.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            store.save(&feedback).await
+        });
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap().unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    for fragment in &original.fragments {
+        let row = database.query_one(
+            "SELECT confirmed_sessions, (SELECT count(*) FROM relationships WHERE target_fragment = $1) FROM fragments WHERE id = $1",
+            &[&fragment.id],
+        ).await.unwrap();
+        assert_eq!(row.get::<_, i32>(0), 2);
+        assert_eq!(row.get::<_, i64>(1), 2);
+    }
 }
 
 #[tokio::test]

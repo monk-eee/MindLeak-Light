@@ -10,8 +10,8 @@ use crate::{
     normalize_fragments, validate_embeddings, validate_text, EmbeddedFragment, InvalidInput,
     MemoryDecomposer, MemoryRetriever, MemoryStore, MemoryTier, PreparedMemory,
     PreparedRelationship, RecallFilter, RecallMatch, TextEmbedder, WriteMemoryResult, WriteOptions,
-    WrittenFragment, MAX_FACT_LINKS, MAX_FRAGMENTS, MAX_MEMORY_BYTES, MAX_MEMORY_LINKS,
-    MAX_RECALL_LIMIT,
+    WriteRequest, MAX_FACT_LINKS, MAX_FRAGMENTS, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES,
+    MAX_MEMORY_LINKS, MAX_RECALL_LIMIT,
 };
 
 #[derive(Clone)]
@@ -44,15 +44,16 @@ impl MemoryService {
         options: WriteOptions,
     ) -> Result<WriteMemoryResult> {
         validate_text(agent_id, "agentId", 256)?;
+        validate_text(text, "text", MAX_MEMORY_BYTES)?;
         options.context.validate()?;
         if options.facts.len() > MAX_FRAGMENTS {
             return Err(InvalidInput("too many fact directives".into()).into());
         }
-        let fragments = self.decompose_memory(text).await?;
-        let mut policies = HashMap::new();
+        let mut directive_texts = HashSet::new();
         let mut link_count = 0;
-        for directive in options.facts {
-            if !fragments.contains(&directive.text) || policies.contains_key(&directive.text) {
+        for directive in &options.facts {
+            validate_text(&directive.text, "fact text", MAX_FRAGMENT_BYTES)?;
+            if !directive_texts.insert(&directive.text) {
                 return Err(InvalidInput(
                     "fact directives must match distinct decomposed fragment text exactly".into(),
                 )
@@ -82,6 +83,28 @@ impl MemoryService {
                     )
                     .into());
                 }
+            }
+        }
+        let request = options.request_id.map(|request_id| WriteRequest {
+            request_id,
+            agent_id: agent_id.to_owned(),
+            text: text.to_owned(),
+            context: options.context.clone(),
+            facts: options.facts.clone(),
+        });
+        if let Some(request) = &request {
+            if let Some(result) = self.store.lookup_write(request).await? {
+                return Ok(result);
+            }
+        }
+        let fragments = self.decompose_memory(text).await?;
+        let mut policies = HashMap::new();
+        for (index, directive) in options.facts.into_iter().enumerate() {
+            if !fragments.contains(&directive.text) {
+                return Err(InvalidInput(format!(
+                    "facts[{index}].text must match a decomposed fragment exactly"
+                ))
+                .into());
             }
             policies.insert(directive.text.clone(), directive);
         }
@@ -126,20 +149,9 @@ impl MemoryService {
                 })
                 .collect(),
             relationships,
+            request,
         };
-        self.store.save(&memory).await?;
-        Ok(WriteMemoryResult {
-            memory_id: memory.id,
-            fragments: memory
-                .fragments
-                .into_iter()
-                .map(|fragment| WrittenFragment {
-                    fragment_id: fragment.id,
-                    text: fragment.text,
-                    tier: fragment.tier,
-                })
-                .collect(),
-        })
+        self.store.save(&memory).await
     }
 
     pub async fn decompose_memory(&self, text: &str) -> Result<Vec<String>> {

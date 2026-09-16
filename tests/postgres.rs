@@ -6,8 +6,8 @@ use std::sync::{
 use anyhow::Result;
 use async_trait::async_trait;
 use mindleak_memory::{
-    EmbeddedFragment, MemoryContext, MemoryRetriever, MemoryStore, MemoryTier, PreparedMemory,
-    RecallFilter, TextEmbedder,
+    EmbeddedFragment, FactDirective, InvalidInput, MemoryContext, MemoryRetriever, MemoryStore,
+    MemoryTier, PreparedMemory, RecallFilter, TextEmbedder, WriteRequest,
 };
 use mindleak_storage_postgres::{
     HybridMemoryRetriever, KeywordMemoryRetriever, PostgresMemoryStore, VectorMemoryRetriever,
@@ -75,6 +75,7 @@ fn memory(agent_id: &str) -> PreparedMemory {
         raw_text: "User prefers small PRs. Team requires reviews.".into(),
         context: MemoryContext::default(),
         relationships: Vec::new(),
+        request: None,
         fragments: vec![
             EmbeddedFragment {
                 id: Uuid::new_v4(),
@@ -94,6 +95,180 @@ fn memory(agent_id: &str) -> PreparedMemory {
             },
         ],
     }
+}
+
+fn keyed_memory(agent_id: &str) -> PreparedMemory {
+    let mut memory = memory(agent_id);
+    memory.request = Some(WriteRequest {
+        request_id: Uuid::new_v4(),
+        agent_id: memory.agent_id.clone(),
+        text: memory.raw_text.clone(),
+        context: memory.context.clone(),
+        facts: Vec::new(),
+    });
+    memory
+}
+
+#[tokio::test]
+async fn idempotent_writes_scope_keys_and_reject_changed_payloads() {
+    let (store, database) = setup().await;
+    let agent_id = format!("idempotency-conflict-{}", Uuid::new_v4());
+    let original = keyed_memory(&agent_id);
+    let receipt = store.save(&original).await.unwrap();
+    let mut repeated = memory(&agent_id);
+    repeated.request = original.request.clone();
+    assert_eq!(store.save(&repeated).await.unwrap(), receipt);
+    for variant in 0..3 {
+        let mut changed = repeated.clone();
+        let request = changed.request.as_mut().unwrap();
+        match variant {
+            0 => {
+                changed.raw_text.push(' ');
+                request.text = changed.raw_text.clone();
+            }
+            1 => {
+                changed.context.source = Some("different source".into());
+                request.context = changed.context.clone();
+            }
+            _ => request.facts.push(FactDirective {
+                text: changed.fragments[0].text.clone(),
+                importance: Some(0.9),
+                ..Default::default()
+            }),
+        }
+        assert!(store
+            .lookup_write(request)
+            .await
+            .unwrap_err()
+            .is::<InvalidInput>());
+        assert!(store.save(&changed).await.unwrap_err().is::<InvalidInput>());
+    }
+    let count: i64 = database
+        .query_one(
+            "SELECT count(*) FROM public.memories WHERE agent_id = $1",
+            &[&agent_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 1);
+    let mut other_agent = keyed_memory(&format!("other-{agent_id}"));
+    other_agent.request.as_mut().unwrap().request_id =
+        original.request.as_ref().unwrap().request_id;
+    assert!(store
+        .lookup_write(other_agent.request.as_ref().unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    assert_ne!(
+        store.save(&other_agent).await.unwrap().memory_id,
+        receipt.memory_id
+    );
+    let unkeyed_first = store.save(&memory(&agent_id)).await.unwrap();
+    let unkeyed_second = store.save(&memory(&agent_id)).await.unwrap();
+    assert_ne!(unkeyed_first.memory_id, unkeyed_second.memory_id);
+    assert_ne!(unkeyed_first.memory_id, receipt.memory_id);
+}
+
+#[tokio::test]
+async fn idempotent_concurrent_writers_share_one_committed_result() {
+    let (store, database) = setup().await;
+    let agent_id = format!("idempotency-race-{}", Uuid::new_v4());
+    let original = keyed_memory(&agent_id);
+    let barrier = Arc::new(tokio::sync::Barrier::new(8));
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        let mut candidate = memory(&agent_id);
+        candidate.request = original.request.clone();
+        tasks.spawn(async move {
+            barrier.wait().await;
+            store.save(&candidate).await.unwrap()
+        });
+    }
+    let mut receipts = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        receipts.push(result.unwrap());
+    }
+    assert_eq!(receipts.len(), 8);
+    assert!(receipts.iter().all(|receipt| receipt == &receipts[0]));
+    let counts = database.query_one(
+        "SELECT (SELECT count(*) FROM public.memories WHERE agent_id = $1), \
+         (SELECT count(*) FROM public.fragments JOIN public.memories ON memory_id = memories.id WHERE agent_id = $1)",
+        &[&agent_id],
+    ).await.unwrap();
+    assert_eq!(counts.get::<_, i64>(0), 1);
+    assert_eq!(counts.get::<_, i64>(1), 2);
+    assert_eq!(
+        store
+            .lookup_write(original.request.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap(),
+        receipts[0]
+    );
+}
+
+#[tokio::test]
+async fn idempotent_failed_transaction_does_not_consume_the_request_key() {
+    let (store, database) = setup().await;
+    let agent_id = format!("idempotency-rollback-{}", Uuid::new_v4());
+    let original = keyed_memory(&agent_id);
+    let mut broken = original.clone();
+    broken.fragments[1].id = broken.fragments[0].id;
+    assert!(store.save(&broken).await.is_err());
+    assert!(store
+        .lookup_write(original.request.as_ref().unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    let count: i64 = database
+        .query_one(
+            "SELECT count(*) FROM public.memories WHERE agent_id = $1",
+            &[&agent_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0);
+    let receipt = store.save(&original).await.unwrap();
+    assert_eq!(receipt.memory_id, original.id);
+    assert_eq!(
+        store
+            .lookup_write(original.request.as_ref().unwrap())
+            .await
+            .unwrap(),
+        Some(receipt)
+    );
+}
+
+#[tokio::test]
+async fn reopening_idempotency_migration_does_not_block_active_readers() {
+    let (_store, mut reader) = setup().await;
+    let read_transaction = reader.transaction().await.unwrap();
+    read_transaction
+        .query("SELECT id FROM public.memories LIMIT 1", &[])
+        .await
+        .unwrap();
+    let (migration, connection) = tokio_postgres::connect(&database_url(), NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    migration
+        .batch_execute("SET lock_timeout = '100ms'")
+        .await
+        .unwrap();
+    let result = migration
+        .batch_execute(include_str!(
+            "../crates/mindleak-storage-postgres/migrations/0004-idempotent-writes.sql"
+        ))
+        .await;
+    read_transaction.rollback().await.unwrap();
+    assert!(
+        result.is_ok(),
+        "current idempotency metadata must not require DDL locks: {result:?}"
+    );
 }
 
 struct QueryEmbedder;
