@@ -5,11 +5,11 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use mindleak_decomposition::{OpenAiDecomposer, SentenceDecomposer};
-use mindleak_embeddings::OpenAiEmbedder;
+use mindleak_embeddings::{OpenAiEmbedder, OpenAiRelevanceRetriever};
 use mindleak_mcp::{http_router, MemoryMcp};
 use mindleak_memory::{MemoryDecomposer, MemoryRetriever, MemoryService, TextEmbedder};
 use mindleak_storage_postgres::{
-    KeywordMemoryRetriever, PostgresMemoryStore, VectorMemoryRetriever,
+    HybridMemoryRetriever, KeywordMemoryRetriever, PostgresMemoryStore, VectorMemoryRetriever,
 };
 use rmcp::{transport::stdio, ServiceExt};
 use tokio_util::sync::CancellationToken;
@@ -75,18 +75,36 @@ async fn main() -> Result<()> {
         None => None,
     };
     let decomposer: Arc<dyn MemoryDecomposer> = match config.decomposition {
-        Some(model) => Arc::new(OpenAiDecomposer::new(
-            model_client()?,
-            model.endpoint,
-            model.model,
-            model.api_key,
-        )),
+        Some(model) => Arc::new(
+            OpenAiDecomposer::new(model_client()?, model.endpoint, model.model, model.api_key)
+                .with_reasoning_effort(config.decomposition_reasoning_effort)?,
+        ),
         None => Arc::new(SentenceDecomposer),
     };
-    let retriever: Arc<dyn MemoryRetriever> = match &embedder {
-        Some(embedder) => Arc::new(VectorMemoryRetriever::new(store.clone(), embedder.clone())),
+    let mut retriever: Arc<dyn MemoryRetriever> = match &embedder {
+        Some(embedder) if config.retrieval == config::RetrievalMode::Hybrid => Arc::new(
+            HybridMemoryRetriever::new(store.clone(), embedder.clone())
+                .with_min_similarity(config.min_similarity)?,
+        ),
+        Some(embedder) => Arc::new(
+            VectorMemoryRetriever::new(store.clone(), embedder.clone())
+                .with_min_similarity(config.min_similarity)?,
+        ),
         None => Arc::new(KeywordMemoryRetriever::new(store.clone())),
     };
+    if let Some(model) = config.relevance {
+        retriever = Arc::new(
+            OpenAiRelevanceRetriever::new(
+                retriever,
+                model_client()?,
+                model.endpoint,
+                model.model,
+                model.api_key,
+                config.relevance_candidates,
+            )?
+            .with_reasoning_effort(config.relevance_reasoning_effort)?,
+        );
+    }
     let server = MemoryMcp::new(MemoryService::new(
         Arc::new(store.clone()),
         decomposer,

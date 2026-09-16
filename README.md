@@ -27,9 +27,9 @@ keyword search, with no model calls. Add LM Studio, Ollama, or another
 OpenAI-compatible provider for richer fact extraction and semantic recall.
 
 Prefer a download to a source build? Native archives plug into MCP over stdio.
-The all-in-one image bundles the server and PostgreSQL, with publishing prepared
-for `monkeemagic/mindleak-light` on Docker Hub. See [installation options](docs/INSTALL.md)
-for availability, connection templates, persistent volumes, and local image builds.
+The all-in-one container bundles the server and PostgreSQL. See
+[installation options](docs/INSTALL.md) for current release availability,
+connection templates, persistent volumes, and local image builds.
 
 ## Quickstart
 
@@ -100,13 +100,21 @@ Your agent may require approval before making tool calls.
 |---|---|---|
 | Quickstart, no models | Sentences and list items, wording preserved | Indexed keyword search |
 | Optional chat model | Independent facts extracted from prose | Keyword search still available |
-| Optional embedding model | Either decomposition mode | Semantic vector search |
+| Optional embedding model | Either decomposition mode | Semantic vector or hybrid keyword/vector search |
 
-Chat extraction and embeddings are independent options. We recommend both for
-messy prose and natural-language recall; they add inference time and need a
-working provider. [Set up LM Studio or another provider](docs/MODELS.md).
-Existing memories stay stored when switching modes; unembedded memories remain
-keyword-searchable but are not automatically added to vector search.
+Chat extraction and embeddings are independent options. Add embeddings for
+natural-language recall; enable chat extraction when sentence/list splitting is
+insufficient. Each adds inference time and needs a working provider.
+[Set up LM Studio or another provider](docs/MODELS.md).
+
+Existing memories stay stored when switching modes. Hybrid recall can include
+older unembedded memories through keyword search; vector-only recall cannot.
+Semantic search returns nearest neighbours by default, even for unrelated
+queries. An optional similarity threshold filters semantic candidates, but needs
+calibration on your data and does not filter hybrid's keyword matches.
+
+Hybrid recall and similarity thresholds are **unreleased** and require a source
+build containing these changes; they are not included in v0.1.0 downloads.
 
 ## Documentation
 
@@ -115,7 +123,7 @@ keyword-searchable but are not automatically added to vector search.
 | Install a pluggable binary or an all-in-one container | [Installation](docs/INSTALL.md) |
 | Connect an agent, understand the tools, or troubleshoot | [Agent integration](docs/INTEGRATION.md) |
 | Add LM Studio, Ollama, or hosted models | [Optional models](docs/MODELS.md) |
-| Measure recall quality and compare configurations | [Recall benchmarks](docs/BENCHMARKS.md) |
+| Measure recall quality and compare configurations | [Benchmark guide](docs/BENCHMARKS.md), [measured results and limits](docs/BENCHMARK-RESULTS.md) |
 | Build, test, or contribute | [Developer guide](DEVELOPERS.md) |
 | Understand storage and design decisions | [Architecture](docs/ARCHITECTURE.md), [ADRs](adr.d/README.md) |
 | Deploy beyond my laptop | [Security](SECURITY.md), [limitations](docs/KNOWN-LIMITATIONS.md) |

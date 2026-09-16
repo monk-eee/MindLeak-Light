@@ -63,19 +63,20 @@ Remote endpoints require HTTPS and an explicit token.
 The essential calls, once your SDK client is connected, are:
 
 ```js
+const requestOptions = { timeout: 660_000 };
 const saved = await client.callTool({
   name: "write_memory",
   arguments: {
     agentId: "review-agent",
     text: "The team requires reviews. Keep pull requests under 500 LOC."
   }
-});
+}, undefined, requestOptions);
 if (saved.isError) throw new Error("Memory was not saved");
 
 const recalled = await client.callTool({
   name: "recall_memory",
   arguments: { query: "reviews", limit: 5 }
-});
+}, undefined, requestOptions);
 if (recalled.isError) throw new Error("Recall failed");
 const fragments = recalled.structuredContent.results;
 ```
@@ -83,6 +84,12 @@ const fragments = recalled.structuredContent.results;
 An MCP response can arrive successfully while `isError` is true. Always check
 that flag before claiming a write succeeded. The complete example also checks
 the result shape and closes its connection.
+
+The example allows up to 660 seconds per write or recall, matching the server's
+HTTP request budget instead of the SDK's 60-second default. Writes can make
+sequential decomposition and embedding requests; recall can make sequential
+embedding and relevance-selection requests. `MINDLEAK_MODEL_TIMEOUT_SECS` still
+bounds each provider request separately. The example does not retry failed writes.
 
 ## Put Memory Into the Agent's Routine
 
@@ -120,8 +127,26 @@ Blank inputs are rejected. Raw text and all fragments commit atomically.
 
 Keyword search uses English stemming and stop words; `reviews`, `pull requests`,
 or `reviews OR approvals` work well. Normalized keyword ranks are in `[0, 1)`.
-Vector scores are cosine similarity in `[-1, 1]`. Neither is a confidence
-probability, and scores from the two modes are not interchangeable.
+Vector scores are cosine similarity in `[-1, 1]`. Hybrid scores are normalized
+reciprocal rank fusion in `(0, 1]`, with at most fifty candidates per branch.
+None is a confidence probability, and scores from different modes are not
+interchangeable. A configured cosine floor filters semantic candidates; hybrid
+can still return keyword matches without vectors. See [model setup](MODELS.md)
+and [calibration](BENCHMARKS.md) before choosing a floor.
+
+Hybrid recall and cosine floors require a source build containing the unreleased
+changes; v0.1.0 packages support keyword and unfiltered vector recall only. The
+three MCP tool names and argument shapes are unchanged.
+
+The optional `MINDLEAK_RELEVANCE=openai` source feature filters existing
+candidates after retrieval. It does not generate result text or replace scores
+with confidence values. Selected fragments keep their original text, IDs,
+provenance, scores, and ordering. Valid empty selections return `[]`; failed,
+malformed, or timed-out model responses return an error. With vector/hybrid
+retrieval there may be two sequential provider calls, so size the MCP client
+timeout for query embedding plus selection. The combined query/candidate text
+budget is 32768 UTF-8 bytes, and overflow is an error rather than truncation.
+The default remains `off`; see [model setup](MODELS.md#experimental-relevance-filter).
 
 Writes are not idempotent. A network failure after commit can hide a successful
 write's ID; reconcile before retrying rather than blindly duplicating memories.
@@ -160,8 +185,10 @@ share a single running server.
 | HTTP 401 | Send the exact bearer token configured on the server, including on `/health`. |
 | Browser request returns 403 | Browser Origin requests are intentionally rejected. Use an MCP client. |
 | Server connects but no memory tools appear | Restart the MCP connection, approve trust, and enable the tools in the client. |
-| Recall is empty | Try a short keyword, check `agentId`, and verify the earlier write returned a memory ID. |
-| Old memories disappear from vector results | They may have no embeddings. They remain stored and searchable in keyword mode. |
+| Recall is empty | Try a short keyword, check `agentId`, and verify the earlier write returned a memory ID. In vector or hybrid mode, check whether a configured similarity floor rejected semantic candidates. |
+| Recall returns unrelated memories | Unfiltered vector search returns nearest neighbours, not guaranteed relevant facts. Calibrate a similarity floor using positive and negative queries; hybrid keyword matches remain eligible independently. |
+| Old memories disappear from vector results | They may have no embeddings. They remain stored and keyword-searchable, including through hybrid recall in a source build containing that mode. |
+| Hybrid mode is rejected or a similarity setting has no effect | Check the binary/image revision and the environment passed to the server. v0.1.0 predates these settings; see [installation](INSTALL.md) for all-in-one forwarding requirements. |
 | A model error appears during quickstart | Set `MINDLEAK_DECOMPOSITION=sentences` and `MINDLEAK_RETRIEVAL=keyword`, then recreate the MCP container. |
 
 `docker compose logs --tail 30 mcp` shows startup and operation errors.

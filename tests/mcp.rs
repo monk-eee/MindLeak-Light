@@ -76,6 +76,169 @@ fn call(name: &'static str, arguments: Value) -> CallToolRequestParams {
 }
 
 #[tokio::test]
+async fn vector_recall_honors_a_configured_similarity_floor() {
+    for retrieval in ["vector", "hybrid"] {
+        assert_similarity_floor(retrieval).await;
+    }
+}
+
+async fn assert_similarity_floor(retrieval: &str) {
+    let provider = provider().await;
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("relevance-{}", Uuid::new_v4());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "sentences".into()),
+        ("MINDLEAK_RETRIEVAL", retrieval.into()),
+        ("MINDLEAK_EMBED_MODEL", "test-model".into()),
+        ("MINDLEAK_EMBED_URL", format!("{}/v1", provider.uri())),
+        ("MINDLEAK_EMBED_DIMENSIONS", "2".into()),
+        ("MINDLEAK_RECALL_MIN_SIMILARITY", "0.5".into()),
+    ]);
+    let client = tokio::time::timeout(
+        Duration::from_secs(15),
+        ().serve(TokioChildProcess::new(command).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let written = client
+        .call_tool(call(
+            "write_memory",
+            json!({"agentId": agent_id, "text": "Team requires reviews."}),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(written.is_error, Some(true));
+    let relevant = client
+        .call_tool(call(
+            "recall_memory",
+            json!({"query": "reviews", "agentId": agent_id, "limit": 5}),
+        ))
+        .await
+        .unwrap();
+    let unrelated = client
+        .call_tool(call(
+            "recall_memory",
+            json!({"query": "PR preferences?", "agentId": agent_id, "limit": 5}),
+        ))
+        .await
+        .unwrap();
+    client.cancel().await.unwrap();
+    assert_eq!(
+        relevant.structured_content.unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(unrelated.structured_content.unwrap()["results"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn relevance_model_filters_candidates_without_changing_facts_or_hiding_failures() {
+    let provider = provider().await;
+    let relevance = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &Request| {
+            let body: Value = request.body_json().unwrap();
+            let input: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let selected: Vec<Value> = if input["query"] == "What approval is required?" {
+                input["candidates"].as_array().unwrap().iter()
+                    .filter(|candidate| candidate["text"] == "Team requires reviews.")
+                    .map(|candidate| json!({"index": candidate["index"], "evidence": candidate["text"]}))
+                    .collect()
+            } else {
+                vec![]
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"choices": [{
+                "finish_reason": "stop", "message": {"content": json!({"requested_detail": "approval requirement", "relevant": selected}).to_string()}
+            }]}))
+        })
+        .mount(&relevance).await;
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("relevance-model-{}", Uuid::new_v4());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "sentences".into()),
+        ("MINDLEAK_RETRIEVAL", "hybrid".into()),
+        ("MINDLEAK_EMBED_MODEL", "test-model".into()),
+        ("MINDLEAK_EMBED_URL", format!("{}/v1", provider.uri())),
+        ("MINDLEAK_EMBED_DIMENSIONS", "2".into()),
+        ("MINDLEAK_RELEVANCE", "openai".into()),
+        ("MINDLEAK_RELEVANCE_URL", format!("{}/v1", relevance.uri())),
+        ("MINDLEAK_RELEVANCE_MODEL", "relevance-model".into()),
+        ("MINDLEAK_RELEVANCE_CANDIDATES", "3".into()),
+    ]);
+    let client = tokio::time::timeout(
+        Duration::from_secs(15),
+        ().serve(TokioChildProcess::new(command).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 3);
+    let written = client
+        .call_tool(call(
+            "write_memory",
+            json!({
+                "agentId": agent_id, "text": "Team requires reviews. The server uses PostgreSQL."
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(written.is_error, Some(true));
+    let memory_id = written.structured_content.unwrap()["memoryId"].clone();
+    let relevant = client
+        .call_tool(call(
+            "recall_memory",
+            json!({
+                "query": "What approval is required?", "agentId": agent_id, "limit": 1
+            }),
+        ))
+        .await
+        .unwrap();
+    let content = relevant.structured_content.unwrap();
+    let matches = content["results"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["memoryId"], memory_id);
+    assert_eq!(matches[0]["text"], "Team requires reviews.");
+    let absent = client
+        .call_tool(call(
+            "recall_memory",
+            json!({
+                "query": "What is the payroll budget?", "agentId": agent_id, "limit": 1
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(absent.is_error, Some(true));
+    assert_eq!(absent.structured_content.unwrap()["results"], json!([]));
+    relevance.reset().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&relevance)
+        .await;
+    let failed = client
+        .call_tool(call(
+            "recall_memory",
+            json!({
+                "query": "What approval is required?", "agentId": agent_id, "limit": 1
+            }),
+        ))
+        .await
+        .unwrap();
+    client.cancel().await.unwrap();
+    assert_eq!(failed.is_error, Some(true));
+}
+
+#[tokio::test]
 async fn real_stdio_process_decomposes_writes_recalls_and_refuses_failed_writes() {
     let provider = provider().await;
     let directory = tempfile::tempdir().unwrap();

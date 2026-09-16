@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { benchmarkSettings, runBenchmark, scoreRanking, summarizeQueries, validateDataset } from "./benchmark-recall.mjs";
+import { benchmarkSettings, calibrateSimilarity, runBenchmark, runDecompositionBenchmark, scoreDecomposition, scoreRanking, summarizeQueries, validateDataset, withBackground } from "./benchmark-recall.mjs";
 
 test("perfect rankings have unit precision, recall, reciprocal rank, and nDCG", () => {
   assert.deepEqual(scoreRanking(["alpha", "beta"], ["alpha", "beta"], 2), {
@@ -128,7 +128,7 @@ function mockClient(rankings = [["beta", "alpha"], []]) {
             memoryId: `stored-${identifier}`,
             fragmentId: `fragment-${index}`,
             agentId: request.arguments.agentId,
-            text: "This returned fragment must not appear in the report.",
+            text: dataset.memories.find((memory) => memory.id === identifier)?.text ?? "Unknown fact.",
             score: 1 / (index + 1),
           })),
         },
@@ -166,6 +166,42 @@ test("corpus validation rejects ambiguous IDs, broken labels, and invalid text",
   }
 });
 
+test("the larger corpus has distinct memories, traceable sources, and disjoint labelled facts", () => {
+  const corpus = validateDataset(JSON.parse(readFileSync(new URL("./fixtures/recall-v2.json", import.meta.url), "utf8")));
+  assert.ok(corpus.memories.length >= 200);
+  assert.equal(new Set(corpus.memories.map((memory) => memory.text.toLowerCase())).size, corpus.memories.length);
+  assert.equal(corpus.memories.filter((memory) => memory.id.startsWith("ml-")).length, 24);
+  assert.ok(corpus.sources.some((source) => source.repository === "https://github.com/monk-eee/MindLeak"));
+  const labels = {};
+  for (const split of ["calibration", "evaluation"]) {
+    const queries = corpus.queries.filter((query) => query.split === split);
+    assert.ok(queries.length >= 52);
+    assert.ok(queries.filter((query) => !query.relevantIds.length).length >= 20);
+    labels[split] = new Set(queries.flatMap((query) => query.relevantIds));
+  }
+  assert.ok([...labels.calibration].every((identifier) => !labels.evaluation.has(identifier)));
+  assert.equal(new Set(corpus.queries.map((query) => query.query.toLowerCase())).size, corpus.queries.length);
+});
+
+test("multi-fact fixtures cover paired extraction risks and label every expected fact", () => {
+  const corpus = validateDataset(JSON.parse(readFileSync(new URL("./fixtures/recall-v2.json", import.meta.url), "utf8")));
+  assert.equal(corpus.memories.length, 240);
+  assert.equal(corpus.queries.length, 176);
+  const categories = ["scope_negation", "quantities_units", "exceptions", "uncertainty", "coreference", "ambiguous_entity", "temporal", "identifiers", "list_structure", "duplicate_claims", "untrusted_quotes", "compound_claims"];
+  for (const split of ["calibration", "evaluation"]) {
+    const memories = corpus.memories.filter((memory) => memory.facts && memory.split === split);
+    assert.equal(memories.length, 12);
+    assert.deepEqual(new Set(memories.map((memory) => memory.category)), new Set(categories));
+    const queries = corpus.queries.filter((query) => query.split === split);
+    const referenced = new Set(queries.flatMap((query) => query.relevantIds));
+    for (const memory of memories) {
+      assert.ok(memory.facts.length >= 2);
+      assert.ok(memory.facts.every((fact) => referenced.has(fact.id)));
+    }
+    assert.equal(queries.filter((query) => !query.relevantIds.length).length, 32);
+  }
+});
+
 test("the runner writes once, filters every query, and keeps gold labels out of requests", async () => {
   const client = mockClient();
   const result = await runBenchmark(client, dataset, { limit: 2, agentId: "isolated-test-run" });
@@ -190,6 +226,22 @@ test("the runner gives each invocation a fresh namespace", async () => {
   const first = await runBenchmark(mockClient(), dataset);
   const second = await runBenchmark(mockClient(), dataset);
   assert.notEqual(first.agentId, second.agentId);
+});
+
+test("the right source ID cannot earn fact credit for the wrong number", async () => {
+  const client = mockClient([["alpha"], []]);
+  const original = client.callTool.bind(client);
+  client.callTool = async (request) => {
+    const response = await original(request);
+    for (const fragment of response.structuredContent.results ?? []) {
+      fragment.text = "The service requires one review.";
+    }
+    return response;
+  };
+  const report = await runBenchmark(client, dataset);
+  assert.equal(report.summary.recallAtK, 0);
+  assert.equal(report.sourceSummary.recallAtK, 1);
+  assert.equal(report.unverifiedFragments, 1);
 });
 
 test("invalid datasets and cutoffs fail before any MCP calls", async () => {
@@ -325,4 +377,252 @@ test("CLI help works without a server, database, or installed MCP dependencies",
   assert.match(output, /MINDLEAK_TEST_DATABASE_URL/);
   assert.match(output, /--min-recall/);
   assert.match(output, /JSON reports go to stdout/);
+});
+
+test("split selection happens before writing and reports only selected queries", async () => {
+  const corpus = structuredClone(dataset);
+  corpus.queries[0].split = "calibration";
+  corpus.queries[1].split = "evaluation";
+  const client = mockClient();
+  const report = await runBenchmark(client, corpus, { split: "calibration" });
+  assert.equal(report.queries.length, 1);
+  assert.equal(report.queries[0].id, "reviews");
+  assert.equal(report.split, "calibration");
+  assert.deepEqual(report.queries[0].scores, [1, 0.5]);
+  assert.equal(report.latency.write.count, 2);
+  assert.equal(report.latency.recall.count, 1);
+  assert.ok(report.latency.recall.p95Ms >= 0);
+  const untouched = mockClient();
+  await assert.rejects(runBenchmark(untouched, dataset, { split: "evaluation" }), /no queries/);
+  assert.equal(untouched.calls.length, 0);
+  corpus.queries[1].query = corpus.queries[0].query;
+  assert.throws(() => validateDataset(corpus), /different splits/);
+});
+
+function calibrationReport() {
+  return {
+    reportVersion: 3,
+    scoring: "verified-fact-variants",
+    split: "calibration",
+    limit: 5,
+    configuration: { retrieval: "vector", minSimilarity: null, embeddingModel: "test-model", embeddingDimensions: 2 },
+    dataset: { id: "test-corpus", sha256: "test-digest" },
+    queries: [
+      { id: "positive", split: "calibration", rankedIds: ["alpha"], scores: [0.86], relevantIds: ["alpha"] },
+      { id: "negative", split: "calibration", rankedIds: ["beta"], scores: [0.70], relevantIds: [] },
+    ],
+  };
+}
+
+test("calibration selects a score gap with an explicit recall constraint", () => {
+  const result = calibrateSimilarity(calibrationReport(), 1);
+  assert.equal(result.minSimilarity, (0.86 + 0.70) / 2);
+  assert.equal(result.summary.recallAtK, 1);
+  assert.equal(result.summary.noAnswerAccuracy, 1);
+  assert.deepEqual(result.queryIds, ["positive", "negative"]);
+  assert.equal(result.embeddingModel, "test-model");
+});
+
+test("calibration rejects held-out leakage, fused scores, filtered runs, and invalid data", () => {
+  for (const mutate of [
+    (report) => { report.split = "evaluation"; },
+    (report) => { report.queries[0].split = "evaluation"; },
+    (report) => { report.configuration.retrieval = "hybrid"; },
+    (report) => { report.configuration.relevance = "openai"; },
+    (report) => { report.configuration.minSimilarity = 0.7; },
+    (report) => { report.queries.pop(); },
+    (report) => { report.queries[0].scores = []; },
+    (report) => { report.queries[0].scores = [NaN]; },
+    (report) => { report.queries[0].scores = [1.1]; },
+    (report) => { report.queries[0].relevantIds = ["missing"]; },
+  ]) {
+    const report = calibrationReport();
+    mutate(report);
+    assert.throws(() => calibrateSimilarity(report, 1));
+  }
+});
+
+test("hybrid settings propagate only explicit similarity and quality gates", () => {
+  const environment = {
+    ...testEnvironment,
+    MINDLEAK_EMBED_URL: "http://localhost:1234/v1",
+    MINDLEAK_EMBED_MODEL: "test-model",
+    MINDLEAK_EMBED_DIMENSIONS: "2",
+    MINDLEAK_RECALL_MIN_SIMILARITY: "0.99",
+  };
+  const settings = benchmarkSettings(environment, { retrieval: "hybrid", "min-similarity": "0.7", "min-no-answer": "0.8", split: "evaluation" });
+  assert.equal(settings.serverEnvironment.MINDLEAK_RECALL_MIN_SIMILARITY, "0.7");
+  assert.equal(settings.configuration.minSimilarity, 0.7);
+  assert.equal(settings.minimumNoAnswer, 0.8);
+  assert.equal(benchmarkSettings(environment, { retrieval: "vector" }).serverEnvironment.MINDLEAK_RECALL_MIN_SIMILARITY, undefined);
+  for (const options of [
+    { "min-similarity": "0.7" },
+    { retrieval: "vector", "min-similarity": "" },
+    { retrieval: "vector", "min-similarity": "1.1" },
+    { "min-no-answer": "NaN" },
+    { "min-no-answer": "1.1" },
+    { split: "unknown" },
+  ]) assert.throws(() => benchmarkSettings(environment, options));
+});
+
+const compound = {
+  id: "policy",
+  category: "negation_and_exception",
+  split: "evaluation",
+  text: "In test environments, Arbor retains logs for 14 days. Arbor does not export logs unless an operator approves.",
+  facts: [
+    { id: "retention", text: "In test environments, Arbor retains logs for 14 days", variants: ["Arbor keeps test-environment logs for fourteen days"] },
+    { id: "approval", text: "Arbor does not export logs unless an operator approves" },
+  ],
+};
+
+test("decomposition scoring rejects changed quantities, dropped qualifiers, and reversed negation", () => {
+  for (const text of [
+    "In test environments, Arbor retains logs for 30 days",
+    "Arbor retains logs for 14 days",
+    "Arbor exports logs unless an operator approves",
+    "Arbor does not export logs",
+    "Arbor will retain logs for 14 days in every environment",
+  ]) {
+    const score = scoreDecomposition(compound, [text]);
+    assert.equal(score.verifiedFactRecall, 0);
+    assert.equal(score.unverified.length, 1);
+    assert.ok(!JSON.stringify(score).includes(text));
+  }
+});
+
+test("decomposition scoring accepts reviewed variants but does not credit merged or duplicate claims twice", () => {
+  const full = scoreDecomposition(compound, ["  Arbor keeps test-environment logs for fourteen days. ", compound.facts[1].text]);
+  assert.equal(full.verifiedFactRecall, 1);
+  assert.equal(full.verifiedFragmentPrecision, 1);
+  const duplicate = scoreDecomposition(compound, [compound.facts[0].text, compound.facts[0].text]);
+  assert.equal(duplicate.verifiedFactRecall, 0.5);
+  assert.equal(duplicate.duplicateFragments, 1);
+  assert.equal(duplicate.verifiedFragmentPrecision, 0.5);
+  assert.equal(scoreDecomposition(compound, [compound.text]).verifiedFactRecall, 0);
+  assert.equal(scoreDecomposition(compound, []).verifiedFactRecall, 0);
+});
+
+test("fact verification preserves case-sensitive identifiers and assertion punctuation", () => {
+  const memory = { id: "flag", text: "Cirrus enables the allowHTTP flag." };
+  assert.equal(scoreDecomposition(memory, ["Cirrus enables the allowHttp flag."]).verifiedFactRecall, 0);
+  assert.equal(scoreDecomposition(memory, ["Cirrus enables the allowHTTP flag?"]).verifiedFactRecall, 0);
+});
+
+test("extraction-only evaluates selected gold facts without writes or sending labels", async () => {
+  const corpus = { schemaVersion: 1, id: "compound", memories: [compound], queries: [
+    { id: "retention-query", category: "qualifier", split: "evaluation", query: "test log retention", relevantIds: ["retention"] },
+  ] };
+  const requests = [];
+  const client = { async callTool(request) {
+    requests.push(request);
+    return { structuredContent: { results: compound.facts.map((fact) => fact.text) } };
+  } };
+  const report = await runDecompositionBenchmark(client, corpus);
+  assert.deepEqual(requests, [{ name: "decompose_memory", arguments: { text: compound.text } }]);
+  assert.equal(report.summary.verifiedFactRecall, 1);
+  assert.equal(report.summary.missingFacts, 0);
+  assert.ok(!JSON.stringify(report).includes(compound.text));
+  await assert.rejects(runDecompositionBenchmark({ async callTool() { return { isError: true }; } }, corpus), /failed/);
+});
+
+test("multi-fact recall scores the requested fact rather than any fact from the same source", async () => {
+  const corpus = { schemaVersion: 1, id: "compound", memories: [compound], queries: [
+    { id: "retention-query", category: "qualifier", split: "evaluation", query: "test log retention", relevantIds: ["retention"] },
+  ] };
+  const client = { async callTool(request) {
+    if (request.name === "write_memory") return { structuredContent: { memoryId: "source" } };
+    return { structuredContent: { results: [{
+      memoryId: "source", fragmentId: "wrong-fact", agentId: request.arguments.agentId,
+      text: compound.facts[1].text, score: 0.9,
+    }] } };
+  } };
+  const report = await runBenchmark(client, corpus);
+  assert.equal(report.summary.recallAtK, 0);
+  assert.equal(report.sourceSummary.recallAtK, 1);
+  assert.deepEqual(report.queries[0].rankedIds, ["approval"]);
+  assert.deepEqual(report.queries[0].missedIds, ["retention"]);
+  assert.equal(report.unverifiedFragments, 0);
+});
+
+test("background corpora add distractors without importing exposed query labels", () => {
+  const background = { schemaVersion: 1, id: "background", memories: [{ id: "gamma", text: "Background fact." }], queries: [
+    { id: "exposed", category: "lexical", query: "background", relevantIds: ["gamma"] },
+  ] };
+  const combined = withBackground(dataset, background);
+  assert.equal(combined.memories.length, 3);
+  assert.deepEqual(combined.queries, dataset.queries);
+  assert.equal(dataset.memories.length, 2);
+  assert.equal(background.queries.length, 1);
+  assert.throws(() => withBackground(dataset, dataset), /unique/);
+});
+
+test("relevance benchmarking requires explicit settings and does not inherit active service modes", () => {
+  const environment = {
+    ...testEnvironment,
+    MINDLEAK_RELEVANCE: "openai",
+    MINDLEAK_RELEVANCE_URL: "http://localhost:11434/v1",
+    MINDLEAK_RELEVANCE_MODEL: "relevance-model",
+    MINDLEAK_RELEVANCE_API_KEY: "private-relevance-key",
+  };
+  const defaults = benchmarkSettings(environment);
+  assert.equal(defaults.serverEnvironment.MINDLEAK_RELEVANCE, "off");
+  assert.equal(defaults.configuration.relevanceModel, null);
+  assert.equal(defaults.serverEnvironment.MINDLEAK_RELEVANCE_API_KEY, undefined);
+  const enabled = benchmarkSettings(environment, { relevance: "openai", "relevance-candidates": "12" });
+  assert.equal(enabled.configuration.relevanceModel, "relevance-model");
+  assert.equal(enabled.configuration.relevanceCandidates, 12);
+  assert.equal(enabled.serverEnvironment.MINDLEAK_RELEVANCE_CANDIDATES, "12");
+  assert.ok(!JSON.stringify(enabled.configuration).includes("private"));
+  for (const options of [
+    { relevance: "auto" }, { "relevance-candidates": "12" },
+    { relevance: "openai", "relevance-candidates": "0" },
+    { relevance: "openai", "relevance-candidates": "51" },
+    { relevance: "openai", "relevance-candidates": "1.5" },
+  ]) assert.throws(() => benchmarkSettings(environment, options));
+  assert.throws(() => benchmarkSettings(testEnvironment, { relevance: "openai" }), /MINDLEAK_RELEVANCE_URL/);
+});
+
+test("the fresh holdout has new targets and retains the full background as distractors only", () => {
+  const fresh = JSON.parse(readFileSync(new URL("./fixtures/recall-v3-holdout.json", import.meta.url), "utf8"));
+  const old = JSON.parse(readFileSync(new URL("./fixtures/recall-v2.json", import.meta.url), "utf8"));
+  const combined = withBackground(fresh, old);
+  assert.equal(fresh.memories.length, 32);
+  assert.equal(combined.memories.length, 272);
+  assert.equal(combined.queries.length, 32);
+  assert.equal(combined.queries.filter((query) => query.relevantIds.length === 0).length, 16);
+  assert.ok(combined.queries.every((query) => query.split === "evaluation"));
+  const oldFacts = new Set(old.memories.flatMap((memory) => memory.facts?.map((fact) => fact.id) ?? [memory.id]));
+  assert.ok(fresh.queries.flatMap((query) => query.relevantIds).every((identifier) => !oldFacts.has(identifier)));
+  const oldQueries = new Set(old.queries.map((query) => query.query.toLowerCase()));
+  assert.ok(fresh.queries.every((query) => !oldQueries.has(query.query.toLowerCase())));
+  assert.equal(fresh.memories.filter((memory) => memory.facts).length, 8);
+});
+
+test("benchmark reasoning controls are explicit and absent unless enabled", () => {
+  const environment = {
+    ...testEnvironment,
+    MINDLEAK_RELEVANCE_URL: "http://localhost:11434/v1",
+    MINDLEAK_RELEVANCE_MODEL: "test-model",
+    MINDLEAK_RELEVANCE_REASONING_EFFORT: "high",
+    MINDLEAK_LLM_URL: "http://localhost:11434/v1",
+    MINDLEAK_MODEL: "test-model",
+    MINDLEAK_LLM_REASONING_EFFORT: "high",
+  };
+  const defaults = benchmarkSettings(environment, { relevance: "openai", decomposition: "openai" });
+  assert.equal(defaults.serverEnvironment.MINDLEAK_RELEVANCE_REASONING_EFFORT, undefined);
+  assert.equal(defaults.serverEnvironment.MINDLEAK_LLM_REASONING_EFFORT, undefined);
+  const settings = benchmarkSettings(environment, {
+    relevance: "openai", "relevance-reasoning-effort": "none",
+    decomposition: "openai", "decomposition-reasoning-effort": "low",
+  });
+  assert.equal(settings.serverEnvironment.MINDLEAK_RELEVANCE_REASONING_EFFORT, "none");
+  assert.equal(settings.serverEnvironment.MINDLEAK_LLM_REASONING_EFFORT, "low");
+  assert.deepEqual(settings.reasoning, { relevance: "none", decomposition: "low" });
+  for (const options of [
+    { "relevance-reasoning-effort": "none" },
+    { "decomposition-reasoning-effort": "none" },
+    { relevance: "openai", "relevance-reasoning-effort": "automatic" },
+    { decomposition: "openai", "decomposition-reasoning-effort": "" },
+  ]) assert.throws(() => benchmarkSettings(environment, options));
 });

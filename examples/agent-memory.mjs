@@ -17,6 +17,7 @@ const client = new Client({ name: "mindleak-light-example", version: "1.0.0" });
 const transport = new StreamableHTTPClientTransport(url, {
   requestInit: { headers: { Authorization: `Bearer ${token}` } },
 });
+const requestOptions = { timeout: 660_000 };
 
 try {
   await client.connect(transport);
@@ -32,7 +33,7 @@ try {
       agentId,
       text: "The user prefers pull requests under 500 LOC. The team requires reviews.",
     },
-  });
+  }, undefined, requestOptions);
   if (written.isError || !written.structuredContent?.memoryId) {
     throw new Error("Memory write failed. Check server status and any enabled model configuration.");
   }
@@ -42,7 +43,7 @@ try {
   const recalled = await client.callTool({
     name: "recall_memory",
     arguments: { query: "reviews", agentId, limit: 5 },
-  });
+  }, undefined, requestOptions);
   if (recalled.isError || !Array.isArray(recalled.structuredContent?.results)) {
     throw new Error("Memory recall failed.");
   }

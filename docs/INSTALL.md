@@ -9,10 +9,19 @@ embedding model; [models are a recommended optional upgrade](MODELS.md).
 | All-in-one container | One container to run and back up | Docker/Podman, a persistent volume, and an HTTP token |
 | Source Compose stack | Developing MindLeak itself | Git and Docker/Podman Compose |
 
-Native packages are produced by the release workflow. Docker Hub publishing is
-prepared for `monkeemagic/mindleak-light`; it still requires the maintainer's
-registry token and an explicit publishing run. Until a release is published, the
-[source quickstart](../README.md#quickstart) works today.
+Release status checked on **2026-09-16**: the four v0.1.0 native archives and
+checksums have been built, but the GitHub release remains an unpublished draft.
+The all-in-one image is published as `monkeemagic/mindleak-light:0.1.0` for
+Linux amd64 and arm64. No `latest` tag has been promoted. Check
+[GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases) for native
+download availability. The [source quickstart](../README.md#quickstart) remains
+available for the current source implementation.
+
+The v0.1.0 package supports model-free keyword recall and optional vector recall.
+Hybrid recall, configurable similarity thresholds, evidence-based relevance
+selection, reasoning controls, and the expanded fact-level benchmark are
+unreleased source changes. Build a revision containing them; setting their
+environment variables does not upgrade an older executable.
 
 ## Native Binary
 
@@ -56,8 +65,8 @@ This variant bundles the MCP binary and PostgreSQL/pgvector in one container.
 The database is reachable only through an internal Unix socket; only MCP's
 HTTP port is exposed. A process supervisor manages startup and shutdown.
 
-After an image is published, choose its version tag. For example, the initial
-`0.1.0` release will use:
+Pin the published version tag, or use the local build below for unreleased
+features. The initial `0.1.0` release runs with:
 
 ```sh
 docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.1.0
@@ -68,7 +77,7 @@ secret manager to inject a strong token and put the HTTP endpoint behind TLS.
 Connect your MCP client to `http://127.0.0.1:8088/mcp` with the matching bearer
 header. No separate database container or model server is needed.
 
-Before a registry image exists, build this variant from the repository:
+To build locally, including unreleased changes present in your checkout:
 
 ```sh
 docker build -f docker/Dockerfile --target all-in-one -t mindleak-light:all-in-one .
@@ -120,7 +129,14 @@ changing the image tag. This single-container package is convenient for a laptop
 or small deployment, not a high-availability database service.
 
 For optional models, pass the [model settings](MODELS.md) as container environment
-variables. A host model server may require
+variables. For a calibrated similarity threshold in a source-built all-in-one
+image, set `MINDLEAK_RECALL_MIN_SIMILARITY` in your shell or `.env`. Both Compose
+templates forward it, defaulting to `-1` (unfiltered) when unset or empty.
+Recreate the all-in-one container with
+`docker compose -f docker/compose.all-in-one.yml up --detach --wait` after changing
+the setting. With `docker run`, pass it explicitly using `--env`.
+
+A host model server may require
 `--add-host host.docker.internal:host-gateway` and local network access. Keep the
 database managed internally; use the native binary or app-only image when you
 want a separately managed PostgreSQL service.
