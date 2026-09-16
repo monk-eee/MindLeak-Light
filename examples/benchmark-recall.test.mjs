@@ -1054,6 +1054,78 @@ test("paired regression gates fail for quality losses and absent metric populati
   assert.equal(compareReports(baseline, candidate, { resamples: 200, maxNoAnswerDrop: 0 }).gates.passed, false);
 });
 
+test("per-query regression gates reject losses hidden by unchanged averages", () => {
+  const baseline = comparableReport();
+  baseline.queries[0].rankedIds = ["fact-one"];
+  baseline.queries[0].scores = [0.9];
+  baseline.queries[2].rankedIds = [];
+  baseline.queries[2].scores = [];
+  const candidate = comparableReport();
+  candidate.queries[1].rankedIds = ["fact-two"];
+  candidate.queries[1].scores = [0.9];
+  candidate.queries[3].rankedIds = [];
+  candidate.queries[3].scores = [];
+  const options = { resamples: 200, maxRecallDrop: 0, maxNoAnswerDrop: 0, maxRegressedQueries: 0 };
+  const result = compareReports(baseline, candidate, options);
+  assert.equal(result.metrics.recallAtK.delta, 0);
+  assert.equal(result.metrics.noAnswerAccuracy.delta, 0);
+  assert.equal(result.gates.passed, false);
+  const gate = result.gates.checks.find(check => check.metric === "regressedQueries");
+  assert.deepEqual(gate.queryIds, ["negative-one", "positive-one"]);
+  assert.equal(gate.observedQueries, 2);
+  assert.equal(compareReports(baseline, candidate, { ...options, maxRegressedQueries: 2 }).gates.passed, true);
+  assert.equal(compareReports(baseline, baseline, options).gates.passed, true);
+  for (const invalid of [-1, 0.5, NaN, Infinity, "0"]) {
+    assert.throws(() => compareReports(baseline, candidate, { ...options, maxRegressedQueries: invalid }), /regressed queries/i);
+  }
+});
+
+test("per-query gates retain fact-level losses even when ranking metrics are identical", () => {
+  const baseline = comparableReport();
+  baseline.queries[0].relevantIds = ["fact-one", "another-valid-fact"];
+  baseline.queries[0].rankedIds = ["fact-one"];
+  baseline.queries[0].scores = [0.9];
+  const candidate = structuredClone(baseline);
+  candidate.queries[0].rankedIds = ["another-valid-fact"];
+  const result = compareReports(baseline, candidate, { resamples: 200, maxRegressedQueries: 0 });
+  assert.equal(result.metrics.recallAtK.delta, 0);
+  assert.equal(result.metrics.mrrAtK.delta, 0);
+  assert.equal(result.gates.passed, false);
+  const query = result.queries.find(query => query.id === "positive-one");
+  assert.deepEqual(query.lostRelevantIds, ["fact-one"]);
+  assert.equal(query.regressed, true);
+});
+
+test("per-query gates catch repeat-pass failures without inflating the quality population", () => {
+  const baseline = comparableReport();
+  baseline.queries[0].rankedIds = ["fact-one"];
+  baseline.queries[0].scores = [0.9];
+  const candidate = structuredClone(baseline);
+  candidate.passes = 3;
+  for (const pass of [2, 3]) {
+    candidate.queries.push(...baseline.queries.map(query => ({
+      ...query, pass,
+      rankedIds: query.id === "positive-one" ? [] : query.rankedIds,
+      scores: query.id === "positive-one" ? [] : query.scores,
+    })));
+  }
+  const result = compareReports(baseline, candidate, { resamples: 200, maxRegressedQueries: 0 });
+  assert.equal(result.qualityPass, 1);
+  assert.equal(result.uniqueQueries, baseline.queries.length);
+  assert.equal(result.metrics.recallAtK.delta, 0);
+  assert.equal(result.gates.passed, false, "A good first pass must not conceal broken repeat recall");
+  const gate = result.gates.checks.find(check => check.metric === "regressedQueries");
+  assert.equal(gate.observedQueries, 1);
+  assert.deepEqual(gate.queryIds, ["positive-one"]);
+  const query = result.queries.find(query => query.id === "positive-one");
+  assert.deepEqual(query.regressedPasses.map(item => [item.pass, item.baselinePass, item.lostRelevantIds]), [
+    [2, 1, ["fact-one"]], [3, 1, ["fact-one"]],
+  ]);
+  assert.equal(compareReports(baseline, candidate, { resamples: 200, maxRegressedQueries: 1 }).gates.passed, true);
+  assert.equal(compareReports(candidate, candidate, { resamples: 200, maxRegressedQueries: 0 }).gates.passed, true,
+    "Compare corresponding baseline passes when they exist");
+});
+
 test("offline comparison CLI emits reports on pass and failure without server credentials", (context) => {
   const directory = mkdtempSync(join(tmpdir(), "mindleak-comparison-"));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -1069,12 +1141,13 @@ test("offline comparison CLI emits reports on pass and failure without server cr
     if (expectedExit === 1) { candidate.queries[0].rankedIds = []; candidate.queries[0].scores = []; }
     writeFileSync(candidatePath, JSON.stringify(candidate));
     const result = spawnSync(process.execPath, [script, "--baseline", baselinePath, "--candidate", candidatePath,
-      "--resamples", "200", "--seed", "0", "--max-recall-drop", "0"], { encoding: "utf8", timeout: 10000,
+      "--resamples", "200", "--seed", "0", "--max-recall-drop", "0", "--max-regressed-queries", "0"], { encoding: "utf8", timeout: 10000,
       env: { ...process.env, NODE_OPTIONS: "", MINDLEAK_TEST_DATABASE_URL: undefined } });
     assert.equal(result.status, expectedExit, result.stderr);
     const report = JSON.parse(result.stdout);
     assert.equal(report.gates.passed, expectedExit === 0);
     assert.equal(report.uncertainty.seed, 0);
+    assert.equal(report.gates.checks.find(gate => gate.metric === "regressedQueries").observedQueries, expectedExit);
   }
   writeFileSync(candidatePath, "invalid-private-report-content");
   const invalid = spawnSync(process.execPath, [script, "--baseline", baselinePath, "--candidate", candidatePath],

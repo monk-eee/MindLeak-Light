@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.4.0",
+  "source": "f3233e6eea6578452ccecbe2fe047d5c5b556d23",
+  "image": "monkeemagic/mindleak-light@sha256:b0686294b22c31ea0b6bef64cb139947b04edc27fb2e196923fa5e1f554e381c",
+  "archives": {
+    "linux-x64": {
+      "name": "mindleak-light-0.4.0-x86_64-unknown-linux-gnu.tar.gz",
+      "sha256": "9a196edc3b2ae688f3639989dd764c59ea5d8f0dd79eb5893fa03438452e8217"
+    },
+    "darwin-arm64": {
+      "name": "mindleak-light-0.4.0-aarch64-apple-darwin.tar.gz",
+      "sha256": "e2035fd3b4f94025a9aa9ef4c3418295f7c65a0a56e6f658eb0abeb8730e8a77"
+    },
+    "darwin-x64": {
+      "name": "mindleak-light-0.4.0-x86_64-apple-darwin.tar.gz",
+      "sha256": "9f56c3afab8c9f6589c694c79be3d94fa2cc5d661f80b1e863294615b0c55420"
+    },
+    "win32-x64": {
+      "name": "mindleak-light-0.4.0-x86_64-pc-windows-msvc.tar.gz",
+      "sha256": "4f25426ba5254d9164bfa3edac1e03c292f186058a079417b94aec596a60e992"
+    }
+  },
+  "corpora": [
+    {
+      "name": "engineering",
+      "path": "examples/fixtures/recall-v2.json",
+      "sha256": "e3ab91ff9a27187d024458b9659f48689c34c9414508680f209fe1543289105d",
+      "evaluationQueries": 88
+    },
+    {
+      "name": "useful-evidence",
+      "path": "examples/fixtures/recall-evidence-v1.json",
+      "sha256": "efe9fc81858b61d1a35b2f79c80d29f6e5d8add0b3720dc3a026a7d8cfc8e4f6",
+      "evaluationQueries": 12
+    }
+  ],
+  "querySeed": 20260916,
+  "limit": 5,
+  "maxRegressedQueries": 0,
+  "maxResultBytes": 32768
+}
