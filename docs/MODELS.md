@@ -22,6 +22,13 @@ when candidates are available.
 
 ## Relevance and Hybrid Recall
 
+For fast semantic recall, use vector or hybrid mode with relevance filtering
+off. Each retriever caches at most 128 exact query embeddings in process memory;
+repeated queries avoid the model call while PostgreSQL still reads fresh data.
+New queries still incur embedding latency. Hybrid keyword lookup overlaps the
+vector work. Optional chat extraction can improve write-time fact preparation
+without adding a chat request to recall.
+
 Hybrid recall and similarity thresholds are unreleased source features, not
 part of v0.1.0. Build a revision containing them before enabling them. For the
 source Compose stack, rebuild with `docker compose up --build --detach --wait`
@@ -74,13 +81,12 @@ and use `localhost` instead of `host.docker.internal` for a native binary.
 
 The provider receives the query and candidate text and must support structured
 JSON chat responses. It identifies the requested detail and selects indices with
-exact, nonblank quotations from the corresponding candidates. Index-only replies
-or invented quotations are rejected. Returned fragments retain their original
-text, provenance, scores, and order; model-generated text never replaces a fact.
-An empty selection is valid. Provider failures or invalid selections fail recall
-rather than returning unfiltered candidates. No selection request is made for an
-empty candidate list. A matching quotation proves source membership, not that the
-model selected sufficient evidence or that the source is true.
+exact quotations from their source text. Invented quotations are rejected;
+existing quotations do not automatically prove the fragment answers the question.
+It never returns replacement memory text. Returned fragments
+retain their original text, provenance, scores, and order. An empty selection is
+valid. Provider failures or invalid selections fail recall rather than returning
+unfiltered candidates. No selection request is made for an empty candidate list.
 
 The candidate setting defaults to 20 and accepts 1..50. A recall request for more
 results raises the candidate count to at least that request's limit, still at
@@ -93,16 +99,19 @@ pool. With vector or hybrid retrieval, a prior cosine floor can already have
 removed useful candidates. Evaluate the combined settings on fresh held-out
 queries; the model's selection is not independent verification of truth.
 
-## Provider Reasoning
+### Reasoning Controls
 
-`MINDLEAK_LLM_REASONING_EFFORT` and `MINDLEAK_RELEVANCE_REASONING_EFFORT` optionally
-send `reasoning_effort` to the respective chat provider. Both are omitted by
-default; an empty value also leaves the provider default unchanged. Accepted
-values are `none`, `low`, `medium`, `high`, and `max`, but the chosen provider and
-model must support the value. Disabled providers ignore their setting. Both
-Compose templates forward these options independently. Reducing reasoning may
-reduce latency or change output quality; measure it rather than assuming an
-improvement. An unsupported provider response remains an error, not a fallback.
+Compatible chat providers may accept `reasoning_effort`. The optional
+`MINDLEAK_LLM_REASONING_EFFORT` and `MINDLEAK_RELEVANCE_REASONING_EFFORT` settings
+independently accept `none`, `low`, `medium`, `high`, or `max`; unset/empty omits
+the field. Disabled chat stages ignore their settings. Check your provider and
+model support; unsupported requests fail without changing modes.
+
+[Ollama documents these controls](https://docs.ollama.com/api/openai-compatibility).
+Disabling thinking made the installed GLM much faster, but its relevance
+accuracy deteriorated. Do not equate speed with quality or enable this setting
+universally. Benchmark extraction and relevance independently. See
+[recorded results](BENCHMARK-RESULTS.md) for successful and failed experiments.
 
 ## LM Studio
 

@@ -1,4 +1,9 @@
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
@@ -326,7 +331,10 @@ pub struct VectorMemoryRetriever {
     store: PostgresMemoryStore,
     embedder: Arc<dyn TextEmbedder>,
     min_similarity: Option<f64>,
+    query_embeddings: Mutex<VecDeque<(String, Vec<f32>)>>,
 }
+
+const QUERY_EMBEDDING_CACHE_CAPACITY: usize = 128;
 
 impl VectorMemoryRetriever {
     pub fn new(store: PostgresMemoryStore, embedder: Arc<dyn TextEmbedder>) -> Self {
@@ -334,6 +342,7 @@ impl VectorMemoryRetriever {
             store,
             embedder,
             min_similarity: None,
+            query_embeddings: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -344,6 +353,36 @@ impl VectorMemoryRetriever {
         );
         self.min_similarity = minimum;
         Ok(self)
+    }
+
+    async fn query_embedding(&self, query: &str, dimensions: usize) -> Result<Vec<f32>> {
+        let cached = self
+            .query_embeddings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("query embedding cache lock failed"))?
+            .iter()
+            .find(|(text, _)| text == query)
+            .map(|(_, vector)| vector.clone());
+        if let Some(vector) = cached {
+            return Ok(vector);
+        }
+        let embeddings = self.embedder.embed_batch(&[query.to_owned()]).await?;
+        validate_embeddings(&embeddings, 1, dimensions)?;
+        let vector = embeddings
+            .into_iter()
+            .next()
+            .context("missing query embedding")?;
+        let mut cache = self
+            .query_embeddings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("query embedding cache lock failed"))?;
+        if !cache.iter().any(|(text, _)| text == query) {
+            if cache.len() == QUERY_EMBEDDING_CACHE_CAPACITY {
+                cache.pop_front();
+            }
+            cache.push_back((query.to_owned(), vector.clone()));
+        }
+        Ok(vector)
     }
 }
 
@@ -368,12 +407,7 @@ impl MemoryRetriever for VectorMemoryRetriever {
             .space
             .as_ref()
             .context("vector recall requires configured embeddings")?;
-        let embeddings = self.embedder.embed_batch(&[query.to_owned()]).await?;
-        validate_embeddings(&embeddings, 1, space.dimensions)?;
-        let vector = embeddings
-            .into_iter()
-            .next()
-            .context("missing query embedding")?;
+        let vector = self.query_embedding(query, space.dimensions).await?;
         self.store
             .search(vector, agent_id, limit, self.min_similarity)
             .await
@@ -405,19 +439,20 @@ impl MemoryRetriever for HybridMemoryRetriever {
         agent_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<RecallMatch>> {
+        validate_text(query, "query", MAX_MEMORY_BYTES)?;
+        if let Some(agent_id) = agent_id {
+            validate_text(agent_id, "agentId", 256)?;
+        }
         ensure!(
             (1..=MAX_RECALL_LIMIT).contains(&limit),
             "invalid recall limit"
         );
-        let vector = self
-            .vector
-            .recall(query, agent_id, MAX_RECALL_LIMIT)
-            .await?;
-        let keyword = self
-            .vector
-            .store
-            .keyword_search(query, agent_id, MAX_RECALL_LIMIT)
-            .await?;
+        let (vector, keyword) = tokio::try_join!(
+            self.vector.recall(query, agent_id, MAX_RECALL_LIMIT),
+            self.vector
+                .store
+                .keyword_search(query, agent_id, MAX_RECALL_LIMIT),
+        )?;
         Ok(fuse_rankings([vector, keyword], limit))
     }
 }

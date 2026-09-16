@@ -53,13 +53,11 @@ try {
   const envFile = join(directory, ".env");
   const defaults = {
     MINDLEAK_RECALL_MIN_SIMILARITY: "-1",
-    MINDLEAK_LLM_REASONING_EFFORT: "",
     MINDLEAK_RELEVANCE: "off",
     MINDLEAK_RELEVANCE_URL: "",
     MINDLEAK_RELEVANCE_MODEL: "",
     MINDLEAK_RELEVANCE_API_KEY: "",
     MINDLEAK_RELEVANCE_CANDIDATES: "20",
-    MINDLEAK_RELEVANCE_REASONING_EFFORT: "",
   };
   const relevance = {
     MINDLEAK_RELEVANCE: "openai",
@@ -67,7 +65,6 @@ try {
     MINDLEAK_RELEVANCE_MODEL: "test-relevance-model",
     MINDLEAK_RELEVANCE_API_KEY: "test-relevance-key",
     MINDLEAK_RELEVANCE_CANDIDATES: "12",
-    MINDLEAK_RELEVANCE_REASONING_EFFORT: "none",
   };
   for (const [file, service] of [
     ["docker-compose.yml", "mcp"],
@@ -82,9 +79,6 @@ try {
       [{ MINDLEAK_RELEVANCE: "", MINDLEAK_RELEVANCE_CANDIDATES: "" }, {}, {}],
       [relevance, { MINDLEAK_RELEVANCE: "off", MINDLEAK_RELEVANCE_CANDIDATES: "7" },
         { ...relevance, MINDLEAK_RELEVANCE: "off", MINDLEAK_RELEVANCE_CANDIDATES: "7" }],
-      [{ MINDLEAK_LLM_REASONING_EFFORT: "low", MINDLEAK_RELEVANCE_REASONING_EFFORT: "high" },
-        { MINDLEAK_RELEVANCE_REASONING_EFFORT: "none" },
-        { MINDLEAK_LLM_REASONING_EFFORT: "low", MINDLEAK_RELEVANCE_REASONING_EFFORT: "none" }],
     ]) {
       writeFileSync(envFile, Object.entries(fileValues).map(([key, value]) => `${key}=${value}`).join("\n") + "\n");
       const configurationEnvironment = { ...env };

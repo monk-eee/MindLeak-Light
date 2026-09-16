@@ -165,19 +165,12 @@ send an image to Docker Hub.
 	source files or chat. The login defaults to `monkeemagic`; use the Actions
 	variable `DOCKERHUB_USERNAME` if a different authorized account owns the token.
 3. Prepare and push a version tag using the release procedure above.
-4. Run **Publish Docker Hub Image** from `main`, setting `release_tag` to that
-	tag, or use `gh workflow run docker-hub.yml --ref main -f release_tag=vX.Y.Z`.
+4. Run **Publish Docker Hub Image** from that tag, or use
+	`gh workflow run docker-hub.yml --ref vX.Y.Z`.
 
-The workflow rejects non-version source refs, missing credentials, and
-tag/changelog mismatch. It resolves the release tag once and pins that commit
-for CI, both builds, and the image revision labels. This lets a fixed publishing
-workflow build an existing release without moving the tag or including newer code.
-
-Separate native amd64 and arm64 runners build the all-in-one target without
-emulation. Each pushes by digest and runs the auth, MCP, and persistence smoke
-test against that exact image. Only after both pass does the final job combine
-the digests into the version tag, retaining image provenance and an SBOM.
-`vX.Y.Z` becomes image tag `X.Y.Z`.
+The workflow rejects branch runs, missing credentials, and tag/changelog mismatch.
+It runs CI, then builds the all-in-one target for `linux/amd64` and `linux/arm64`
+with image provenance and an SBOM. `vX.Y.Z` becomes image tag `X.Y.Z`.
 `latest` only moves when `publish_latest=true` is explicitly selected, and never
 for a prerelease. Review the built digest and deployment backup before upgrading.
 

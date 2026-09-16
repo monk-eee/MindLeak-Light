@@ -244,9 +244,10 @@ function latencySummary(values) {
   };
 }
 
-export async function runBenchmark(client, dataset, { limit = 5, split = "all", agentId = `recall-benchmark-${randomUUID()}` } = {}) {
+export async function runBenchmark(client, dataset, { limit = 5, split = "all", passes = 1, agentId = `recall-benchmark-${randomUUID()}` } = {}) {
   validateDataset(dataset);
   validateLimit(limit);
+  if (!Number.isInteger(passes) || passes < 1 || passes > 10) throw new Error("Passes must be an integer in 1..10.");
   if (!["all", "calibration", "evaluation"].includes(split)) throw new Error("Invalid query split.");
   const selectedQueries = dataset.queries.filter((query) => split === "all" || query.split === split);
   if (!selectedQueries.length) throw new Error("The selected split contains no queries.");
@@ -280,7 +281,9 @@ export async function runBenchmark(client, dataset, { limit = 5, split = "all", 
   }
 
   const queries = [];
-  for (const query of selectedQueries) {
+  for (let execution = 0; execution < selectedQueries.length * passes; execution += 1) {
+    const query = selectedQueries[execution % selectedQueries.length];
+    const pass = 1 + Math.floor(execution / selectedQueries.length);
     const started = performance.now();
     const response = await call("recall_memory", { query: query.query, agentId, limit }, query.id);
     const recallMs = performance.now() - started;
@@ -309,6 +312,7 @@ export async function runBenchmark(client, dataset, { limit = 5, split = "all", 
     });
     queries.push({
       id: query.id,
+      pass,
       category: query.category,
       split: query.split ?? "unspecified",
       relevantIds: query.relevantIds,
@@ -327,6 +331,7 @@ export async function runBenchmark(client, dataset, { limit = 5, split = "all", 
     agentId,
     limit,
     split,
+    passes,
     scoring: "verified-fact-variants",
     latency: { write: latencySummary(writeTimes), recall: latencySummary(queries.map((query) => query.recallMs)) },
     summary: summarizeQueries(queries),
@@ -335,6 +340,10 @@ export async function runBenchmark(client, dataset, { limit = 5, split = "all", 
     byCategory: Object.fromEntries(categories.map((category) => [
       category, summarizeQueries(queries.filter((query) => query.category === category)),
     ])),
+    byPass: Array.from({ length: passes }, (_, index) => {
+      const rows = queries.filter((query) => query.pass === index + 1);
+      return { pass: index + 1, summary: summarizeQueries(rows), latency: latencySummary(rows.map((query) => query.recallMs)) };
+    }),
     queries,
   };
 }
@@ -346,6 +355,7 @@ export function calibrateSimilarity(report, minimumRecall = 0.8) {
   if (report?.reportVersion !== 3 || report.scoring !== "verified-fact-variants" || report.split !== "calibration"
     || report.configuration?.retrieval !== "vector" || report.configuration.minSimilarity !== null
     || (report.configuration.relevance ?? "off") !== "off"
+    || (report.passes ?? 1) !== 1
     || !Array.isArray(report.queries) || !report.queries.length) {
     throw new Error("Calibration requires an unfiltered vector report from the calibration split only.");
   }
@@ -421,6 +431,10 @@ export function benchmarkSettings(environment, options = {}) {
   }
   const limit = Number(options.k ?? 5);
   validateLimit(limit);
+  const passes = numericOption(options.passes, "--passes", 1, 10) ?? 1;
+  if (!Number.isInteger(passes)) throw new Error("Passes must be an integer in 1..10.");
+  const maxWarmP95 = numericOption(options["max-warm-p95-ms"], "--max-warm-p95-ms", 0.01, 600000);
+  if (maxWarmP95 !== null && passes < 2) throw new Error("A warm latency gate requires at least two passes.");
   const decomposition = options.decomposition ?? "sentences";
   const retrieval = options.retrieval ?? "keyword";
   if (!["sentences", "openai"].includes(decomposition) || !["keyword", "vector", "hybrid"].includes(retrieval)) {
@@ -510,6 +524,8 @@ export function benchmarkSettings(environment, options = {}) {
   return {
     limit,
     split,
+    passes,
+    maxWarmP95,
     minimumRecall,
     minimumNoAnswer,
     serverEnvironment,
@@ -535,6 +551,8 @@ async function main() {
         "relevance-candidates": { type: "string" },
         "decomposition-reasoning-effort": { type: "string" },
         "relevance-reasoning-effort": { type: "string" },
+        passes: { type: "string" },
+        "max-warm-p95-ms": { type: "string" },
         label: { type: "string" },
         "min-recall": { type: "string" },
         "min-no-answer": { type: "string" },
@@ -565,6 +583,8 @@ Writes namespaced benchmark records which remain until the database is cleaned u
   --relevance-candidates N    Candidate budget, 1..50 (default: 20; at least k)
   --decomposition-reasoning-effort MODE  Explicit chat reasoning effort (provider support required)
   --relevance-reasoning-effort MODE      none, low, medium, high, or max; omitted by default
+  --passes N                 Repeat the selected queries without reingesting, 1..10 (default: 1)
+  --max-warm-p95-ms N         Fail if any pass after the first exceeds this p95 latency
   --split NAME                evaluation (default), calibration, or all
   --min-similarity NUMBER     Explicit cosine floor for vector candidates, -1..1
   --label NAME                Identifier recorded in the report
@@ -600,6 +620,9 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
     throw new Error("--extraction-only does not accept retrieval modes or ranking quality gates.");
   }
   const settings = benchmarkSettings(process.env, values);
+  if (values["extraction-only"] && (values.passes !== undefined || values["max-warm-p95-ms"] !== undefined)) {
+    throw new Error("Extraction-only mode does not accept recall pass or latency settings.");
+  }
   const corpusPath = values.dataset ?? new URL("./fixtures/recall-v2.json", import.meta.url);
   let corpusSource = await readFile(corpusPath);
   let dataset;
@@ -660,7 +683,7 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
     console.error(`Benchmark ${settings.configuration.label}: ${dataset.memories.length} memories, ${dataset.queries.length} queries; namespace ${agentId}.`);
     const result = values["extraction-only"]
       ? await runDecompositionBenchmark(client, dataset, settings.split)
-      : await runBenchmark(client, dataset, { limit: settings.limit, split: settings.split, agentId });
+      : await runBenchmark(client, dataset, { limit: settings.limit, split: settings.split, passes: settings.passes, agentId });
     report = {
       reportVersion: 3,
       mode: values["extraction-only"] ? "decomposition" : "recall",
@@ -694,6 +717,11 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
   if (settings.minimumNoAnswer !== null
     && (report.summary.noAnswerAccuracy === null || report.summary.noAnswerAccuracy < settings.minimumNoAnswer)) {
     console.error(`No-answer accuracy did not meet --min-no-answer ${settings.minimumNoAnswer}.`);
+    process.exitCode = 1;
+  }
+  if (settings.maxWarmP95 !== null && report.byPass.slice(1).some((pass) =>
+    pass.latency.p95Ms === null || pass.latency.p95Ms > settings.maxWarmP95)) {
+    console.error(`Warm recall p95 exceeded ${settings.maxWarmP95} ms.`);
     process.exitCode = 1;
   }
 }

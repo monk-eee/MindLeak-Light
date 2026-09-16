@@ -429,6 +429,7 @@ test("calibration rejects held-out leakage, fused scores, filtered runs, and inv
     (report) => { report.queries[0].split = "evaluation"; },
     (report) => { report.configuration.retrieval = "hybrid"; },
     (report) => { report.configuration.relevance = "openai"; },
+    (report) => { report.passes = 2; },
     (report) => { report.configuration.minSimilarity = 0.7; },
     (report) => { report.queries.pop(); },
     (report) => { report.queries[0].scores = []; },
@@ -625,4 +626,23 @@ test("benchmark reasoning controls are explicit and absent unless enabled", () =
     { relevance: "openai", "relevance-reasoning-effort": "automatic" },
     { decomposition: "openai", "decomposition-reasoning-effort": "" },
   ]) assert.throws(() => benchmarkSettings(environment, options));
+});
+
+test("repeat passes measure cold and warm queries without rewriting memories", async () => {
+  const client = mockClient([["beta", "alpha"], [], ["alpha"], [], ["alpha"], []]);
+  const report = await runBenchmark(client, dataset, { passes: 3 });
+  assert.equal(client.calls.filter((call) => call.name === "write_memory").length, 2);
+  assert.equal(client.calls.filter((call) => call.name === "recall_memory").length, 6);
+  assert.equal(report.byPass.length, 3);
+  assert.deepEqual(report.queries.map((query) => query.pass), [1, 1, 2, 2, 3, 3]);
+  assert.equal(report.byPass[0].summary.mrrAtK, 0.5);
+  assert.equal(report.byPass[1].summary.mrrAtK, 1);
+  assert.equal(report.byPass[2].latency.count, 2);
+  const settings = benchmarkSettings(testEnvironment, { passes: "3", "max-warm-p95-ms": "20" });
+  assert.equal(settings.passes, 3);
+  assert.equal(settings.maxWarmP95, 20);
+  for (const options of [{ passes: "0" }, { passes: "11" }, { passes: "1.5" },
+    { "max-warm-p95-ms": "20" }, { passes: "2", "max-warm-p95-ms": "0" }]) {
+    assert.throws(() => benchmarkSettings(testEnvironment, options));
+  }
 });

@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -88,6 +91,118 @@ impl TextEmbedder for QueryEmbedder {
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         assert_eq!(texts, ["PR preferences?"]);
         Ok(vec![vec![1.0, 0.0]])
+    }
+}
+
+#[derive(Default)]
+struct CountingQueryEmbedder {
+    calls: AtomicUsize,
+    fail_first: bool,
+    invalid_first: bool,
+}
+
+#[async_trait]
+impl TextEmbedder for CountingQueryEmbedder {
+    fn dimensions(&self) -> usize {
+        2
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::ensure!(texts.len() == 1, "expected one query");
+        anyhow::ensure!(call != 0 || !self.fail_first, "provider unavailable");
+        if call == 0 && self.invalid_first {
+            return Ok(vec![vec![0.0, 0.0]]);
+        }
+        Ok(vec![vec![1.0, 0.0]])
+    }
+}
+
+#[tokio::test]
+async fn repeated_queries_reuse_embeddings_but_requery_memories_and_agent_filters() {
+    let (store, client) = setup().await;
+    for hybrid in [false, true] {
+        let agent_id = format!("query-cache-{}", Uuid::new_v4());
+        let original = memory(&agent_id);
+        store.save(&original).await.unwrap();
+        let embedder = Arc::new(CountingQueryEmbedder::default());
+        let retriever: Box<dyn MemoryRetriever> = if hybrid {
+            Box::new(HybridMemoryRetriever::new(store.clone(), embedder.clone()))
+        } else {
+            Box::new(VectorMemoryRetriever::new(store.clone(), embedder.clone()))
+        };
+        assert_eq!(
+            retriever
+                .recall("PR preferences?", Some(&agent_id), 1)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(retriever
+            .recall("PR preferences?", Some("absent-agent"), 5)
+            .await
+            .unwrap()
+            .is_empty());
+        let added = memory(&agent_id);
+        store.save(&added).await.unwrap();
+        let updated = retriever
+            .recall("PR preferences?", Some(&agent_id), 5)
+            .await
+            .unwrap();
+        assert_eq!(updated.len(), 4);
+        assert!(updated.iter().any(|row| row.memory_id == added.id));
+        client
+            .execute("DELETE FROM memories WHERE id = $1", &[&original.id])
+            .await
+            .unwrap();
+        let after_delete = retriever
+            .recall("PR preferences?", Some(&agent_id), 5)
+            .await
+            .unwrap();
+        assert_eq!(after_delete.len(), 2);
+        assert!(after_delete.iter().all(|row| row.memory_id == added.id));
+        assert_eq!(embedder.calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn query_embedding_cache_is_bounded_exact_and_does_not_cache_provider_failures() {
+    let (store, _) = setup().await;
+    let agent_id = format!("cache-bounds-{}", Uuid::new_v4());
+    let embedder = Arc::new(CountingQueryEmbedder::default());
+    let retriever = VectorMemoryRetriever::new(store.clone(), embedder.clone());
+    for index in 0..128 {
+        retriever
+            .recall(&format!("query-{index}"), Some(&agent_id), 1)
+            .await
+            .unwrap();
+    }
+    retriever
+        .recall("query-0", Some(&agent_id), 1)
+        .await
+        .unwrap();
+    assert_eq!(embedder.calls.load(Ordering::SeqCst), 128);
+    retriever
+        .recall("Query-0", Some(&agent_id), 1)
+        .await
+        .unwrap();
+    retriever
+        .recall("query-0", Some(&agent_id), 1)
+        .await
+        .unwrap();
+    assert_eq!(embedder.calls.load(Ordering::SeqCst), 130);
+    for invalid_first in [false, true] {
+        let provider = Arc::new(CountingQueryEmbedder {
+            fail_first: !invalid_first,
+            invalid_first,
+            ..Default::default()
+        });
+        let retriever = VectorMemoryRetriever::new(store.clone(), provider.clone());
+        assert!(retriever.recall("query", Some(&agent_id), 1).await.is_err());
+        retriever.recall("query", Some(&agent_id), 1).await.unwrap();
+        retriever.recall("query", Some(&agent_id), 1).await.unwrap();
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 }
 

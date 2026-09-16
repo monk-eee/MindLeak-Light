@@ -29,19 +29,13 @@ fragments keep their existing bounds. Invalid provenance, duplicate candidate
 IDs, or non-finite scores fail before inference. Empty candidate lists bypass
 the provider.
 
-The selection response identifies the requested detail and lists unique existing
-candidate indices with exact, nonblank quotations from those candidates. Reject
-index-only replies, invented evidence, invalid indices, extra fields, malformed
-or truncated responses, and provider failures. A valid empty selection is
-abstention. Quotation validation proves source membership, not relevance or truth.
-Preserve original candidate text, IDs, provenance, scores, and relative ranking;
-apply the user's limit after filtering. Never turn an inference failure into
-unfiltered or empty success. Send query and fragments as a JSON data message,
-separate from the system instructions. Do not send gold labels to the provider.
-
-Allow independent, explicit `reasoning_effort` controls for decomposition and
-selection when supported by the configured provider. Leave this field absent
-by default rather than imposing a provider-specific reasoning policy.
+The selection response contains only a unique list of existing candidate
+indices. Reject invalid indices, extra fields, malformed or truncated responses,
+and provider failures. A valid empty selection is abstention. Preserve original
+candidate text, IDs, provenance, scores, and relative ranking; apply the user's
+limit after filtering. Never turn an inference failure into unfiltered or empty
+success. Send query and fragments as a JSON data message, separate from the
+system instructions. Do not send gold labels to the provider.
 
 Refine optional extraction with minimal source-grounded edits: keep atomic
 wording, resolve only supported references, split independent claims, and retain
@@ -73,8 +67,7 @@ independent semantic judge.
 ## Verification
 
 Provider tests cover lower-ranked answer recovery, preserved candidates/order,
-empty selection, exact evidence, invalid/duplicate indices, optional reasoning
-controls, response truncation, unavailable and
+empty selection, invalid/duplicate indices, response truncation, unavailable and
 timed-out models, prompt/data separation, provenance, and text budgets. A real
 stdio MCP test verifies that explicit configuration reaches the selector and
 that failed inference returns a tool error. Default configuration and model-free

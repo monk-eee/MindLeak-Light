@@ -22,19 +22,6 @@ configuration below was run once; no confidence intervals or repeat-run
 stability claims are made. Query families are correlated and per-category
 samples are small.
 
-### Corpus File Normalization
-
-Commit-preparation hooks added one missing final newline to each new corpus.
-Parsed JSON, text, labels, and ordering were verified identical before and after
-this byte-only change. Original report hashes and measurements remain unchanged;
-new runs use the normalized file hashes below. This is not a new evaluation or
-a change to the acceptance set.
-
-| Corpus | Original SHA-256 | Normalized SHA-256 |
-|---|---|---|
-| v2 | `f761c717e9de75137c0a7df37601d7daf3ee515609585424799788681eddba68` | `e3ab91ff9a27187d024458b9659f48689c34c9414508680f209fe1543289105d` |
-| v3 holdout | `d4ef0b9cc0240e1f43bd4f316ed169a1ea027f6e96581c91bd02df4b7a38d94d` | `6d89a74960b3422998d4033ca31cc79a6f928f27c0807aac228dd45a67b8802c` |
-
 ## Calibration
 
 Unfiltered calibration vector recall was 89.29% verified Recall@5, with 0/32
@@ -105,3 +92,83 @@ retrieval, and the benchmark's removal of source-ID false credit. Remaining work
 is better relevance discrimination at useful recall, broader independently
 reviewed gold variants, and domain-specific fresh holdouts. Do not increase the
 floor until a desired percentage appears on the exposed evaluation set.
+
+## Fast Recall Follow-Up
+
+The user subsequently prioritized fast default recall while allowing explicit
+model opt-ins for quality. A bounded query-embedding cache and concurrent hybrid
+lookup were measured with the same v2 corpus, the unchanged 0.78604096524586
+floor, no chat filter, and three passes over its 88 evaluation queries. Each run
+wrote 240 memories once; subsequent passes reread PostgreSQL but reused query
+vectors. Models had already been used during ingestion, so first-pass latency
+is a query-cache miss measurement, not a model-load measurement.
+
+| Hybrid Recall | Pass 1 p95 | Pass 2 p95 | Pass 3 p95 |
+|---|---|---|---|
+| Before caching/concurrency | 50.62 ms | 61.57 ms | 76.09 ms |
+| After caching/concurrency | 45.68 ms | 6.29 ms | 4.91 ms |
+
+Ranking summaries were exactly equal before/after and across passes: verified
+Recall@5 76.79%, MRR@5 0.7857, no-answer accuracy 30/32. The 20 ms warm-p95 gate
+passed. These are sequential local measurements, not concurrent-load or large
+database guarantees. Correctness tests separately verify fresh inserts/deletes,
+agent filters, cache eviction, and retries after failed/invalid embeddings.
+
+- Before binary: `4439836664b1c6cf5c20594d5568f1c836f32f9767ef20308edbc275fb7d6921`.
+- After binary: `5239afcaf2388d706d8a3b9a20d3a79d35fad57a0aa4f0aca15e2d1357a26124`.
+- Local reports: `target/recall-fast-before.json` and `target/recall-fast-after.json`.
+- Reproduce with the runner's `--passes 3 --max-warm-p95-ms 20` options and the
+	same model, corpus, cutoff, and explicit `--binary` snapshots.
+
+## Optional Model Follow-Up
+
+The [v3 fixture](../examples/fixtures/recall-v3-holdout.json) introduced fresh
+query targets and eight separate extraction passages, using v2 only as background
+memories. Its 32 query results were subsequently inspected for development, so
+v3 is now exposed and cannot serve as a new unbiased holdout for further tuning.
+
+Ollama was version 0.32.9. Observed model digests were:
+
+- Nomic: `0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f`.
+- GLM 4.7 Flash: `4475827791a269b02c8ec49b1c3bc1abb5846bacf3fae015b75d33986322d8f6`.
+
+With 272 memories and 32 fresh queries, unfiltered hybrid recalled all 16
+answers but rejected none of 16 missing-detail questions. The previous fixed
+floor retained all answers and rejected 13/16. Initial baseline binaries changed
+under a concurrent build; those reports were retained as non-comparable and
+replaced with matching-snapshot runs.
+
+The full GLM index-only relevance run failed during recall and produced no
+valid report. A single read-only negative-query probe succeeded in 60 seconds.
+Explicit `reasoning_effort:none` completed the full run at mean 0.94 seconds but
+rejected only 4/16 negative queries. Adding exact-evidence quotations tightened
+the response contract but, on the now-exposed development set, disabled-reasoning
+GLM rejected only 1/16 negatives at mean 3.61 seconds. Neither profile is a
+recommended accuracy improvement. Normal reasoning with five candidates answered
+four exposed development probes correctly but took 49..91 seconds per query.
+A smaller local Qwen 2.5 3B experiment failed at `h3-n16`; it has no complete
+accuracy report. Failed generation is not counted as correct abstention.
+
+For extraction, both saved before/after binaries were evaluated on all eight
+fresh passages using GLM and the identical `reasoning_effort:none` request option.
+A temporary local test adapter set that field on both requests because the older
+binary predated the option; no output text or provider body was logged.
+
+| Extraction | Verified-Fact Coverage | Unverified Fragments | Unmatched Gold Facts |
+|---|---|---|---|
+| Sentence/list baseline | 62.5% | 4 | 6 |
+| Previous extraction prompt | 75.0% | 4 | 4 |
+| Source-grounded prompt | 87.5% | 2 | 2 |
+
+Before/after prompt reports are `target/recall-v3-extraction-before-none.json`
+and `target/recall-v3-extraction-after-none.json`. Binary hashes are respectively
+`3df50ec843d2163d2fd378480b2efdbe643845fbc3d1ebcd97e16dbf26e92d79` and
+`79db201fbe9b46955d93824e8f99a817fa335b960d1a3396b93d92647f33acde`.
+Mean times were 2.24 and 1.40 seconds, with a cold request included in the former;
+do not attribute that timing difference solely to the prompt. Accepted variants
+were fixed beforehand. The observed coverage gain is not independently adjudicated
+semantic accuracy, and eight cases cannot establish general model quality.
+
+The supported fast profile keeps relevance selection off. Model-based extraction
+is a separate write-time quality option; recall-time selection remains experimental.
+An exact evidence quote verifies source presence, not that it answers the question.

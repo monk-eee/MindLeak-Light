@@ -20,3 +20,4 @@ record when the design changes instead of silently rewriting their rationale.
 | [0006](0006-native-and-all-in-one-distribution.md) | Native and All-in-One Distribution | Accepted |
 | [0007](0007-hybrid-recall-and-calibrated-relevance.md) | Hybrid Recall and Calibrated Relevance | Accepted |
 | [0008](0008-bounded-model-relevance-selection.md) | Bounded Model Relevance Selection | Accepted |
+| [0009](0009-fast-recall-and-optional-model-controls.md) | Fast Recall and Optional Model Controls | Accepted |

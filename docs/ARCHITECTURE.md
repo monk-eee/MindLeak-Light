@@ -67,6 +67,15 @@ vectors by PostgreSQL's cosine-distance operator. NULL embeddings are excluded,
 not filled with fake vectors. Both paths filter by agent before limiting. Vector
 search is exact and has no approximate-vector index yet.
 
+Vector/hybrid retrievers keep an in-process FIFO cache of at most 128 validated
+query embeddings, keyed by the exact query string. Cache hits skip embedding
+inference, not database recall: current rows and agent filters are always checked.
+Invalid vectors and provider failures are not cached. The cache belongs to one
+fixed model/dimension space and is cleared on process exit; concurrent misses
+may duplicate inference. Hybrid keyword lookup runs concurrently with the vector
+path. No mutex is held during an await. See
+[ADR-0009](../adr.d/0009-fast-recall-and-optional-model-controls.md).
+
 `MINDLEAK_RECALL_MIN_SIMILARITY` optionally filters vector candidates by cosine
 similarity before limiting. It must be finite and in [-1, 1]; unset/-1 is
 unfiltered. Calibrate it for the actual model and corpus rather than treating
@@ -83,11 +92,9 @@ See [ADR-0007](../adr.d/0007-hybrid-recall-and-calibrated-relevance.md).
 
 `MINDLEAK_RELEVANCE=openai` optionally wraps any candidate retriever with
 `OpenAiRelevanceRetriever`. It asks a configured model to select existing
-fragment indices with exact quotations supporting the requested detail, never
-to generate a recalled fact. It validates nonblank requested detail, unique
-indices, and nonblank evidence contained in the corresponding candidate.
-Index-only replies and invented quotations are rejected. This verifies source
-membership, not semantic relevance or truth. It preserves selected
+fragment indices with exact evidence quotations, never to generate a recalled fact.
+It validates each quotation against the corresponding stored candidate, without
+claiming that source presence proves relevance. It preserves selected
 text, provenance, scores, and original order, then applies the caller's limit.
 The candidate budget is 20 by default (1..50), raised to at least the requested
 limit. Query plus candidate text must fit 32768 UTF-8 bytes or recall fails;

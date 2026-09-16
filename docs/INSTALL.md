@@ -11,17 +11,16 @@ embedding model; [models are a recommended optional upgrade](MODELS.md).
 
 Release status checked on **2026-09-16**: the four v0.1.0 native archives and
 checksums have been built, but the GitHub release remains an unpublished draft.
-The all-in-one image is published as `monkeemagic/mindleak-light:0.1.0` for
-Linux amd64 and arm64. No `latest` tag has been promoted. Check
-[GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases) for native
-download availability. The [source quickstart](../README.md#quickstart) remains
-available for the current source implementation.
+Docker Hub publication to `monkeemagic/mindleak-light` is still in progress and
+not yet confirmed. Check [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
+and the [publishing workflow](https://github.com/monk-eee/MindLeak-Light/actions/workflows/docker-hub.yml)
+before relying on a download or image tag. The
+[source quickstart](../README.md#quickstart) remains available.
 
 The v0.1.0 package supports model-free keyword recall and optional vector recall.
-Hybrid recall, configurable similarity thresholds, evidence-based relevance
-selection, reasoning controls, and the expanded fact-level benchmark are
-unreleased source changes. Build a revision containing them; setting their
-environment variables does not upgrade an older executable.
+Hybrid recall, configurable similarity thresholds, and the expanded fact-level
+benchmark are unreleased source changes. Build a revision containing them;
+setting their environment variables does not upgrade an older executable.
 
 ## Native Binary
 
@@ -65,8 +64,8 @@ This variant bundles the MCP binary and PostgreSQL/pgvector in one container.
 The database is reachable only through an internal Unix socket; only MCP's
 HTTP port is exposed. A process supervisor manages startup and shutdown.
 
-Pin the published version tag, or use the local build below for unreleased
-features. The initial `0.1.0` release runs with:
+After publication is confirmed, pin the version tag. The initial `0.1.0`
+release uses the following command; until then, use the local build below:
 
 ```sh
 docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.1.0

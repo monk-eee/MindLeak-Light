@@ -25,6 +25,10 @@
   repair incorrect extraction. Model selection is not proof of truth, relevance,
   or prompt-injection resistance; candidates remain untrusted reference data.
   Inputs exceeding its explicit text budget fail rather than being truncated.
+- Semantic query caching is bounded to 128 exact query strings per process and
+  retriever. It speeds repeat queries, not unseen ones, and never caches result
+  rows. Concurrent cold misses may duplicate embedding work. Benchmarks on small
+  corpora do not establish latency at large scale or under concurrent load.
 - Benchmark fact verification uses reviewed canonical wording and accepted
   variants. Valid unseen paraphrases are unverified, not necessarily wrong. The
   synthetic corpus and small per-category samples do not establish population
