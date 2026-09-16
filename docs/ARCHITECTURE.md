@@ -151,7 +151,12 @@ and [the lifecycle guide](LIFECYCLE.md) for the human-facing contract.
 
 The Postgres crate owns one bounded pool, shared by all server clones. Startup
 serializes idempotent schema initialization with a transaction-scoped advisory
-lock. The original schema remains unchanged; the explicit
+lock. Catalog checks skip already-applied column changes and existing indexes,
+so restarting against a current schema does not take migration locks that block
+normal readers or writers. A fresh installation or actual schema upgrade still
+requires DDL permissions and can wait for active transactions.
+
+The original schema remains unchanged; the explicit
 [optional-embedding migration](../crates/mindleak-storage-postgres/migrations/0002-optional-embeddings.sql)
 relaxes nullability and adds the keyword index. Existing data is not rewritten.
 

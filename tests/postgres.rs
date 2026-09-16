@@ -520,6 +520,45 @@ async fn concurrent_agents_do_not_lose_writes() {
 }
 
 #[tokio::test]
+async fn reopening_current_schema_does_not_block_active_transactions() {
+    let (admin, url, cleanup) = isolated_database().await;
+    let store = PostgresMemoryStore::connect(url.as_str(), Some(("test-model", 2)), 4, None)
+        .await
+        .unwrap();
+    let (mut session, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let mut attempts = Vec::new();
+    for lock_mode in ["ACCESS SHARE", "ROW EXCLUSIVE"] {
+        let transaction = session
+            .build_transaction()
+            .read_only(lock_mode == "ACCESS SHARE")
+            .start()
+            .await
+            .unwrap();
+        transaction
+            .batch_execute(&format!(
+                "LOCK TABLE public.memories, public.fragments, public.relationships IN {lock_mode} MODE"
+            ))
+            .await
+            .unwrap();
+        let reopened = PostgresMemoryStore::connect(url.as_str(), Some(("test-model", 2)), 4, None)
+            .await
+            .map(drop);
+        transaction.rollback().await.unwrap();
+        attempts.push((lock_mode, reopened));
+    }
+    drop(session);
+    drop(store);
+    admin.batch_execute(&cleanup).await.unwrap();
+    for (lock_mode, reopened) in attempts {
+        assert!(
+            reopened.is_ok(),
+            "a current-schema restart must coexist with {lock_mode}: {reopened:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn schema_has_exactly_three_tables_and_locks_the_embedding_space() {
     let (store, client) = setup().await;
     store.health().await.unwrap();

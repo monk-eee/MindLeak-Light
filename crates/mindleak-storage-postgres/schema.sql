@@ -23,6 +23,16 @@ CREATE TABLE IF NOT EXISTS public.relationships (
     CHECK (source_fragment <> target_fragment)
 );
 
-CREATE INDEX IF NOT EXISTS memories_agent_id_idx ON public.memories(agent_id);
-CREATE INDEX IF NOT EXISTS fragments_memory_id_idx ON public.fragments(memory_id);
-CREATE INDEX IF NOT EXISTS relationships_target_idx ON public.relationships(target_fragment);
+DO $$
+BEGIN
+    IF to_regclass('public.memories_agent_id_idx') IS NULL THEN
+        CREATE INDEX IF NOT EXISTS memories_agent_id_idx ON public.memories(agent_id);
+    END IF;
+    IF to_regclass('public.fragments_memory_id_idx') IS NULL THEN
+        CREATE INDEX IF NOT EXISTS fragments_memory_id_idx ON public.fragments(memory_id);
+    END IF;
+    IF to_regclass('public.relationships_target_idx') IS NULL THEN
+        CREATE INDEX IF NOT EXISTS relationships_target_idx ON public.relationships(target_fragment);
+    END IF;
+END
+$$;
