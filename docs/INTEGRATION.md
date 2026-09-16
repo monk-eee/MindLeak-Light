@@ -249,6 +249,21 @@ The default remains `off`; see [model setup](MODELS.md#experimental-relevance-fi
 Writes are not idempotent. A network failure after commit can hide a successful
 write's ID; reconcile before retrying rather than blindly duplicating memories.
 
+### Bounded Recall Context
+
+Source builds after v0.2.0 add `rankingPriority` and `relationshipsTruncated` to
+each recall match. `score` is unchanged; `rankingPriority` exposes the actual
+lifecycle-adjusted ordering signal. Both are ranking values, not confidence.
+`relationshipCount` counts eligible direct links before limits; truncation is
+explicit when the result includes only some of them.
+
+Each result retains at most eight links, with a shared 32 KiB budget for serialized
+relationship arrays across the response. Primary results are reserved first; a
+512 KiB result-array cap fails oversized primary responses with a request to lower
+`limit`. No fact text is silently shortened. JSON escaping is included, while the
+MCP envelope and dual representations add separate overhead. See
+[lifecycle recall](LIFECYCLE.md#recall-with-context-and-history) for allocation rules.
+
 ## Clients That Need Stdio
 
 Start Postgres with `docker compose up -d postgres`. With Rust installed, build

@@ -49,6 +49,12 @@ async fn contextual_fact_lifecycle_works_through_the_three_model_free_tools() {
         "unconfirmed"
     );
     assert_eq!(recalled["results"][0]["activation"], 1.0);
+    assert_eq!(
+        recalled["results"][0]["rankingPriority"],
+        recalled["results"][0]["score"]
+    );
+    assert_eq!(recalled["results"][0]["relationshipCount"], 0);
+    assert_eq!(recalled["results"][0]["relationshipsTruncated"], false);
 
     let confirmation = "The user confirmed the pull request preference.";
     let feedback = client.call_tool(call("write_memory", json!({
@@ -67,6 +73,8 @@ async fn contextual_fact_lifecycle_works_through_the_three_model_free_tools() {
     let recalled = recalled.structured_content.unwrap();
     assert_eq!(recalled["results"][0]["lifecycle"]["confirmedSessions"], 1);
     assert_eq!(recalled["results"][0]["lifecycle"]["evidence"], "confirmed");
+    assert_eq!(recalled["results"][0]["relationshipCount"], 1);
+    assert_eq!(recalled["results"][0]["relationshipsTruncated"], false);
     assert_eq!(
         recalled["results"][0]["relationships"][0]["relationshipType"],
         "confirms"

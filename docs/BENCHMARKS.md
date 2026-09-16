@@ -272,6 +272,30 @@ then propose versioned variants. Hashes identify outputs but cannot reconstruct
 them or substitute for review. Do not add evaluation-derived variants silently
 and continue calling those scores held out.
 
+### Semantic Dependencies
+
+The [semantic-dependency fixture](../examples/fixtures/semantic-dependencies-v1.json)
+checks causal links, ambiguous references, conditions, chronology, attribution,
+and excluded causes. It includes deliberately non-equivalent decompositions so
+scorer regressions can catch lost meaning instead of rewarding shorter strings.
+Run it through the existing preview path:
+
+```sh
+node examples/benchmark-recall.mjs --dataset examples/fixtures/semantic-dependencies-v1.json --extraction-only
+node examples/benchmark-recall.mjs --dataset examples/fixtures/semantic-dependencies-v1.json --extraction-only --decomposition openai
+```
+
+The same explicit test database and optional model settings apply. The source
+`John approved the PR because Sarah requested it.` is retained when the referent
+is unclear. Two disconnected statements omit the causal relationship; assigning
+what Sarah requested may additionally invent a referent. A single causal claim
+can legitimately contain dependent clauses. This differs from merging unrelated
+facts simply because they appeared in one paragraph.
+
+These six hand-authored regression cases are not a new representative quality
+benchmark. They verify default preservation and specified semantic-loss checks;
+passing them or changing a model prompt does not prove reliable model extraction.
+
 ## Quality Gates
 
 ### Fast Recall
@@ -323,6 +347,16 @@ memories are distractors rather than queried targets. One extraction example per
 risk per split is small; category percentages are descriptive, not statistical
 confidence. Further claims need fresh domain-specific holdouts and independent
 label review. Retain negative cases and report losses as well as gains.
+
+There is no measured ten-thousand, hundred-thousand, or million-memory capacity
+claim. Exact pgvector search scans eligible vectors; bounding candidates and
+response bytes does not bound that search cost. Before a larger deployment,
+measure cold and warm latency, query throughput, filtered/unfiltered queries,
+negative-query precision, and high-degree relationship costs at each intended
+size. Use fresh labelled targets with realistic independent distractors, not
+duplicated facts presented as more quality examples. Any future ANN indexing or
+reranker needs a recall/latency comparison against the exact baseline; synthesis
+alone cannot recover a fact that retrieval never found.
 
 The suite does not measure a final agent's answers, memory-use decisions,
 multilingual recall, concurrent load, automatic supersession, or an adversarial

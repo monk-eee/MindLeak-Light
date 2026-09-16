@@ -78,6 +78,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preserves_causal_conditional_and_attributed_clauses_without_guessing() {
+        for source in [
+            "John approved the PR because Sarah requested it.",
+            "Eira will reopen the issue if Oren confirms the rollback.",
+            "Tess reported that Ula rejected the patch because the tests failed.",
+            "Rhea restored the service because the lock expired, not because storage was exhausted.",
+        ] {
+            assert_eq!(SentenceDecomposer.decompose(source).await.unwrap(), [source]);
+        }
+    }
+
+    #[tokio::test]
     async fn refuses_empty_or_unbounded_fragments() {
         for text in [
             String::new(),

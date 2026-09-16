@@ -58,6 +58,56 @@ async fn recalled_facts_include_scope_and_explicit_related_fact_context() {
 }
 
 #[tokio::test]
+async fn related_context_has_a_shared_budget_without_dropping_primary_facts() {
+    let (store, _) = setup().await;
+    let agent_id = format!("related-budget-{}", Uuid::new_v4());
+    let mut originals = Vec::new();
+    for index in 0..6 {
+        let mut original = memory(&agent_id);
+        original.fragments.truncate(1);
+        original.raw_text = format!("Bounded recall primary item {index}.");
+        original.fragments[0].text = original.raw_text.clone();
+        original.context.scope = Some(agent_id.clone());
+        store.save(&original).await.unwrap();
+        for linked in 0..10 {
+            let mut evidence = episode(&original, RelationshipType::Supports, None);
+            evidence.raw_text = format!("Supporting note {linked}: {}", "e".repeat(2800));
+            evidence.fragments[0].text = evidence.raw_text.clone();
+            evidence.context.summary = Some("s".repeat(1024));
+            store.save(&evidence).await.unwrap();
+        }
+        originals.push(original);
+    }
+    let results = KeywordMemoryRetriever::new(store)
+        .recall("Bounded recall primary", &filter(Some(&agent_id)), 6)
+        .await
+        .unwrap();
+    assert_eq!(results.len(), originals.len());
+    let related_bytes: usize = results
+        .iter()
+        .map(|fact| serde_json::to_vec(&fact.relationships).unwrap().len())
+        .sum();
+    assert!(
+        related_bytes <= 32 * 1024,
+        "related context used {related_bytes} bytes"
+    );
+    for fact in &results {
+        let original = originals
+            .iter()
+            .find(|memory| memory.id == fact.memory_id)
+            .unwrap();
+        assert_eq!(fact.text, original.raw_text);
+        assert_eq!(fact.relationship_count, 10);
+        assert!(
+            !fact.relationships.is_empty(),
+            "each primary should receive context before extras are allocated"
+        );
+        let serialized = serde_json::to_value(fact).unwrap();
+        assert_eq!(serialized["relationshipsTruncated"], true);
+    }
+}
+
+#[tokio::test]
 async fn confirmations_consolidate_only_one_fact_and_preserve_its_pgvector_embedding() {
     let (store, database) = setup().await;
     let original = memory(&format!("consolidate-{}", Uuid::new_v4()));
@@ -338,6 +388,44 @@ async fn decay_changes_priority_but_not_pgvector_similarity_or_stored_facts() {
     assert_eq!(recalled[1].score, 1.0);
     assert!((recalled[1].activation - 0.1875).abs() < 0.001);
     assert!(recalled[0].activation > recalled[1].activation);
+}
+
+#[tokio::test]
+async fn ranking_priority_explains_order_without_replacing_similarity() {
+    let (store, database) = setup().await;
+    let agent_id = format!("priority-{}", Uuid::new_v4());
+    let mut older = memory(&agent_id);
+    older.fragments.truncate(1);
+    let mut pinned = memory(&agent_id);
+    pinned.fragments.truncate(1);
+    pinned.fragments[0].embedding = Some(vec![0.8, 0.6]);
+    pinned.fragments[0].pinned = true;
+    pinned.fragments[0].tier = MemoryTier::LongTerm;
+    store.save(&older).await.unwrap();
+    store.save(&pinned).await.unwrap();
+    database
+        .execute(
+            "UPDATE memories SET created_at = now() - interval '10 years' WHERE id = $1",
+            &[&older.id],
+        )
+        .await
+        .unwrap();
+    let recalled = VectorMemoryRetriever::new(store, Arc::new(QueryEmbedder))
+        .recall("PR preferences?", &filter(Some(&agent_id)), 2)
+        .await
+        .unwrap();
+    assert_eq!(recalled[0].memory_id, pinned.id);
+    assert_eq!(recalled[1].memory_id, older.id);
+    assert!(recalled[0].score < recalled[1].score);
+    assert!(recalled[0].ranking_priority > recalled[1].ranking_priority);
+    for fact in &recalled {
+        let expected = fact.score - fact.score.abs() * 0.25 * (1.0 - fact.activation);
+        assert_eq!(fact.ranking_priority, expected);
+        assert_eq!(
+            serde_json::to_value(fact).unwrap()["rankingPriority"],
+            expected
+        );
+    }
 }
 
 #[tokio::test]

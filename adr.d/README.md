@@ -22,3 +22,4 @@ record when the design changes instead of silently rewriting their rationale.
 | [0008](0008-bounded-model-relevance-selection.md) | Bounded Model Relevance Selection | Accepted |
 | [0009](0009-fast-recall-and-optional-model-controls.md) | Fast Recall and Optional Model Controls | Accepted |
 | [0010](0010-contextual-fact-lifecycle.md) | Contextual Fact Lifecycle | Accepted |
+| [0012](0012-bounded-recall-context.md) | Bounded Recall Context | Accepted |

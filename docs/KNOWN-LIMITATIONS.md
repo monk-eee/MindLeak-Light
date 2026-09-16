@@ -5,6 +5,10 @@
 - Model-free decomposition splits sentences and list items, not every semantic
   claim. It does not resolve pronouns or rewrite facts. A model is recommended
   for richer extraction, but JSON validation still cannot prove semantic accuracy.
+- Atomic persistence guarantees all-or-nothing storage, not atomic semantic facts.
+  Model extraction can lose causes, qualifiers, or attribution. Default sentence
+  splitting preserves causal wording but leaves ambiguous references unresolved.
+  Shorter or more numerous fragments are not a substitute for faithful meaning.
 - Keyword recall uses English stemming and stop words, with no synonym inference.
   Natural-language questions work better with the optional embedding model.
 - Models are optional external providers, not bundled processes. Enabled chat
@@ -16,6 +20,10 @@
   scores cause recall errors; this validation does not rewrite stored vectors.
 - Vector retrieval is exact cosine search without ANN indexing,
   RAST, synthesis inside the server, or automatic relationship generation.
+- Current diagnostic benchmarks do not establish recall precision or latency at
+  tens of thousands to millions of memories. A bounded result set does not bound
+  exact-vector scan cost; realistic scale and high-degree relationship testing
+  is required before capacity claims.
 - A configured cosine floor trades recall for rejection; it is model/corpus
   specific and cannot prove relevance. Hybrid fuses bounded keyword/vector ranks
   but does not verify truth, resolve contradictory facts, or automatically retire
@@ -52,7 +60,11 @@
   prove independent evidence, and trusted clients can submit mistaken feedback.
   Long-term/pinned means retained, not true; confirmed means a confirmation was
   recorded. Superseding a disputed fact requires an explicit correction.
-- Direct related-fact context is bounded to eight links per result; it is not a
+- Direct related-fact context is bounded to eight links per result and, in new
+  source builds, 32 KiB across serialized relationship arrays. A 512 KiB result-array
+  budget preserves primary facts or rejects an oversized request; it is not a
+  token limit or a limit on the enclosing MCP wire message. Omitted context is
+  reported by `relationshipsTruncated` and `relationshipCount`. This is not a
   recursive graph. Lifecycle cannot rescue facts outside the retrieval candidate
   pool. No automatic deduplication or re-embedding accompanies consolidation.
 - Source writes can archive, restore, or supersede existing facts through explicit
