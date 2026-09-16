@@ -1,10 +1,12 @@
 # Architecture
 
-This describes v0.3.0: contextual fact lifecycle, hybrid recall, shared query
+This describes v0.3.0 plus unreleased bounded evidence/source inspection and document recall:
+contextual fact lifecycle, hybrid recall, shared query
 embeddings, provider safeguards, retry-safe writes, modular storage, response
 budgets, and ranking diagnostics.
-The explicitly marked unreleased document-recall extensions below are not yet
-part of the v0.3.0 diagrams or published packages.
+The diagrams include evidence/source inspection. The explicitly marked
+document-recall extensions below are not yet diagrammed. Neither unreleased
+extension is part of the v0.3.0 packages.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
 All four diagrams are editable frames in the
@@ -28,7 +30,8 @@ existing store rather than a parallel persistence path:
 | [persistence.rs](../crates/mindleak-storage-postgres/src/persistence.rs) | Validated atomic writes, request-key arbitration, and immutable receipt lookup/replay |
 | [queries.rs](../crates/mindleak-storage-postgres/src/queries.rs) | Filtered SQL searches and result decoding |
 | [retrieval.rs](../crates/mindleak-storage-postgres/src/retrieval.rs) | Keyword/vector/hybrid strategies, query cache, and rank fusion |
-| [lifecycle.rs](../crates/mindleak-storage-postgres/src/lifecycle.rs) | Explicit feedback updates, activation priority, and bounded relationship reads |
+| [lifecycle.rs](../crates/mindleak-storage-postgres/src/lifecycle.rs) | Explicit feedback updates, final snapshot, activation priority, and context allocation |
+| [relationships.rs](../crates/mindleak-storage-postgres/src/relationships.rs) | Shared indexed evidence windows, exact raw-source inspection, and keyset pagination |
 | [documents.rs](../crates/mindleak-storage-postgres/src/documents.rs) | Unreleased bounded same-episode context and shared context-budget allocation |
 
 ## Write
@@ -205,6 +208,16 @@ diagnostics. MCP envelope/dual-representation overhead remains outside that cap.
 See [ADR-0015](../adr.d/0015-document-keyword-recall.md) and the
 [operator contract](INTEGRATION.md#document-recall-controls).
 
+### Source Inspection
+
+Inspection is an explicit alternative input to `recall_memory`, not a fourth tool
+or a retriever fallback. `fragmentId` without `query` goes through `MemoryService`
+to `MemoryStore`, reading raw source, current metadata, and a bounded evidence
+page in one read-only snapshot. It bypasses all model clients. `after`/`nextCursor`
+provide direct keyset continuation, including through filtered empty windows.
+Inspection returns at most eight related facts in a 512 KiB object without text
+truncation. Snapshots end with each response; cursors do not reserve history.
+
 ## Contextual Fact Lifecycle
 
 ![Fact lifecycle: reversible archival, terminal supersession, and separate retention and evidence claims](../assets/architecture-lifecycle.svg)
@@ -234,8 +247,12 @@ a probability of relevance or truth. Exact pgvector cosine remains the semantic
 query. Read at most eight direct related references per final result, subject
 to a shared 32 KiB serialized relationship-array budget. Reserve primary results
 first and allocate related objects round-robin in primary ranking order, retaining
-each owner's existing relationship-type/UUID order. `relationshipCount` reports
-eligible links and `relationshipsTruncated` reports omitted context. Never truncate
+each owner's corrective-first type/UUID/direction order. Two directional index
+scans each read at most 129 candidates; the merged window examines 128 plus a
+lookahead before filtering/hydrating bounded related texts. `relationshipCount`
+reports eligible examined links and `relationshipCountExact` distinguishes a
+complete count from a lower bound. `relationshipsTruncated` includes unexamined
+links as well as omitted context. Never truncate
 text or drop primary facts for link expansion. The result array is limited to
 512 KiB; if primaries alone exceed it, recall fails and asks for a lower limit.
 These limits measure serialized UTF-8 JSON, including escaping, not token counts.
@@ -247,6 +264,8 @@ See [ADR-0010](../adr.d/0010-contextual-fact-lifecycle.md) for precise policies
 and [the lifecycle guide](LIFECYCLE.md) for the human-facing contract.
 Response budgeting and priority disclosure are specified in
 [ADR-0012](../adr.d/0012-bounded-recall-context.md).
+Bounded scans, revised count semantics, original-source inspection and useful
+negative evidence are specified in [ADR-0014](../adr.d/0014-bounded-evidence-inspection.md).
 
 ## Storage and Deployment
 
@@ -260,6 +279,13 @@ requires DDL permissions and can wait for active transactions.
 The original schema remains unchanged; the explicit
 [optional-embedding migration](../crates/mindleak-storage-postgres/migrations/0002-optional-embeddings.sql)
 relaxes nullability and adds the keyword index. Existing data is not rewritten.
+
+The [evidence-read migration](../crates/mindleak-storage-postgres/migrations/0005-bounded-relationship-reads.sql)
+adds two owner/priority/related-ID indexes to the existing relationship table.
+It does not rewrite source data or vectors. The first upgrade needs index-build
+time and DDL permissions; later startups skip existing indexes. This bounds
+logical link selection, not all physical I/O, dead-tuple checks, or exact-vector
+search cost.
 
 The [lifecycle migration](../crates/mindleak-storage-postgres/migrations/0003-fact-lifecycle.sql)
 adds metadata columns, context, typed relationship actions, and feedback uniqueness.

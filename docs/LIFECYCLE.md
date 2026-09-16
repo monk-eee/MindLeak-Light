@@ -177,10 +177,23 @@ exceed that budget, the request fails with guidance to lower `limit`, without
 truncating facts. JSON escaping counts toward both limits. These are payload
 budgets, not token budgets or the size of the enclosing MCP response.
 
-`relationshipCount` is the number of eligible links before per-fact/global limits;
-`relationshipsTruncated` is true when fewer are included. An empty relationship
-array with a positive count does not mean the fact is unrelated. These additions
-require v0.3.0 or newer; v0.2.0 images retain their original response contract.
+In v0.3.0, `relationshipCount` is the full eligible-link count. New source builds
+bound each owner's scan to 128 links plus lookahead and add
+`relationshipCountExact`. False means the reported count is a lower bound;
+`relationshipsTruncated` covers both omitted references and unexamined links.
+An empty array, even with count zero, does not establish no relationships when
+the count is inexact. These newer count semantics are not in v0.3.0 packages.
+
+Source builds order explicit supersession, contradiction, archival, and restore
+links ahead of support, confirmation, reinforcement, and general association.
+That preserves corrective evidence before repeated confirmation history without
+deciding which claim is true. Each category uses related UUID and direction for
+stable pagination, not an invented authority or confidence score.
+
+Use [source inspection](INTEGRATION.md#inspect-original-sources) through
+`recall_memory.fragmentId` to read the exact raw episode and all direct evidence
+in bounded pages. Continue with `after: nextCursor` until null, including after
+empty filtered pages. The source is historical data, not a set of active claims.
 
 Set `includeInactive: true` to inspect archived or superseded matches explicitly.
 That does not reactivate them. A normal recall never mutates facts, counters, or

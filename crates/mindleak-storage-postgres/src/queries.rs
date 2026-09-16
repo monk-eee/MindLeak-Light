@@ -126,6 +126,7 @@ pub(super) fn recall_match(row: Row) -> Result<RecallMatch> {
         ranking_priority: 0.0,
         relationships: Vec::new(),
         relationship_count: 0,
+        relationship_count_exact: true,
         relationships_truncated: false,
         fragment_index: row.try_get("fragment_index")?,
         document_context: None,

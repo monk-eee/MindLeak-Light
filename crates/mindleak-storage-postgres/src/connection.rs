@@ -109,15 +109,21 @@ impl PostgresMemoryStore {
             .await
             .context("initialize retry-safe writes")?;
         transaction
-            .batch_execute(include_str!("../migrations/0005-keyword-identifiers.sql"))
+            .batch_execute(include_str!(
+                "../migrations/0005-bounded-relationship-reads.sql"
+            ))
+            .await
+            .context("initialize bounded relationship reads")?;
+        transaction
+            .batch_execute(include_str!("../migrations/0006-keyword-identifiers.sql"))
             .await
             .context("index qualified identifiers for keyword recall")?;
         transaction
-            .batch_execute(include_str!("../migrations/0006-document-search.sql"))
+            .batch_execute(include_str!("../migrations/0007-document-search.sql"))
             .await
             .context("index source metadata for keyword recall")?;
         transaction
-            .batch_execute(include_str!("../migrations/0007-fragment-order.sql"))
+            .batch_execute(include_str!("../migrations/0008-fragment-order.sql"))
             .await
             .context("record fragment order for document context")?;
         let Some(space) = &self.space else {

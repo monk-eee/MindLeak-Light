@@ -159,6 +159,7 @@ async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
             "rankingPriority",
             "relationships",
             "relationshipCount",
+            "relationshipCountExact",
             "relationshipsTruncated",
             "documentContext",
             "fragmentIndex",
@@ -166,6 +167,26 @@ async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
             assert_eq!(source[field], original[field], "provenance field: {field}");
         }
         assert_eq!(source["lifecycle"]["confirmedSessions"], 0);
+    }
+    for search_control in [
+        json!({"matchMode": "any"}),
+        json!({"diagnostics": true}),
+        json!({"contextLimit": 1}),
+        json!({"groupDuplicates": true}),
+    ] {
+        let mut inspection = json!({
+            "fragmentId": receipts[0]["fragments"][0]["fragmentId"],
+            "agentId": agent_id,
+            "scope": scope,
+        });
+        inspection
+            .as_object_mut()
+            .unwrap()
+            .extend(search_control.as_object().unwrap().clone());
+        assert!(client
+            .call_tool(call("recall_memory", inspection))
+            .await
+            .is_err());
     }
     let mut limited = request.clone();
     limited["limit"] = json!(1);

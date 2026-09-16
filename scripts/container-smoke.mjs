@@ -79,7 +79,7 @@ function lifecycleRecords() {
       FROM public.relationships) AS saved))`));
 }
 
-async function recallPersisted(endpoint, memoryId, retryRequest) {
+async function recallPersisted(endpoint, memoryId, retryRequest, expectedRaw) {
   const require = createRequire(new URL("../examples/package.json", import.meta.url));
   const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = require("@modelcontextprotocol/sdk/client/streamableHttp.js");
@@ -97,6 +97,7 @@ async function recallPersisted(endpoint, memoryId, retryRequest) {
     assert.ok(Number.isFinite(original.rankingPriority), "Recall has no finite rankingPriority");
     assert.equal(original.rankingPriority,
       original.score - Math.abs(original.score) * 0.25 * (1 - original.activation));
+    assert.equal(original.relationshipCountExact, true, "The small fixture must have an exact link count");
     assert.equal(original.relationshipsTruncated,
       original.relationshipCount > original.relationships.length);
     const tools = await client.listTools();
@@ -104,6 +105,17 @@ async function recallPersisted(endpoint, memoryId, retryRequest) {
       ["decompose_memory", "recall_memory", "write_memory"]);
     assert.ok(tools.tools.find((tool) => tool.name === "write_memory").inputSchema.properties.requestId,
       "The candidate does not advertise retry-safe writes");
+    assert.ok(tools.tools.find((tool) => tool.name === "recall_memory").inputSchema.properties.fragmentId,
+      "The candidate does not advertise source inspection");
+    const inspected = await client.callTool({
+      name: "recall_memory", arguments: { fragmentId: original.fragmentId, agentId: project },
+    });
+    assert.ok(!inspected.isError, "Source inspection failed after upgrade or restart");
+    assert.equal(inspected.structuredContent?.memoryId, memoryId);
+    assert.equal(inspected.structuredContent?.rawText, expectedRaw);
+    assert.equal(inspected.structuredContent?.fragmentId, original.fragmentId);
+    assert.ok(inspected.structuredContent.scannedRelationships <= 128);
+    assert.equal(sql("SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN ('relationships_incoming_context_idx', 'relationships_outgoing_context_idx')"), "2");
     const written = await client.callTool({ name: "write_memory", arguments: retryRequest });
     assert.ok(!written.isError, "Keyed write or replay failed");
     assert.equal(typeof written.structuredContent?.memoryId, "string");
@@ -238,7 +250,7 @@ try {
     text: "Retry-safe writes survive container recreation.",
   };
   const receipt = await recallPersisted(
-    `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest);
+    `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest, before.memories[0].raw_text);
   if (upgradeFrom) {
     console.log("Published-image upgrade: exact records, vectors, links, model metadata, existing lifecycle or legacy defaults, and MCP recall verified.");
   }
@@ -248,12 +260,12 @@ try {
   compose("down");
   compose("up", "--detach", "--wait", "--wait-timeout", "120");
   assert.deepEqual(await recallPersisted(
-    `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest),
+    `http://${compose("port", "mindleak-light", "8088")}`, before.memories[0].id, retryRequest, before.memories[0].raw_text),
   receipt, "Replaying after container recreation changed the committed receipt");
   assert.deepEqual(snapshot(), keyedCounts, "A keyed retry created extra rows");
   assert.deepEqual(persistedRecords(), keyedRecords, "A keyed retry changed persisted data");
   assert.deepEqual(lifecycleRecords(), keyedLifecycle, "A keyed retry changed lifecycle metadata");
-  console.log("Integrated contracts: ranking metadata and immutable keyed replay after container recreation verified.");
+  console.log("Integrated contracts: bounded evidence indexes, exact source inspection, ranking metadata and keyed replay after recreation verified.");
   console.log("All-in-one image: auth, MCP write/recall, socket-only Postgres, and volume persistence verified.");
 } catch (error) {
   console.error(compose("logs", "--no-color", "--tail", "80"));

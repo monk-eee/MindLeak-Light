@@ -3,6 +3,7 @@ mod documents;
 mod lifecycle;
 mod persistence;
 mod queries;
+mod relationships;
 mod retrieval;
 
 pub use retrieval::{HybridMemoryRetriever, KeywordMemoryRetriever, VectorMemoryRetriever};

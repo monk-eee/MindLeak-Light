@@ -64,6 +64,16 @@ impl TextEmbedder for Backend {
 
 #[async_trait]
 impl MemoryStore for Backend {
+    async fn inspect_fragment(
+        &self,
+        _: Uuid,
+        _: &RecallFilter,
+        _: Option<&RelationshipCursor>,
+        _: usize,
+    ) -> Result<Option<mindleak_memory::FragmentInspection>> {
+        Ok(None)
+    }
+
     async fn lookup_write(&self, _: &WriteRequest) -> Result<Option<WriteMemoryResult>> {
         Ok(None)
     }

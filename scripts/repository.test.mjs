@@ -146,9 +146,9 @@ test("architecture diagrams cover the integrated write and recall contracts", ()
   assert.equal(elements.size, scene.elements.length, "Excalidraw element IDs must be unique");
   assert.equal(scene.elements.filter((element) => element.type === "frame").length, 4);
   for (const [name, terms] of [
-    ["overview", ["MemoryService", "MemoryStore", "MemoryRetriever", "PostgreSQL", "memories", "fragments", "relationships"]],
+    ["overview", ["MemoryService", "MemoryStore", "MemoryRetriever", "PostgreSQL", "memories", "fragments", "relationships", "source inspection"]],
     ["write", ["requestId", "committed receipt", "Rollback", "lifecycle"]],
-    ["recall", ["rankingPriority", "bounded related context", "32 KiB", "512 KiB"]],
+    ["recall", ["rankingPriority", "bounded related context", "32 KiB", "512 KiB", "relationshipCountExact", "rawText", "nextCursor", "useful negatives"]],
     ["lifecycle", ["Active", "Archived", "Superseded", "confirmation", "not truth"]],
   ]) {
     const frameId = `architecture-${name}`;
