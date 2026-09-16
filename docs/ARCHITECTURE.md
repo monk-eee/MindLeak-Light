@@ -35,7 +35,25 @@ provider call is replaced with another strategy.
 
 Raw text is preserved exactly. Memory text is limited to 32768 UTF-8 bytes;
 decomposition produces 1..64 fragments of at most 4096 bytes each. Empty facts,
-truncated model responses, zero/non-finite vectors, and dimension mismatches fail.
+truncated model responses, numerically unsafe vectors, and dimension mismatches
+fail. Squared vector norms must be finite and normal in f32 so pgvector's cosine
+arithmetic cannot underflow on accepted inputs. Non-finite database recall scores
+are errors rather than successful results with a null score.
+
+## Provider Responses
+
+The `mindleak-provider` crate owns the shared `read_json_response` boundary used
+by the decomposition, embedding, and relevance clients. It caps each provider
+body at 4 MiB before JSON parsing, checking the declared length when available
+and cumulative bytes while reading chunks. Oversized or broken responses fail
+without truncation, response-body logging, or fallback to another strategy.
+This shared HTTP boundary keeps transport concerns out of the memory domain.
+
+When an embedding provider reports a non-null model ID, it must exactly match
+the configured ID before vectors can be used for writes or queries. Providers
+that omit that metadata remain supported, but their actual identity cannot be
+verified. Model aliases are not resolved implicitly, and stable model names still
+cannot prove that a provider has kept its weights unchanged.
 
 ## Recall
 

@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use mindleak_decomposition::OpenAiDecomposer;
 use mindleak_embeddings::OpenAiEmbedder;
@@ -73,6 +79,161 @@ async fn provider() -> MockServer {
 
 fn call(name: &'static str, arguments: Value) -> CallToolRequestParams {
     CallToolRequestParams::new(name).with_arguments(arguments.as_object().unwrap().clone())
+}
+
+#[tokio::test]
+async fn invalid_provider_data_never_reports_success_or_leaves_partial_memories() {
+    let provider = MockServer::start().await;
+    let scenario = Arc::new(AtomicUsize::new(0));
+    let chat_scenario = scenario.clone();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_: &Request| {
+            let mut body = json!({"choices": [{"finish_reason": "stop", "message": {
+                "content": json!({"fragments": FACTS}).to_string()
+            }}]});
+            if chat_scenario.load(Ordering::SeqCst) == 2 {
+                body["metadata"] = json!("x".repeat(4 * 1024 * 1024));
+            }
+            ResponseTemplate::new(200).set_body_json(body)
+        })
+        .mount(&provider)
+        .await;
+    let embedding_scenario = scenario.clone();
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(move |request: &Request| {
+            let scenario = embedding_scenario.load(Ordering::SeqCst);
+            let request: Value = request.body_json().unwrap();
+            let vector = if scenario == 1 {
+                [1e-30, 0.0]
+            } else {
+                [1.0, 0.0]
+            };
+            let data: Vec<_> = request["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(|(index, _)| json!({"index": index, "embedding": vector}))
+                .collect();
+            let mut body = json!({
+                "model": if scenario == 0 { "different-test-model" } else { "test-model" },
+                "data": data
+            });
+            if scenario == 3 {
+                body["metadata"] = json!("x".repeat(4 * 1024 * 1024));
+            }
+            ResponseTemplate::new(200).set_body_json(body)
+        })
+        .mount(&provider)
+        .await;
+
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("provider-validation-{}", Uuid::new_v4());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "openai".into()),
+        ("MINDLEAK_RETRIEVAL", "vector".into()),
+        ("MINDLEAK_RELEVANCE", "off".into()),
+        ("MINDLEAK_MODEL", "test-model".into()),
+        ("MINDLEAK_LLM_URL", format!("{}/v1", provider.uri())),
+        ("MINDLEAK_EMBED_MODEL", "test-model".into()),
+        ("MINDLEAK_EMBED_URL", format!("{}/v1", provider.uri())),
+        ("MINDLEAK_EMBED_DIMENSIONS", "2".into()),
+        ("MINDLEAK_RECALL_MIN_SIMILARITY", "0.9".into()),
+    ]);
+    let client = tokio::time::timeout(
+        Duration::from_secs(15),
+        ().serve(TokioChildProcess::new(command).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (database, connection) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    for current in 0..4 {
+        scenario.store(current, Ordering::SeqCst);
+        let written = client
+            .call_tool(call(
+                "write_memory",
+                json!({
+                    "agentId": agent_id, "text": FACTS.join(". ")
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            written.is_error,
+            Some(true),
+            "invalid scenario {current} must fail"
+        );
+        let count: i64 = database
+            .query_one(
+                "SELECT count(*) FROM public.memories WHERE agent_id = $1",
+                &[&agent_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 0, "failed writes must not leave raw memories");
+    }
+    scenario.store(4, Ordering::SeqCst);
+    let written = client
+        .call_tool(call(
+            "write_memory",
+            json!({
+                "agentId": agent_id, "text": FACTS.join(". ")
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(written.is_error, Some(true));
+    for current in [0, 1, 3] {
+        scenario.store(current, Ordering::SeqCst);
+        let recalled = client
+            .call_tool(call(
+                "recall_memory",
+                json!({
+                    "agentId": agent_id, "query": format!("provider-probe-{current}"), "limit": 5
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            recalled.is_error,
+            Some(true),
+            "invalid scenario {current} must not be an empty success"
+        );
+    }
+    scenario.store(4, Ordering::SeqCst);
+    let recalled = client
+        .call_tool(call(
+            "recall_memory",
+            json!({
+                "agentId": agent_id, "query": "provider-probe-0", "limit": 5
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(recalled.is_error, Some(true));
+    let content = recalled.structured_content.unwrap();
+    let results = content["results"].as_array().unwrap();
+    assert_eq!(results.len(), FACTS.len());
+    assert!(results
+        .iter()
+        .all(|result| result["score"].as_f64().is_some_and(f64::is_finite)));
+    client.cancel().await.unwrap();
+    database
+        .execute(
+            "DELETE FROM public.memories WHERE agent_id = $1",
+            &[&agent_id],
+        )
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

@@ -10,6 +10,10 @@
 - Models are optional external providers, not bundled processes. Enabled chat
   providers must support JSON-schema responses; embeddings must match configured
   dimensions. An enabled provider failure does not fall back to model-free mode.
+- Provider response bodies are capped at 4 MiB, including metadata, even if the
+  provider would otherwise return valid facts or vectors. Embeddings with squared
+  norms unsafe for f32 cosine arithmetic are rejected. Existing invalid database
+  scores cause recall errors; this validation does not rewrite stored vectors.
 - Vector retrieval is exact cosine search without ANN indexing, reranking, decay,
   RAST, synthesis inside the server, or automatic relationship generation.
 - A configured cosine floor trades recall for rejection; it is model/corpus
@@ -31,6 +35,9 @@
   no re-embedding command or model migration in this initial version. Entries
   written without vectors remain keyword-searchable but are not automatically
   included in vector-only recall after enabling a model.
+- Reported embedding-model IDs must match configuration exactly; implicit alias
+  resolution is not supported. Providers may omit model metadata, so identity
+  cannot always be verified from their response.
 - Writes are atomic but not idempotent. A timeout after commit can leave a saved
   memory without a received ID; blind retries may create duplicates.
 - No update, delete, expiry, or retention tools yet. Operators manage backups
