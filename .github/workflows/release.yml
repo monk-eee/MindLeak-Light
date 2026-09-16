@@ -15,9 +15,11 @@ jobs:
   metadata:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.88.0
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: node scripts/release.mjs --check "$RELEASE_TAG"
@@ -45,18 +47,19 @@ jobs:
             target: aarch64-apple-darwin
             binary: mindleak-light
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.98.0
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: cargo build --release --locked -p mindleak-mcp --bin mindleak-light --target ${{ matrix.target }}
       - run: ./target/${{ matrix.target }}/release/${{ matrix.binary }} --version
       - run: node scripts/release.mjs --package ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mindleak-light-${{ matrix.target }}
           path: dist/*
@@ -69,19 +72,21 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.88.0
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - run: node scripts/release.mjs --notes "$RELEASE_TAG" > RELEASE_NOTES.md
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           draft: true

@@ -26,3 +26,11 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
   disposable-database MCP runs, Precision@k, Recall@k, MRR, nDCG, hit rate,
   unanswerable-query scoring, per-category JSON reports, and an optional recall
   quality gate. Include model-comparison guidance and scorer tests in repository CI.
+
+### Changed
+- Update `thiserror` to 2 and `tower-http` to 0.7, retaining the tested memory and HTTP contracts.
+- Align local, CI, and container builds on Rust 1.98 while retaining the declared Rust 1.88 minimum.
+- Update GitHub Actions and Docker publishing actions to their current major versions, including artifact integrity checks, and group future workflow updates.
+
+### Fixed
+- Specify the compiler through the Rust toolchain action's input instead of its generated version tags, preventing invalid Dependabot proposals such as Rust 1.120.0.

@@ -20,7 +20,7 @@ jobs:
     name: Validate Release and Registry Setup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Require an explicit release tag and configured token
@@ -42,8 +42,10 @@ jobs:
             echo "::error::A prerelease cannot update latest."
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@1.88.0
-      - uses: actions/setup-node@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: node scripts/release.mjs --check "$RELEASE_TAG"
@@ -59,17 +61,17 @@ jobs:
     needs: [metadata, verify]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME || 'monkeemagic' }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - id: metadata
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: monkeemagic/mindleak-light
           flavor: latest=false
@@ -80,7 +82,7 @@ jobs:
             org.opencontainers.image.title=MindLeak Light
             org.opencontainers.image.description=Shared agent memory with MCP and PostgreSQL in one container
             org.opencontainers.image.licenses=MIT
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile

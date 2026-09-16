@@ -5,7 +5,8 @@ Want to use MindLeak in an agent rather than work on its source? Start with the
 
 ## Prerequisites
 
-- Rust via rustup; `rust-toolchain.toml` pins Rust 1.88 with rustfmt and Clippy.
+- Rust via rustup; `rust-toolchain.toml` pins Rust 1.98 with rustfmt and Clippy.
+	The manifest's minimum supported Rust version remains 1.88.
 - Node.js 22+ for repository scripts. No npm dependencies are required.
 - Git, Make, and pre-commit 3.5+ for hooks (`pipx install pre-commit`).
 - Docker Compose or Podman Compose for PostgreSQL with pgvector.
