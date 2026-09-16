@@ -264,6 +264,38 @@ function latencySummary(values) {
   };
 }
 
+export function querySetManifest(queries) {
+  const identities = queries.map(query => [query.id, query.querySha256, query.category,
+    query.split ?? "unspecified", query.group ?? query.id, [...query.relevantIds].sort()]);
+  identities.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  return { count: identities.length, sha256: createHash("sha256").update(JSON.stringify(identities)).digest("hex") };
+}
+
+export function verifyQuerySet(report) {
+  if (report.reportVersion !== 5 && report.querySet === undefined) return false;
+  if (!Array.isArray(report.queries) || !report.queries.length
+    || (report.reportVersion === 5 && report.qualityPass !== 1)
+    || report.queries.some(query => typeof query.querySha256 !== "string" || !/^[a-f0-9]{64}$/.test(query.querySha256))) {
+    throw new Error("Report is missing query fingerprints required by its query-set manifest.");
+  }
+  const actual = querySetManifest(report.queries.filter(query => (query.pass ?? 1) === 1));
+  if (report.querySet?.count !== actual.count || report.querySet?.sha256 !== actual.sha256) {
+    throw new Error("Report observations do not match the planned query-set manifest.");
+  }
+  return true;
+}
+
+export function responseSizeSummary(values) {
+  if (values.some(value => !Number.isSafeInteger(value) || value < 2)) throw new Error("Result sizes must be integer byte counts of JSON arrays.");
+  const sorted = [...values].sort((left, right) => left - right);
+  const totalBytes = sorted.reduce((sum, value) => sum + value, 0);
+  return { count: sorted.length, totalBytes, meanBytes: sorted.length ? totalBytes / sorted.length : null,
+    p50Bytes: sorted[Math.ceil(sorted.length * 0.5) - 1] ?? null,
+    p95Bytes: sorted[Math.ceil(sorted.length * 0.95) - 1] ?? null,
+    p99Bytes: sorted[Math.ceil(sorted.length * 0.99) - 1] ?? null,
+    minBytes: sorted[0] ?? null, maxBytes: sorted.at(-1) ?? null };
+}
+
 export async function runBenchmark(client, dataset, { limit = 5, split = "all", passes = 1,
   concurrency = 1, querySeed = null, agentId = `recall-benchmark-${randomUUID()}` } = {}) {
   validateDataset(dataset);
@@ -276,6 +308,11 @@ export async function runBenchmark(client, dataset, { limit = 5, split = "all", 
   if (!["all", "calibration", "evaluation"].includes(split)) throw new Error("Invalid query split.");
   const selectedQueries = dataset.queries.filter((query) => split === "all" || query.split === split);
   if (!selectedQueries.length) throw new Error("The selected split contains no queries.");
+  const queryIdentities = new Map(selectedQueries.map(query => [query.id, {
+    id: query.id, category: query.category, group: query.group ?? query.id, split: query.split ?? "unspecified",
+    relevantIds: query.relevantIds, querySha256: createHash("sha256").update(query.query).digest("hex"),
+  }]));
+  const querySet = querySetManifest([...queryIdentities.values()]);
   if (typeof agentId !== "string" || !agentId.trim() || Buffer.byteLength(agentId, "utf8") > 256) {
     throw new Error("Benchmark agent ID must be nonempty and at most 256 UTF-8 bytes.");
   }
@@ -333,18 +370,16 @@ export async function runBenchmark(client, dataset, { limit = 5, split = "all", 
       return `unverified:${index + 1}`;
     });
     return {
-      id: query.id,
+      ...queryIdentities.get(query.id),
       pass,
-      category: query.category,
-      group: query.group ?? query.id,
-      split: query.split ?? "unspecified",
-      relevantIds: query.relevantIds,
       rankedIds,
       rankedMemoryIds,
       unverifiedRanks,
       sourceMetrics: scoreRanking(rankedMemoryIds, query.relevantIds.map((identifier) => factSources.get(identifier)), limit),
       scores: response.results.map((result) => result.score),
       recallMs,
+      resultBytes: Buffer.byteLength(JSON.stringify(response.results), "utf8"),
+      primaryTextBytes: response.results.reduce((total, result) => total + Buffer.byteLength(result.text, "utf8"), 0),
       missedIds: query.relevantIds.filter((identifier) => !rankedIds.includes(identifier)),
       ...scoreRanking(rankedIds, query.relevantIds, limit),
     };
@@ -382,9 +417,11 @@ export async function runBenchmark(client, dataset, { limit = 5, split = "all", 
     split,
     passes,
     qualityPass: 1,
+    querySet,
     workload: { concurrency, querySeed, ordering: querySeed === null ? "fixture" : "seeded-per-pass" },
     scoring: "verified-fact-variants",
     latency: { write: latencySummary(writeTimes), recall: latencySummary(queries.map((query) => query.recallMs)) },
+    responseSize: responseSizeSummary(qualityQueries.map(query => query.resultBytes)),
     summary: summarizeQueries(qualityQueries),
     sourceSummary: summarizeQueries(qualityQueries.map((query) => query.sourceMetrics)),
     unverifiedFragments: qualityQueries.reduce((total, query) => total + query.unverifiedRanks.length, 0),
@@ -394,7 +431,7 @@ export async function runBenchmark(client, dataset, { limit = 5, split = "all", 
     byPass: Array.from({ length: passes }, (_, index) => {
       const rows = queries.filter((query) => query.pass === index + 1);
       return { pass: index + 1, ...passMeasurements[index], summary: summarizeQueries(rows),
-        latency: latencySummary(rows.map((query) => query.recallMs)) };
+        latency: latencySummary(rows.map((query) => query.recallMs)), responseSize: responseSizeSummary(rows.map(query => query.resultBytes)) };
     }),
     queries,
   };
@@ -404,7 +441,7 @@ export function calibrateSimilarity(report, minimumRecall = 0.8, limit = 5) {
   if (!Number.isFinite(minimumRecall) || minimumRecall < 0 || minimumRecall > 1) {
     throw new Error("Calibration minimum recall must be in 0..1.");
   }
-  if (![3, 4].includes(report?.reportVersion) || report.scoring !== "verified-fact-variants" || report.split !== "calibration"
+  if (![3, 4, 5].includes(report?.reportVersion) || report.scoring !== "verified-fact-variants" || report.split !== "calibration"
     || report.configuration?.retrieval !== "vector" || report.configuration.minSimilarity !== null
     || (report.configuration.relevance ?? "off") !== "off"
     || (report.passes ?? 1) !== 1
@@ -427,6 +464,7 @@ export function calibrateSimilarity(report, minimumRecall = 0.8, limit = 5) {
     scoreRanking(query.rankedIds, query.relevantIds, report.limit);
     for (const score of query.scores) scores.add(score);
   }
+  verifyQuerySet(report);
   if (!report.queries.some((query) => query.relevantIds.length)
     || !report.queries.some((query) => !query.relevantIds.length)) {
     throw new Error("Calibration needs both answerable and unanswerable queries.");
@@ -526,6 +564,8 @@ export function benchmarkSettings(environment, options = {}) {
   }
   const minimumRecall = numericOption(options["min-recall"], "--min-recall", 0, 1);
   const minimumNoAnswer = numericOption(options["min-no-answer"], "--min-no-answer", 0, 1);
+  const maxResultBytes = numericOption(options["max-result-bytes"], "--max-result-bytes", 0, 64 * 1024 * 1024);
+  if (maxResultBytes !== null && !Number.isSafeInteger(maxResultBytes)) throw new Error("Result byte budget must be an integer.");
   const minSimilarity = numericOption(options["min-similarity"], "--min-similarity", -1, 1);
   if (minSimilarity !== null && retrieval === "keyword") throw new Error("A similarity floor requires vector or hybrid retrieval.");
   const split = options.split ?? "evaluation";
@@ -593,6 +633,7 @@ export function benchmarkSettings(environment, options = {}) {
     maxWarmP95,
     minimumRecall,
     minimumNoAnswer,
+    maxResultBytes,
     serverEnvironment,
     configuration: { label, decomposition, retrieval, minSimilarity, decompositionModel, embeddingModel, embeddingDimensions,
       relevance, relevanceModel, relevanceCandidates: relevanceModel ? relevanceCandidates : null, modelTimeoutSecs: timeout },
@@ -623,6 +664,7 @@ async function main() {
         label: { type: "string" },
         "min-recall": { type: "string" },
         "min-no-answer": { type: "string" },
+        "max-result-bytes": { type: "string" },
         "min-similarity": { type: "string" },
         split: { type: "string" },
         calibrate: { type: "string" },
@@ -660,6 +702,7 @@ Writes namespaced benchmark records which remain until the database is cleaned u
   --label NAME                Identifier recorded in the report
   --min-recall NUMBER         Exit nonzero if macro Recall@k is below this value
   --min-no-answer NUMBER      Exit nonzero if no-answer accuracy is below this value
+  --max-result-bytes N        Fail if any result array exceeds this UTF-8 JSON byte budget
   --calibrate REPORT          Select a cosine floor from a calibration vector report; no server needed
   --calibration-min-recall N   Recall floor during calibration (default: 0.8)
   --calibration-k N           Deployment cutoff, 1..50 (default: 5); capture input with --k 50
@@ -689,6 +732,7 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
   if (values["calibration-k"] !== undefined) throw new Error("--calibration-k requires --calibrate.");
   if (values["extraction-only"] && (values.retrieval && values.retrieval !== "keyword"
     || values["min-recall"] !== undefined || values["min-no-answer"] !== undefined || values["min-similarity"] !== undefined
+    || values["max-result-bytes"] !== undefined
     || values.background !== undefined || values.relevance !== undefined || values["relevance-candidates"] !== undefined)) {
     throw new Error("--extraction-only does not accept retrieval modes or ranking quality gates.");
   }
@@ -764,7 +808,7 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
       : await runBenchmark(client, dataset, { limit: settings.limit, split: settings.split, passes: settings.passes,
         concurrency: settings.concurrency, querySeed: settings.querySeed, agentId });
     report = {
-      reportVersion: 4,
+      reportVersion: 5,
       mode: values["extraction-only"] ? "decomposition" : "recall",
       createdAt: new Date().toISOString(),
       dataset: {
@@ -803,6 +847,10 @@ JSON reports go to stdout; progress and errors go to stderr. See docs/BENCHMARKS
   if (settings.maxWarmP95 !== null && report.byPass.slice(1).some((pass) =>
     pass.latency.p95Ms === null || pass.latency.p95Ms > settings.maxWarmP95)) {
     console.error(`Warm recall p95 exceeded ${settings.maxWarmP95} ms.`);
+    process.exitCode = 1;
+  }
+  if (settings.maxResultBytes !== null && report.queries.some(query => query.resultBytes > settings.maxResultBytes)) {
+    console.error(`Recall result size exceeded ${settings.maxResultBytes} bytes.`);
     process.exitCode = 1;
   }
 }
