@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { scoreRanking } from "./benchmark-recall.mjs";
+import { responseSizeSummary, scoreRanking, validateDataset, verifyQuerySet, withBackground } from "./benchmark-recall.mjs";
 
 const metrics = {
   precisionAtK: "precisionAtK", recallAtK: "recallAtK", mrrAtK: "reciprocalRankAtK",
@@ -14,7 +14,7 @@ const configurationKeys = [
   "embeddingDimensions", "relevance", "relevanceModel", "relevanceCandidates", "modelTimeoutSecs",
 ];
 const changeKeys = [...configurationKeys, "binary", "decompositionReasoningEffort", "relevanceReasoningEffort",
-  "concurrency", "querySeed", "queryOrder"];
+  "concurrency", "querySeed", "queryOrder", "runtime"];
 const identifier = (value) => typeof value === "string" && /^[a-z0-9][a-z0-9_.-]{0,127}$/i.test(value);
 const digest = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -27,11 +27,15 @@ function configuration(report) {
     relevanceReasoningEffort: report.reasoning?.relevance ?? null,
     concurrency: report.workload?.concurrency ?? 1, querySeed: report.workload?.querySeed ?? null,
     queryOrder: createHash("sha256").update(JSON.stringify(report.queries
-      .filter(query => (query.pass ?? 1) === 1).map(query => query.id))).digest("hex") };
+      .filter(query => (query.pass ?? 1) === 1).map(query => query.id))).digest("hex"),
+    runtime: report.runtime === undefined ? null : {
+      platform: report.runtime.platform, architecture: report.runtime.architecture,
+      node: report.runtime.node, availableParallelism: report.runtime.availableParallelism,
+    } };
 }
 
 function observations(report) {
-  if (![3, 4].includes(report?.reportVersion) || report.mode !== "recall"
+  if (![3, 4, 5].includes(report?.reportVersion) || report.mode !== "recall"
     || report.scoring !== "verified-fact-variants" || !digest(report.dataset?.sha256)
     || !digest(report.binarySha256) || !["all", "calibration", "evaluation"].includes(report.split)
     || !Array.isArray(report.queries) || !report.queries.length
@@ -40,12 +44,25 @@ function observations(report) {
     throw new Error("Comparison requires complete fact-scored recall reports with corpus and binary hashes.");
   }
   scoreRanking([], [], report.limit);
+  if (report.reportVersion === 5 && report.qualityPass !== 1) throw new Error("Report quality pass must be 1.");
+  if (report.reportVersion === 5 || report.runtime !== undefined) {
+    if (!identifier(report.runtime?.platform) || !identifier(report.runtime?.architecture)
+      || typeof report.runtime?.node !== "string" || !/^v\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(report.runtime.node)
+      || !Number.isSafeInteger(report.runtime.availableParallelism) || report.runtime.availableParallelism < 1) {
+      throw new Error("Report has missing or invalid runtime provenance.");
+    }
+  }
   const passes = report.passes ?? 1;
   if (!Number.isInteger(passes) || passes < 1 || passes > 10) throw new Error("Invalid report pass count.");
   const indexed = Array.from({ length: passes }, () => new Map());
   for (const query of report.queries) {
     const pass = query?.pass ?? 1;
     if (!identifier(query?.id) || !identifier(query.category) || !identifier(query.group ?? query.id)
+      || ((report.reportVersion === 5 || query.querySha256 !== undefined) && !digest(query.querySha256))
+      || ((report.reportVersion === 5 || query.resultBytes !== undefined)
+        && (!Number.isSafeInteger(query.resultBytes) || query.resultBytes < 2))
+      || ((report.reportVersion === 5 || query.primaryTextBytes !== undefined)
+        && (!Number.isSafeInteger(query.primaryTextBytes) || query.primaryTextBytes < 0 || query.primaryTextBytes > query.resultBytes))
       || !Number.isInteger(pass) || pass < 1 || pass > passes || indexed[pass - 1].has(query.id)
       || !["calibration", "evaluation", "unspecified"].includes(query.split)
       || (report.split !== "all" && query.split !== report.split)
@@ -62,11 +79,35 @@ function observations(report) {
   const identity = (query) => [query.category, query.split, query.group, [...query.relevantIds].sort()];
   for (const pass of indexed) {
     if (pass.size !== indexed[0].size || [...indexed[0]].some(([id, query]) =>
-      !pass.has(id) || !same(identity(query), identity(pass.get(id))))) {
+      !pass.has(id) || !same(identity(query), identity(pass.get(id))) || query.querySha256 !== pass.get(id).querySha256)) {
       throw new Error("Every pass must contain the same distinct query IDs and labels.");
     }
   }
-  return { passes: indexed, first: indexed[0], identity };
+  const querySetVerified = verifyQuerySet(report);
+  return { passes: indexed, first: indexed[0], identity, querySetVerified };
+}
+
+function auditCorpus(corpus, report, indexed) {
+  validateDataset(corpus.dataset);
+  if (!digest(corpus.sha256) || corpus.sha256 !== report.dataset.sha256
+    || corpus.dataset.id !== report.dataset.id) {
+    throw new Error("Comparison corpus identity or hash does not match the report.");
+  }
+  const selected = corpus.dataset.queries.filter(query => report.split === "all" || query.split === report.split);
+  if (selected.length !== indexed.first.size) throw new Error("Report does not contain the complete corpus query population.");
+  let queryTextVerified = true;
+  for (const query of selected) {
+    const observed = indexed.first.get(query.id);
+    const expected = [query.category, query.split ?? "unspecified", query.group ?? query.id, [...query.relevantIds].sort()];
+    if (!observed || !same(expected, indexed.identity(observed))) {
+      throw new Error("Report query labels, categories, splits, or groups disagree with the corpus.");
+    }
+    if (observed.querySha256 === undefined) queryTextVerified = false;
+    else if (observed.querySha256 !== createHash("sha256").update(query.query).digest("hex")) {
+      throw new Error("Report query fingerprint disagrees with the corpus.");
+    }
+  }
+  return queryTextVerified;
 }
 
 function randomIndex(seed) {
@@ -134,16 +175,19 @@ function pairedMetric(pairs, field, resamples, seed) {
 
 function passDiagnostics(indexed) {
   return indexed.passes.map((pass, index) => {
-    const times = [...pass.values()].map((query) => query.recallMs).sort((left, right) => left - right);
+    const rows = [...pass.values()];
+    const times = rows.map((query) => query.recallMs).sort((left, right) => left - right);
     return { pass: index + 1, queries: pass.size,
       meanMs: times.reduce((sum, time) => sum + time, 0) / times.length,
       p50Ms: percentile(times, 0.5), p95Ms: percentile(times, 0.95), p99Ms: percentile(times, 0.99),
+      responseSize: rows.every(query => Number.isSafeInteger(query.resultBytes))
+        ? responseSizeSummary(rows.map(query => query.resultBytes)) : null,
       changedRankings: [...pass].filter(([id, query]) => !same(query.rankedIds, indexed.first.get(id).rankedIds)).length };
   });
 }
 
 export function compareReports(baseline, candidate, { allowChanges = [], resamples = 2000,
-  seed = 20260916, maxRecallDrop = null, maxNoAnswerDrop = null } = {}) {
+  seed = 20260916, maxRecallDrop = null, maxNoAnswerDrop = null, maxResultBytes = null, corpus = null } = {}) {
   if (!Number.isInteger(resamples) || resamples < 200 || resamples > 10000
     || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff
     || !Array.isArray(allowChanges) || allowChanges.some((key) => !changeKeys.includes(key))) {
@@ -155,7 +199,11 @@ export function compareReports(baseline, candidate, { allowChanges = [], resampl
     }
   }
   const before = observations(baseline);
+  if (maxResultBytes !== null && (!Number.isSafeInteger(maxResultBytes) || maxResultBytes < 0 || maxResultBytes > 64 * 1024 * 1024)) {
+    throw new Error("Result byte budget must be an integer in 0..67108864.");
+  }
   const after = observations(candidate);
+  const auditedQueries = corpus === null ? [] : [auditCorpus(corpus, baseline, before), auditCorpus(corpus, candidate, after)];
   if (baseline.dataset.sha256 !== candidate.dataset.sha256 || baseline.limit !== candidate.limit
     || baseline.split !== candidate.split || before.first.size !== after.first.size) {
     throw new Error("Comparisons require the same corpus hash, cutoff, split, and query population.");
@@ -164,6 +212,9 @@ export function compareReports(baseline, candidate, { allowChanges = [], resampl
     const matched = after.first.get(id);
     if (!matched || !same(before.identity(query), after.identity(matched))) {
       throw new Error("Paired query IDs, labels, categories, splits, and groups must match.");
+    }
+    if (query.querySha256 !== undefined && matched.querySha256 !== undefined && query.querySha256 !== matched.querySha256) {
+      throw new Error("Paired query fingerprints must match.");
     }
     return { baseline: query, candidate: matched };
   });
@@ -180,9 +231,21 @@ export function compareReports(baseline, candidate, { allowChanges = [], resampl
     .filter(([, maximumDrop]) => maximumDrop !== null)
     .map(([metric, maximumDrop]) => ({ metric, maximumDrop, delta: measured[metric].delta,
       passed: measured[metric].delta !== null && measured[metric].delta >= -maximumDrop - 1e-12 }));
+  if (maxResultBytes !== null) {
+    const rows = after.passes.flatMap(pass => [...pass.values()]);
+    const observed = rows.every(query => Number.isSafeInteger(query.resultBytes))
+      ? rows.reduce((largest, query) => Math.max(largest, query.resultBytes), 0) : null;
+    gates.push({ metric: "resultBytes", maximumBytes: maxResultBytes, observedBytes: observed,
+      passed: observed !== null && observed <= maxResultBytes });
+  }
   return {
-    comparisonVersion: 1, scoring: baseline.scoring, datasetSha256: baseline.dataset.sha256,
+    comparisonVersion: 2, scoring: baseline.scoring, datasetSha256: baseline.dataset.sha256,
     split: baseline.split, limit: baseline.limit, qualityPass: 1, uniqueQueries: pairs.length,
+    audit: { corpusVerified: corpus !== null, queryTextVerified: auditedQueries.length === 2 && auditedQueries.every(Boolean),
+      plannedQuerySetsVerified: before.querySetVerified && after.querySetVerified,
+      queryFingerprintsCompared: pairs.every(pair => digest(pair.baseline.querySha256) && digest(pair.candidate.querySha256)),
+      runtimeRecorded: baseline.runtime !== undefined && candidate.runtime !== undefined,
+      caveat: "Checks detect inconsistent evidence, not forged reports. Legacy reports without query fingerprints cannot verify the original query wording." },
     baseline: baselineConfiguration, candidate: candidateConfiguration, changes,
     uncertainty: { method: "paired-group-percentile-bootstrap", resamples, seed, confidence: 0.95,
       caveat: "Conditional on this corpus. Groups must represent independent units; repeated passes are not new evidence. Fewer than two groups yields no interval." },
@@ -205,32 +268,55 @@ export function compareReports(baseline, candidate, { allowChanges = [], resampl
 async function main() {
   const { values } = parseArgs({ options: {
     help: { type: "boolean", short: "h" }, baseline: { type: "string" }, candidate: { type: "string" },
+    dataset: { type: "string" }, background: { type: "string" },
     "allow-change": { type: "string", multiple: true }, resamples: { type: "string" }, seed: { type: "string" },
     "max-recall-drop": { type: "string" }, "max-no-answer-drop": { type: "string" },
+    "max-result-bytes": { type: "string" },
   } });
   if (values.help) {
     console.log(`Usage: node examples/benchmark-compare.mjs --baseline REPORT --candidate REPORT [options]
 
 Offline paired comparison. No server, model, or database is required.
+  --dataset PATH             Audit complete query populations and labels against this corpus
+  --background PATH          Original background corpus; requires --dataset
   --allow-change NAME         Declare each changed configuration field (repeatable)
   --resamples N               Paired group bootstrap draws, 200..10000 (default: 2000)
   --seed N                    Reproducible uint32 sampling seed (default: 20260916)
   --max-recall-drop N          Fail on a first-pass macro recall drop larger than N
   --max-no-answer-drop N       Fail on an abstention-accuracy drop larger than N
+  --max-result-bytes N         Fail if any candidate result exceeds this byte budget; missing measurements fail
 Allowed changes: ${changeKeys.join(", ")}.
 JSON goes to stdout. Gates use observed deltas, not a statistical guarantee.`);
     return;
   }
   if (!values.baseline || !values.candidate) throw new Error("Set both --baseline and --candidate report paths.");
+  if (values.background && !values.dataset) throw new Error("--background requires --dataset.");
+  let corpus = null;
+  if (values.dataset) {
+    let source;
+    let dataset;
+    try { source = await readFile(values.dataset); dataset = JSON.parse(source.toString("utf8")); }
+    catch { throw new Error("Cannot read the comparison corpus as JSON."); }
+    validateDataset(dataset);
+    if (values.background) {
+      let background;
+      try { background = JSON.parse(await readFile(values.background, "utf8")); }
+      catch { throw new Error("Cannot read the comparison background corpus as JSON."); }
+      dataset = withBackground(dataset, background);
+      source = Buffer.from(JSON.stringify(dataset));
+    }
+    corpus = { dataset, sha256: createHash("sha256").update(source).digest("hex") };
+  }
   const reports = [];
   for (const path of [values.baseline, values.candidate]) {
     try { reports.push(JSON.parse(await readFile(path, "utf8"))); }
     catch { throw new Error("Cannot read a comparison report as JSON."); }
   }
   const number = (name, fallback) => values[name] === undefined ? fallback : values[name].trim() ? Number(values[name]) : NaN;
-  const result = compareReports(...reports, { allowChanges: values["allow-change"] ?? [],
+  const result = compareReports(...reports, { corpus, allowChanges: values["allow-change"] ?? [],
     resamples: number("resamples", 2000), seed: number("seed", 20260916),
-    maxRecallDrop: number("max-recall-drop", null), maxNoAnswerDrop: number("max-no-answer-drop", null) });
+    maxRecallDrop: number("max-recall-drop", null), maxNoAnswerDrop: number("max-no-answer-drop", null),
+    maxResultBytes: number("max-result-bytes", null) });
   console.log(JSON.stringify(result, null, 2));
   if (!result.gates.passed) { console.error("Comparison quality regression gate failed."); process.exitCode = 1; }
 }

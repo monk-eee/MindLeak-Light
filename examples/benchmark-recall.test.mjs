@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { benchmarkSettings, calibrateSimilarity, runBenchmark, runDecompositionBenchmark, scoreDecomposition, scoreRanking, summarizeQueries, validateDataset, withBackground } from "./benchmark-recall.mjs";
+import { benchmarkSettings, calibrateSimilarity, querySetManifest, runBenchmark, runDecompositionBenchmark, scoreDecomposition, scoreRanking, summarizeQueries, validateDataset, withBackground } from "./benchmark-recall.mjs";
 import { compareReports } from "./benchmark-compare.mjs";
 
 test("perfect rankings have unit precision, recall, reciprocal rank, and nDCG", () => {
@@ -285,6 +286,33 @@ test("bounded concurrent workloads preserve every query and report per-pass thro
   assert.ok(report.byPass[0].latency.p99Ms >= report.byPass[0].latency.p95Ms);
 });
 
+test("response size measures escaped UTF-8 context without retaining provider text", async () => {
+  const client = mockClient([["alpha"], [], ["alpha"], []]);
+  const original = client.callTool.bind(client);
+  const sizes = [];
+  const context = "\u2603 quoted \"value\"\n".repeat(256);
+  client.callTool = async request => {
+    const response = await original(request);
+    if (response.structuredContent.results) {
+      for (const result of response.structuredContent.results) {
+        result.context = { summary: context };
+        result.relationships = [{ text: context }];
+      }
+      sizes.push(Buffer.byteLength(JSON.stringify(response.structuredContent.results), "utf8"));
+    }
+    return response;
+  };
+  const report = await runBenchmark(client, dataset, { passes: 2 });
+  assert.deepEqual(report.queries.map(query => query.resultBytes), sizes);
+  assert.equal(report.queries[0].primaryTextBytes, Buffer.byteLength(dataset.memories[0].text, "utf8"));
+  assert.equal(report.responseSize.count, 2);
+  assert.equal(report.responseSize.maxBytes, sizes[0]);
+  assert.equal(report.responseSize.totalBytes, sizes[0] + sizes[1]);
+  assert.equal(report.byPass[1].responseSize.count, 2);
+  assert.equal(report.byPass[1].responseSize.p95Bytes, sizes[2]);
+  assert.ok(!JSON.stringify(report).includes("quoted"));
+});
+
 test("the right source ID cannot earn fact credit for the wrong number", async () => {
   const client = mockClient([["alpha"], []]);
   const original = client.callTool.bind(client);
@@ -492,6 +520,21 @@ test("calibration requires a full candidate capture and scores the requested res
   assert.equal(calibrated.candidateLimit, 50);
   assert.equal(calibrated.summary.precisionAtK, 1);
   assert.equal(calibrated.summary.noAnswerAccuracy, 1);
+});
+
+test("v5 calibration refuses observations removed from its planned query set", () => {
+  const report = calibrationReport();
+  report.reportVersion = 5;
+  report.qualityPass = 1;
+  report.queries.push({ ...report.queries[1], id: "second-negative" });
+  for (const query of report.queries) {
+    query.category = query.relevantIds.length ? "positive" : "negative";
+    query.querySha256 = createHash("sha256").update(query.id).digest("hex");
+  }
+  report.querySet = querySetManifest(report.queries);
+  assert.equal(calibrateSimilarity(report, 1).summary.noAnswerAccuracy, 1);
+  report.queries.pop();
+  assert.throws(() => calibrateSimilarity(report, 1), /query-set manifest/);
 });
 
 test("calibration rejects held-out leakage, fused scores, filtered runs, and invalid data", () => {
@@ -804,6 +847,97 @@ function comparableReport() {
   };
 }
 
+function comparableCorpus() {
+  return {
+    sha256: "a".repeat(64),
+    dataset: {
+      schemaVersion: 1, id: "paired",
+      memories: [
+        { id: "fact-one", text: "The first service requires reviews." },
+        { id: "fact-two", text: "The second service uses PostgreSQL." },
+        { id: "wrong", text: "An unrelated documented fact." },
+      ],
+      queries: comparableReport().queries.map(query => ({
+        id: query.id, category: query.category, split: query.split,
+        relevantIds: query.relevantIds, query: `Question for ${query.id}?`,
+      })),
+    },
+  };
+}
+
+function fingerprintedReport() {
+  const report = comparableReport();
+  report.reportVersion = 5;
+  report.qualityPass = 1;
+  report.runtime = { platform: "darwin", architecture: "arm64", node: "v22.0.0", availableParallelism: 8 };
+  const queries = new Map(comparableCorpus().dataset.queries.map(query => [query.id, query]));
+  for (const query of report.queries) {
+    query.querySha256 = createHash("sha256").update(queries.get(query.id).query).digest("hex");
+    query.resultBytes = query.rankedIds.length ? 128 : 2;
+    query.primaryTextBytes = query.rankedIds.length ? 32 : 0;
+  }
+  report.querySet = querySetManifest(report.queries);
+  return report;
+}
+
+test("new reports bind exact query text and the planned population without recording text", async () => {
+  const report = await runBenchmark(mockClient([["alpha"], [], ["alpha"], []]), dataset, { passes: 2 });
+  const first = report.queries.filter(query => query.pass === 1);
+  assert.deepEqual(report.querySet, querySetManifest(first));
+  assert.equal(report.querySet.count, 2);
+  assert.equal(first[0].querySha256, createHash("sha256").update(dataset.queries[0].query).digest("hex"));
+  assert.ok(!JSON.stringify(report).includes(dataset.queries[0].query));
+  for (const mutate of [
+    value => { value.queries.pop(); },
+    value => { value.queries[0].querySha256 = "c".repeat(64); },
+    value => { delete value.querySet; },
+    value => { value.querySet.count += 1; },
+    value => { delete value.queries[0].querySha256; },
+    value => { value.qualityPass = 2; },
+  ]) {
+    const baseline = fingerprintedReport();
+    mutate(baseline);
+    assert.throws(() => compareReports(baseline, structuredClone(baseline), { resamples: 200 }));
+  }
+});
+
+test("corpus audit verifies query fingerprints and every repeated pass", () => {
+  const baseline = fingerprintedReport();
+  const candidate = structuredClone(baseline);
+  candidate.passes = 2;
+  candidate.queries.push(...candidate.queries.map(query => ({ ...query, pass: 2 })));
+  const result = compareReports(baseline, candidate, { corpus: comparableCorpus(), resamples: 200 });
+  assert.equal(result.audit.corpusVerified, true);
+  assert.equal(result.audit.plannedQuerySetsVerified, true);
+  assert.equal(result.audit.queryTextVerified, true);
+  candidate.queries.at(-1).querySha256 = "f".repeat(64);
+  assert.throws(() => compareReports(baseline, candidate, { resamples: 200 }), /Every pass/);
+  const edited = fingerprintedReport();
+  edited.queries[0].querySha256 = "d".repeat(64);
+  edited.querySet = querySetManifest(edited.queries);
+  assert.throws(() => compareReports(baseline, edited, { resamples: 200 }), /fingerprints/);
+  assert.throws(() => compareReports(edited, structuredClone(edited), { corpus: comparableCorpus(), resamples: 200 }), /fingerprint.*corpus/);
+});
+
+test("corpus-audited comparisons reject shared omissions and shared label changes", () => {
+  const corpus = comparableCorpus();
+  for (const mutate of [
+    report => { report.queries.pop(); },
+    report => { report.queries[0].relevantIds = ["wrong"]; },
+    report => { report.queries[0].category = "different-category"; },
+    report => { report.queries[0].group = "different-family"; },
+  ]) {
+    const baseline = comparableReport();
+    mutate(baseline);
+    const candidate = structuredClone(baseline);
+    assert.throws(() => compareReports(baseline, candidate, { corpus, resamples: 200 }), /corpus/i);
+  }
+  const complete = compareReports(comparableReport(), comparableReport(), { corpus, resamples: 200 });
+  assert.equal(complete.audit.corpusVerified, true);
+  assert.equal(complete.audit.queryTextVerified, false);
+  assert.equal(complete.uniqueQueries, corpus.dataset.queries.length);
+});
+
 test("paired comparisons recompute rankings and report reproducible gains with explicit changes", () => {
   const baseline = comparableReport();
   const candidate = structuredClone(baseline);
@@ -826,6 +960,22 @@ test("paired comparisons recompute rankings and report reproducible gains with e
   assert.equal(report.latency.baseline[0].p95Ms, 40);
   assert.equal(report.latency.baseline[0].p99Ms, 40);
   assert.ok(!JSON.stringify(report).includes("-100"));
+});
+
+test("payload gates use every pass and cannot pass without byte measurements", () => {
+  const baseline = fingerprintedReport();
+  const candidate = structuredClone(baseline);
+  candidate.passes = 2;
+  candidate.queries.push(...candidate.queries.map(query => ({ ...query, pass: 2, resultBytes: 256 })));
+  assert.equal(compareReports(baseline, candidate, { resamples: 200, maxResultBytes: 255 }).gates.passed, false);
+  const passed = compareReports(baseline, candidate, { resamples: 200, maxResultBytes: 256 });
+  assert.equal(passed.gates.passed, true);
+  assert.equal(passed.latency.candidate[1].responseSize.maxBytes, 256);
+  assert.equal(compareReports(comparableReport(), comparableReport(), { resamples: 200, maxResultBytes: 9999 }).gates.passed, false);
+  assert.equal(benchmarkSettings(testEnvironment, { "max-result-bytes": "256" }).maxResultBytes, 256);
+  for (const value of ["", "1.5", "-1", "NaN", "67108865"]) {
+    assert.throws(() => benchmarkSettings(testEnvironment, { "max-result-bytes": value }));
+  }
 });
 
 test("comparisons do not count repeat passes or related-query groups as independent samples", () => {
@@ -926,4 +1076,72 @@ test("comparison rejects undeclared workload changes and pairs reordered reports
   });
   assert.equal(report.metrics.recallAtK.delta, 0);
   assert.deepEqual(report.changes, ["concurrency", "querySeed", "queryOrder"]);
+});
+
+test("comparison requires runtime changes to be declared and reports missing legacy provenance", () => {
+  const baseline = fingerprintedReport();
+  baseline.runtime = { platform: "darwin", architecture: "arm64", node: "v22.0.0", availableParallelism: 8 };
+  const candidate = structuredClone(baseline);
+  candidate.runtime.node = "v22.1.0";
+  assert.throws(() => compareReports(baseline, candidate, { resamples: 200 }), /Undeclared.*runtime/);
+  const report = compareReports(baseline, candidate, { resamples: 200, allowChanges: ["runtime"] });
+  assert.deepEqual(report.changes, ["runtime"]);
+  assert.equal(report.audit.runtimeRecorded, true);
+  const legacy = compareReports(comparableReport(), comparableReport(), { resamples: 200 });
+  assert.equal(legacy.audit.runtimeRecorded, false);
+});
+
+test("offline corpus audit checks background identity, omissions, and byte-budget exit status", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "mindleak-corpus-audit-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const corpus = comparableCorpus().dataset;
+  const background = { schemaVersion: 1, id: "background-audit",
+    memories: [{ id: "background-fact", text: "An unused background fact." }],
+    queries: [{ id: "background-query", category: "background", query: "Unused question?", relevantIds: ["background-fact"] }] };
+  const corpusPath = join(directory, "corpus.json");
+  const backgroundPath = join(directory, "background.json");
+  const reportPath = join(directory, "report.json");
+  const script = fileURLToPath(new URL("./benchmark-compare.mjs", import.meta.url));
+  writeFileSync(corpusPath, JSON.stringify(corpus));
+  writeFileSync(backgroundPath, JSON.stringify(background));
+  for (const useBackground of [false, true]) {
+    const report = fingerprintedReport();
+    const fullCorpus = useBackground ? withBackground(corpus, background) : corpus;
+    report.dataset.sha256 = createHash("sha256").update(JSON.stringify(fullCorpus)).digest("hex");
+    writeFileSync(reportPath, JSON.stringify(report));
+    const args = [script, "--baseline", reportPath, "--candidate", reportPath, "--dataset", corpusPath, "--resamples", "200"];
+    if (useBackground) args.push("--background", backgroundPath);
+    const run = maximum => spawnSync(process.execPath, [...args, "--max-result-bytes", String(maximum)],
+      { encoding: "utf8", timeout: 10000, env: { ...process.env, NODE_OPTIONS: "" } });
+    const success = run(128);
+    assert.equal(success.status, 0, success.stderr);
+    assert.equal(JSON.parse(success.stdout).audit.queryTextVerified, true);
+    const oversized = run(127);
+    assert.equal(oversized.status, 1);
+    assert.equal(JSON.parse(oversized.stdout).gates.passed, false);
+    report.queries.pop();
+    report.querySet = querySetManifest(report.queries);
+    writeFileSync(reportPath, JSON.stringify(report));
+    const missing = run(128);
+    assert.equal(missing.status, 1);
+    assert.equal(missing.stdout, "");
+    assert.match(missing.stderr, /complete corpus query population/);
+  }
+});
+
+test("new report validation rejects impossible payload measurements and invalid runtime metadata", () => {
+  for (const mutate of [
+    report => { report.queries[0].resultBytes = 1; },
+    report => { report.queries[0].resultBytes = 2.5; },
+    report => { report.queries[0].primaryTextBytes = 999; },
+    report => { report.queries[0].primaryTextBytes = -1; },
+    report => { delete report.queries[0].resultBytes; },
+    report => { delete report.runtime; },
+    report => { report.runtime.availableParallelism = 0; },
+    report => { report.runtime.node = "invalid-version"; },
+  ]) {
+    const report = fingerprintedReport();
+    mutate(report);
+    assert.throws(() => compareReports(report, structuredClone(report), { resamples: 200 }));
+  }
 });
