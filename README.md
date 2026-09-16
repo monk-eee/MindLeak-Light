@@ -16,7 +16,7 @@
 
 **Shared agent memory. One MCP server. One PostgreSQL database.**
 
-[Quickstart](#quickstart) | [Binary and container installs](docs/INSTALL.md) | [Connect your agent](docs/INTEGRATION.md) | [Agent memory policy](#give-your-agent-a-memory-policy) | [Add a model](docs/MODELS.md)
+[Standalone container](#standalone-container) | [Docker Hub](https://hub.docker.com/r/monkeemagic/mindleak-light) | [Source quickstart](#quickstart) | [Connect your agent](docs/INTEGRATION.md) | [Agent memory policy](#give-your-agent-a-memory-policy) | [Add a model](docs/MODELS.md)
 
 Give your agents somewhere to remember preferences, decisions, and confirmed
 facts between sessions. Connect over MCP, save a memory, and recall it later
@@ -26,15 +26,35 @@ from the same agent or another one. Keep your existing agent framework and model
 keyword search, with no model calls. Add LM Studio, Ollama, or another
 OpenAI-compatible provider for richer fact extraction and semantic recall.
 
-Prefer a download to a source build? Native archives plug into MCP over stdio.
-The all-in-one container bundles the server and PostgreSQL. See
-[installation options](docs/INSTALL.md) for current release availability,
-connection templates, persistent volumes, and local image builds.
+For a native stdio binary, see [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
+and the [installation guide](docs/INSTALL.md).
+
+## Standalone Container
+
+Get the **full standalone package** from
+[Docker Hub: monkeemagic/mindleak-light](https://hub.docker.com/r/monkeemagic/mindleak-light).
+It includes the MCP server, PostgreSQL, and pgvector in **one container**, for
+Linux amd64 and arm64. No Git checkout, build, separate database, or model is needed.
+
+```sh
+docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.2.0
+```
+
+Connect your MCP client to **`http://127.0.0.1:8088/mcp`** with the bearer token
+above, then [give your agent a memory policy](#give-your-agent-a-memory-policy).
+The volume keeps memories across container replacements; do not delete it.
+The token is a public local-development example. Use a private token and TLS
+before sharing the endpoint; see [security](SECURITY.md).
+
+This replaces the source-build step below. See [installation and upgrades](docs/INSTALL.md)
+for backups, Podman, and the single-container Compose option. Pin a version;
+this release does not update `latest`.
 
 ## Quickstart
 
-You need Git and Docker with Compose, or Podman with Compose. No Rust toolchain,
-API key, or model download is needed for this path.
+To build from source, you need Git and Docker with Compose, or Podman with Compose.
+This development stack runs the app and database as two containers. No Rust
+toolchain, API key, or model download is needed for this path.
 
 Setup is not finished at connection: start the server, [connect your agent](#connect-your-agent),
 [give it a memory policy](#give-your-agent-a-memory-policy), then [verify the tools](#try-it).

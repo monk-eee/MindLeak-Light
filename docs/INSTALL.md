@@ -13,7 +13,9 @@ This guide targets **v0.2.0**: model-free keyword recall, optional pgvector or
 hybrid recall, configurable similarity thresholds, contextual fact lifecycle,
 and bounded provider responses. Models remain optional. Download versioned
 archives from [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
-or use `monkeemagic/mindleak-light:0.2.0` for the all-in-one image. The
+or get the full all-in-one image from
+[Docker Hub](https://hub.docker.com/r/monkeemagic/mindleak-light), pinned as
+`monkeemagic/mindleak-light:0.2.0`. The
 [publishing workflow](https://github.com/monk-eee/MindLeak-Light/actions/workflows/docker-hub.yml)
 records image verification. Older binaries do not gain features from new settings.
 

@@ -49,6 +49,9 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
   restore-based rollback; mixed old/new servers and in-place downgrades are unsupported.
 
 ### Fixed
+- Link directly to Docker Hub from the README and installation guide, with a
+  version-pinned standalone-container quickstart before the two-service source
+  build, persistent storage, authentication, and MCP connection details.
 - Define the all-in-one Compose health check explicitly so Podman waits for MCP
   and PostgreSQL readiness when OCI image health metadata is unavailable.
 - Give the JavaScript agent example's write and recall calls an explicit
