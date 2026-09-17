@@ -1331,8 +1331,11 @@ test("Lab 1 replay activity animates real event signals and respects pause and r
     events: [{ id: 1, atMs: 0, type: "run_started" }, { id: 2, atMs: 100, type: "agent_state", agent: "atlas", state: "running" },
       { id: 3, atMs: 1000, type: "tool_started", agent: "atlas", tool: "write_memory", toolCallId: "write" },
       { id: 4, atMs: 4000, type: "memory_saved", agent: "atlas", memoryId: "source", fragments: 1 },
-      { id: 5, atMs: 15000, type: "tool_finished", agent: "atlas", tool: "write_memory", toolCallId: "write", ok: true },
-      { id: 6, atMs: 20000, type: "run_finished", status: "completed" }] };
+      { id: 5, atMs: 8000, type: "knowledge_written", agent: "atlas", nodeId: "chain", memoryId: "chain-write", kind: "chain", operation: "propose" },
+      { id: 6, atMs: 15000, type: "tool_finished", agent: "atlas", tool: "write_memory", toolCallId: "write", ok: true },
+      { id: 7, atMs: 20000, type: "run_finished", status: "completed" }],
+    knowledge: { observations: [{ memoryId: "source", fragments: [{ fragmentId: "fragment", text: "Synthetic recorded evidence." }] }],
+      chains: [{ chainId: "chain", revision: 1, state: "candidate", document: { kind: "chain", claim: "Synthetic formation event", evidence: [{ fragmentId: "fragment", role: "supports" }], supportedBy: [] } }], principles: [] } };
   const server = await createDemoServer({ outputDirectory: directory, initialReport: report, runBuild: async () => { throw new Error("not_requested"); } });
   const browser = await openArtifactBrowser();
   try {
@@ -1350,6 +1353,26 @@ test("Lab 1 replay activity animates real event signals and respects pause and r
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.locator("#replay-activity").click();
     assert.equal(await page.locator(".memory-packet").count(), 0);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width === 1440 ? 1080 : 844 });
+      await page.goto(`${server.url}/replay#learnings`);
+      assert.equal(await page.locator("#replay-activity").isVisible(), true, "the knowledge graph needs an accessible replay action");
+      assert.equal(await page.locator("#knowledge-page #play").isVisible(), true);
+      assert.equal(await page.locator("#knowledge-page #memory-activity").isVisible(), true);
+      await page.locator("#speed").selectOption("1");
+      await page.locator("#scrubber").evaluate(input => { input.value = "400"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await page.locator("#play").click();
+      await page.waitForFunction(() => document.querySelector('[data-node-id="chain"]')?.dataset.active === "true");
+      assert.equal(await page.locator('.knowledge-hero-edge[data-active="true"]').count(), 1);
+      await page.locator("#play").click();
+      assert.equal(await page.locator('.knowledge-hero-node[data-active="true"]').count(), 0);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+      await page.locator("#nav-lab1").click();
+      await page.locator("#experiment-page #play").waitFor({ state: "visible" });
+      assert.equal(await page.locator("#experiment-page #play").isVisible(), true);
+      assert.equal(await page.locator("#experiment-page #memory-activity").isVisible(), true);
+    }
   } finally { await browser.close(); await server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 

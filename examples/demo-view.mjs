@@ -475,6 +475,10 @@ function initializeReplay() {
   networkSection.insertBefore(byId("activity-template").content.cloneNode(true), networkSection.querySelector(".network-scroll"));
   const networkActions = element("div", "network-heading-actions");
   networkActions.append(byId("network-meta"), byId("replay-activity")); networkSection.querySelector(".section-head").append(networkActions);
+  const knowledgeHero = document.querySelector(".knowledge-hero");
+  const knowledgeActions = element("div", "network-heading-actions");
+  knowledgeActions.append(byId("knowledge-hero-status")); knowledgeHero.querySelector(".section-head").append(knowledgeActions);
+  const playback = document.querySelector(".playback");
   for (const id of ["capital-panel", "knowledge-capital-panel"]) byId(id).append(byId("capital-template").content.cloneNode(true));
   const options = (select, models, value) => {
     select.replaceChildren();
@@ -538,6 +542,16 @@ function initializeReplay() {
     const learning = location.hash === "#learnings" || !location.hash && location.pathname.endsWith("/learnings");
     byId("experiment-page").classList.toggle("hidden", learning);
     byId("knowledge-page").classList.toggle("hidden", !learning);
+    if (learning) {
+      knowledgeActions.append(byId("replay-activity"));
+      knowledgeHero.querySelector(".section-head").after(byId("memory-activity"));
+      knowledgeHero.append(playback);
+    } else {
+      networkActions.append(byId("replay-activity"));
+      networkSection.querySelector(".network-scroll").before(byId("memory-activity"));
+      byId("timeline").before(playback);
+    }
+    activityKey = "";
     byId("lab-brand").textContent = `SWARM LAB / 0${lab}`;
     for (const [id, number] of [["nav-lab1", 1], ["nav-lab2", 2], ["nav-lab3", 3]]) {
       const link = byId(id);
