@@ -115,6 +115,54 @@ async fn administrative_status_does_not_resolve_database_or_repository_secrets()
     assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn administrative_native_acl_checks_reject_shared_and_noninheritable_permissions() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let (path, work, mut config) = offline_configuration(&root);
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let arguments = [
+        "backup",
+        "status",
+        "--config",
+        path.to_str().unwrap(),
+        "--json",
+    ];
+    let (code, report) = invoke(&arguments, &root).await;
+    assert_eq!(code, 0, "private directory: {report}");
+    let child = work.join("child");
+    std::fs::create_dir(&child).unwrap();
+    config["workDir"] = json!(child);
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    assert_eq!(
+        invoke(&arguments, &root).await.0,
+        0,
+        "child must inherit the private ACL"
+    );
+    config["workDir"] = json!(work);
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    for mode in ["shared", "noninheritable"] {
+        private(&work);
+        let script = "$ErrorActionPreference='Stop'; $path=$env:ML_PRIVATE_FIXTURE; $acl=Get-Acl -LiteralPath $path; if($env:ML_ACL_MODE -eq 'shared'){$sid=[System.Security.Principal.SecurityIdentifier]::new('S-1-1-0');$rule=[System.Security.AccessControl.FileSystemAccessRule]::new($sid,'Read','ContainerInherit,ObjectInherit','None','Allow');$acl.AddAccessRule($rule)}else{$acl=[System.Security.AccessControl.DirectorySecurity]::new();$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User;$acl.SetOwner($sid);$acl.SetAccessRuleProtection($true,$false);$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid,'FullControl','Allow'))};Set-Acl -LiteralPath $path -AclObject $acl";
+        let output = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env_remove("PSModulePath")
+            .env("ML_PRIVATE_FIXTURE", dunce::simplified(&work))
+            .env("ML_ACL_MODE", mode)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "fixture ACL adjustment: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (code, report) = invoke(&arguments, &root).await;
+        assert_eq!(code, 2, "must reject {mode}: {report}");
+        assert_eq!(report["error"]["code"], "owner_only_acl_required");
+    }
+}
+
 #[tokio::test]
 async fn administrative_dry_run_validates_without_writing_status() {
     let directory = tempfile::tempdir().unwrap();

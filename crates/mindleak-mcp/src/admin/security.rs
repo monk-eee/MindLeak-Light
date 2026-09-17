@@ -106,6 +106,9 @@ pub(super) fn read_bounded(path: &Path, limit: usize) -> AdminResult<Vec<u8>> {
 }
 
 pub(super) async fn private(path: &Path, cancel: &CancellationToken) -> AdminResult<()> {
+    if cancel.is_cancelled() {
+        return Err(failure("permissions", "cancelled", 130));
+    }
     settings::safe_path(path)?;
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|_| failure("permissions", "private_path_unavailable", 2))?;
@@ -119,26 +122,134 @@ pub(super) async fn private(path: &Path, cancel: &CancellationToken) -> AdminRes
     }
     #[cfg(windows)]
     {
-        use super::process::{capture, succeeded, Invocation};
-        let script = "$ErrorActionPreference='Stop'; $p=$env:MINDLEAK_PRIVATE_PATH; $acl=Get-Acl -LiteralPath $p; $directory=(Get-Item -LiteralPath $p).PSIsContainer; $me=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; $ok=($owner -eq $me); foreach($rule in $acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])) { if($rule.AccessControlType -eq 'Allow'){ if($rule.IdentityReference.Value -notin @($me,'S-1-5-18','S-1-5-32-544')){$ok=$false}; if($directory -and (([int]$rule.InheritanceFlags -band 3) -ne 3 -or ([int]$rule.PropagationFlags -band 2) -ne 0)){$ok=$false} } }; if(-not $ok){exit 2}; Write-Output 'true'";
-        let mut command = Invocation::new("powershell.exe").args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ]);
-        command.env.insert(
-            "MINDLEAK_PRIVATE_PATH".into(),
-            dunce::simplified(path).as_os_str().to_owned(),
-        );
-        let bytes = succeeded(
-            capture(&command, &[], 15, cancel, "permissions").await?,
-            "permissions",
-        )?;
-        if String::from_utf8_lossy(&bytes).trim() != "true" {
-            return Err(failure("permissions", "owner_only_acl_required", 2));
+        private_windows(path, metadata.is_dir())?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn private_windows(path: &Path, directory: bool) -> AdminResult<()> {
+    use std::{
+        mem::size_of_val,
+        os::windows::{
+            fs::OpenOptionsExt,
+            io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        },
+        ptr::{addr_of_mut, null_mut},
+    };
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
+            EqualSid, GetAce, GetTokenInformation, IsValidAcl, IsValidSid, IsWellKnownSid,
+            TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE,
+            ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, INHERIT_ONLY_ACE,
+            NO_PROPAGATE_INHERIT_ACE, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+        },
+        Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL,
+        },
+        System::{
+            SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
+    };
+
+    struct Descriptor(PSECURITY_DESCRIPTOR);
+    impl Drop for Descriptor {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.0);
+            }
         }
-        let _ = metadata;
+    }
+
+    let unavailable = || failure("permissions", "windows_acl_unavailable", 2);
+    let denied = || failure("permissions", "owner_only_acl_required", 2);
+    let file = OpenOptions::new()
+        .access_mode(READ_CONTROL)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|_| unavailable())?;
+    let mut descriptor = null_mut();
+    let mut owner: PSID = null_mut();
+    let mut acl: *mut ACL = null_mut();
+    let code = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            &mut acl,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if code != 0 {
+        return Err(unavailable());
+    }
+    let _descriptor = Descriptor(descriptor);
+    if owner.is_null()
+        || acl.is_null()
+        || unsafe { IsValidSid(owner) } == 0
+        || unsafe { IsValidAcl(acl) } == 0
+    {
+        return Err(denied());
+    }
+
+    let mut token = [0_usize; 32];
+    let mut required = 0_u32;
+    let mut token_handle = null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle) } == 0 {
+        return Err(unavailable());
+    }
+    let token_handle = unsafe { OwnedHandle::from_raw_handle(token_handle) };
+    if unsafe {
+        GetTokenInformation(
+            token_handle.as_raw_handle(),
+            TokenUser,
+            token.as_mut_ptr().cast(),
+            size_of_val(&token) as u32,
+            &mut required,
+        )
+    } == 0
+    {
+        return Err(unavailable());
+    }
+    let user = unsafe { (*token.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    if unsafe { EqualSid(owner, user) } == 0 {
+        return Err(denied());
+    }
+    for index in 0..u32::from(unsafe { (*acl).AceCount }) {
+        let mut entry = null_mut();
+        if unsafe { GetAce(acl, index, &mut entry) } == 0 || entry.is_null() {
+            return Err(unavailable());
+        }
+        let header = unsafe { &*entry.cast::<ACE_HEADER>() };
+        if u32::from(header.AceType) == ACCESS_DENIED_ACE_TYPE {
+            continue;
+        }
+        if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE {
+            return Err(denied());
+        }
+        let flags = u32::from(header.AceFlags);
+        let inheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+        if directory
+            && (flags & inheritance != inheritance
+                || flags & (INHERIT_ONLY_ACE | NO_PROPAGATE_INHERIT_ACE) != 0)
+        {
+            return Err(denied());
+        }
+        let sid = unsafe { addr_of_mut!((*entry.cast::<ACCESS_ALLOWED_ACE>()).SidStart).cast() };
+        if unsafe { IsValidSid(sid) } == 0
+            || !(unsafe { EqualSid(sid, user) } != 0
+                || unsafe { IsWellKnownSid(sid, WinLocalSystemSid) } != 0
+                || unsafe { IsWellKnownSid(sid, WinBuiltinAdministratorsSid) } != 0)
+        {
+            return Err(denied());
+        }
     }
     Ok(())
 }

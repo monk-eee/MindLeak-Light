@@ -208,45 +208,6 @@ pub(super) fn succeeded(output: Output, stage: &'static str) -> AdminResult<Vec<
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn powershell_acl_inspection_works_with_sanitized_environment() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut invocation = Invocation::new("powershell.exe").args([
-            "-NoProfile", "-NonInteractive", "-Command",
-            "$ErrorActionPreference='Stop'; Get-Acl -LiteralPath $env:ML_ACL_PROBE | Out-Null; Write-Output 'checked'",
-        ]);
-        invocation.env.insert(
-            "ML_ACL_PROBE".into(),
-            dunce::simplified(directory.path()).as_os_str().to_owned(),
-        );
-        let command = invocation.command();
-        assert!(!command
-            .as_std()
-            .get_envs()
-            .any(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case("PSModulePath")));
-        for name in ["USERPROFILE", "APPDATA", "LOCALAPPDATA", "ProgramFiles"] {
-            if let Some(expected) = std::env::var_os(name) {
-                assert!(
-                    command.as_std().get_envs().any(|(key, value)| key
-                        .to_string_lossy()
-                        .eq_ignore_ascii_case(name)
-                        && value == Some(expected.as_os_str())),
-                    "missing Windows runtime directory: {name}"
-                );
-            }
-        }
-        let result = capture(&invocation, &[], 15, &CancellationToken::new(), "acl_probe")
-            .await
-            .unwrap();
-        assert_eq!(
-            String::from_utf8(succeeded(result, "acl_probe").unwrap())
-                .unwrap()
-                .trim(),
-            "checked"
-        );
-    }
-
     #[test]
     #[ignore = "owned subprocess fixture"]
     fn output_fixture() {
