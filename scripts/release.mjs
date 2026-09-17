@@ -54,6 +54,7 @@ export function packageBinary(root, target, version) {
     for (const name of [
       "README.md", "LICENSE", "SECURITY.md",
       "docs/INSTALL.md", "docs/INTEGRATION.md", "docs/MODELS.md", "docs/LIFECYCLE.md", "docs/ARCHITECTURE.md",
+      "docs/BACKUP.md", "adr.d/0017-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md",
       "assets/mindleak_logo.png", "assets/mindleak_128x128.png",
       "assets/architecture.excalidraw", "assets/architecture-overview.svg",
       "assets/architecture-write.svg", "assets/architecture-recall.svg", "assets/architecture-lifecycle.svg",

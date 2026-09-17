@@ -1,9 +1,12 @@
+mod admin;
 mod config;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{
+    builder::TypedValueParser, Args as ClapArgs, CommandFactory, Parser, Subcommand, ValueEnum,
+};
 use mindleak_decomposition::{OpenAiDecomposer, SentenceDecomposer};
 use mindleak_embeddings::{OpenAiEmbedder, OpenAiRelevanceRetriever};
 use mindleak_mcp::{http_router, MemoryMcp};
@@ -24,23 +27,76 @@ enum Transport {
 #[command(
     name = "mindleak-light",
     version,
+    args_conflicts_with_subcommands = true,
     about = "Shared, decomposed agent memory over MCP"
 )]
 struct Args {
-    #[arg(long, value_enum, env = "MINDLEAK_TRANSPORT", default_value = "stdio")]
-    transport: Transport,
-    #[arg(long, env = "MINDLEAK_LISTEN", default_value = "127.0.0.1:8088")]
-    listen: SocketAddr,
+    #[command(flatten)]
+    server: ServerArgs,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(ClapArgs)]
+struct ServerArgs {
+    #[arg(long, value_enum)]
+    transport: Option<Transport>,
+    #[arg(long)]
+    listen: Option<SocketAddr>,
+    #[arg(long)]
+    database_read_only: bool,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Serve(ServerArgs),
+    Backup(admin::BackupArgs),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = match Args::try_parse() {
+        Ok(args) => args,
+        Err(error)
+            if error.exit_code() != 0
+                && std::env::args_os().any(|argument| argument == "backup")
+                && std::env::args_os().any(|argument| argument == "--json") =>
+        {
+            admin::argument_error();
+            std::process::exit(2);
+        }
+        Err(error) => error.exit(),
+    };
+    let server_args = match args.command {
+        Some(Command::Backup(arguments)) => {
+            let exit_code = admin::run(arguments).await;
+            std::process::exit(i32::from(exit_code));
+        }
+        Some(Command::Serve(server)) => server,
+        None => args.server,
+    };
     match dotenvy::dotenv() {
         Ok(_) => {}
         Err(error) if error.not_found() => {}
         Err(error) => return Err(error).context("load .env"),
     }
-    let args = Args::parse();
+    let transport = server_args.transport.unwrap_or_else(|| {
+        let value = std::env::var_os("MINDLEAK_TRANSPORT").unwrap_or_else(|| "stdio".into());
+        let mut command = Args::command();
+        command.build();
+        let argument = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "transport");
+        clap::builder::EnumValueParser::<Transport>::new()
+            .parse_ref(&command, argument, &value)
+            .unwrap_or_else(|error| error.exit())
+    });
+    let listen = server_args.listen.map(Ok).unwrap_or_else(|| {
+        std::env::var("MINDLEAK_LISTEN")
+            .unwrap_or_else(|_| "127.0.0.1:8088".into())
+            .parse::<SocketAddr>()
+            .context("invalid MINDLEAK_LISTEN address")
+    })?;
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -54,16 +110,31 @@ async fn main() -> Result<()> {
             .redirect(reqwest::redirect::Policy::none())
             .build()
     };
-    let store = PostgresMemoryStore::connect(
-        &config.database_url,
-        config
-            .embeddings
-            .as_ref()
-            .map(|embedding| (embedding.provider.model.as_str(), embedding.dimensions)),
-        config.pool_size,
-        config.database_ca.as_deref(),
-    )
-    .await?;
+    let store = if server_args.database_read_only {
+        anyhow::ensure!(
+            config.decomposition.is_none()
+                && config.embeddings.is_none()
+                && config.relevance.is_none(),
+            "read-only verification requires model-free settings"
+        );
+        PostgresMemoryStore::connect_read_only(
+            &config.database_url,
+            config.pool_size,
+            config.database_ca.as_deref(),
+        )
+        .await?
+    } else {
+        PostgresMemoryStore::connect(
+            &config.database_url,
+            config
+                .embeddings
+                .as_ref()
+                .map(|embedding| (embedding.provider.model.as_str(), embedding.dimensions)),
+            config.pool_size,
+            config.database_ca.as_deref(),
+        )
+        .await?
+    };
     let embedder: Option<Arc<dyn TextEmbedder>> = match config.embeddings {
         Some(embedding) => Some(Arc::new(OpenAiEmbedder::new(
             model_client()?,
@@ -111,7 +182,7 @@ async fn main() -> Result<()> {
         embedder,
         retriever,
     ));
-    match args.transport {
+    match transport {
         Transport::Stdio => {
             server.serve(stdio()).await?.waiting().await?;
         }
@@ -123,10 +194,10 @@ async fn main() -> Result<()> {
                 &config.http_token,
                 cancellation.child_token(),
             )?;
-            let listener = tokio::net::TcpListener::bind(args.listen)
+            let listener = tokio::net::TcpListener::bind(listen)
                 .await
                 .context("bind MCP HTTP listener")?;
-            tracing::info!(address = %args.listen, "MindLeak Light MCP listening");
+            tracing::info!(address = %listen, "MindLeak Light MCP listening");
             axum::serve(listener, router)
                 .with_graceful_shutdown(async move {
                     shutdown().await;
@@ -151,4 +222,51 @@ async fn shutdown() {
     }
     #[cfg(not(unix))]
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn administrative_commands_parse_without_server_configuration() {
+        for arguments in [
+            vec![
+                "mindleak-light",
+                "backup",
+                "doctor",
+                "--config",
+                "/private/backup.json",
+                "--json",
+                "--non-interactive",
+            ],
+            vec![
+                "mindleak-light",
+                "backup",
+                "status",
+                "--config",
+                "/private/backup.json",
+                "--check",
+            ],
+            vec!["mindleak-light", "serve", "--transport", "stdio"],
+        ] {
+            assert!(
+                Args::try_parse_from(arguments.clone()).is_ok(),
+                "arguments: {arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_server_flags_remain_valid() {
+        assert!(Args::try_parse_from(["mindleak-light", "--transport", "stdio"]).is_ok());
+        assert!(Args::try_parse_from([
+            "mindleak-light",
+            "--transport",
+            "http",
+            "--listen",
+            "127.0.0.1:8088"
+        ])
+        .is_ok());
+    }
 }

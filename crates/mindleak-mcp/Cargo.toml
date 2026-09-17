@@ -19,22 +19,33 @@ axum.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 reqwest.workspace = true
-rmcp.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.11"
+fs2 = "0.4"
+quick-xml = "0.38"
+tar = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 subtle.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["process", "fs", "io-util"] }
 tokio-util.workspace = true
 tower-http.workspace = true
 uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
 
 [dev-dependencies]
 async-trait.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 reqwest-mcp = { package = "reqwest", version = "0.13", default-features = false }
-tempfile = "3"
 tokio.workspace = true
 tokio-postgres.workspace = true
 wiremock.workspace = true
@@ -46,3 +57,7 @@ postgres-tests = []
 name = "mcp"
 path = "../../tests/mcp.rs"
 required-features = ["postgres-tests"]
+
+[[test]]
+name = "backup"
+path = "../../tests/backup.rs"

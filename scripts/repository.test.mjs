@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
 import { inflateSync } from "node:zlib";
@@ -596,9 +596,14 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md"];
+  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "BACKUP.md"];
   for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
+  }
+  const backupRecords = ["adr.d/0017-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md"];
+  for (const name of backupRecords) {
+    mkdirSync(dirname(join(directory, name)), { recursive: true });
+    writeFileSync(join(directory, name), `# ${name}\n`);
   }
   const skillDirectory = ".agents/skills/mindleak-memory";
   const skillFiles = ["SKILL.md", "references/agent-policy.md", "references/tool-recipes.json"];
@@ -617,6 +622,9 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   }
   for (const name of guides) {
     assert.ok(contents.includes(`docs/${name}`), `release archive is missing ${name}`);
+  }
+  for (const name of backupRecords) {
+    assert.ok(contents.includes(name), `release archive is missing ${name}`);
   }
   for (const name of skillFiles) {
     assert.ok(contents.includes(`${skillDirectory}/${name}`), `release archive is missing the companion skill ${name}`);

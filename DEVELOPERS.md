@@ -89,6 +89,25 @@ The JavaScript integration example is optional and isolated from the server:
 test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 `npm --prefix examples run memory`. It writes one sample memory per run.
 
+### Backup Administration
+
+See [the operator guide](docs/BACKUP.md) and
+[ADR-0017](adr.d/0017-encrypted-administrative-backups.md). Offline CLI/safety
+tests run with the ordinary Rust suite. To run real encryption/restore and
+concurrent-capture tests, install restic 0.19.x and select a disposable PG16
+container, in addition to the test database URL above:
+
+```sh
+export MINDLEAK_BACKUP_TEST_CONTAINER=mindleak-light-test-postgres
+export MINDLEAK_BACKUP_CONTAINER_TOOL=podman
+make backup-test
+```
+
+The suite creates fresh UUID-named databases and a temporary restic repository;
+a name suffix is never cleanup ownership. `make ci` remains required, with
+`backup-test` additional. Never report an omitted integration as passing. This
+fixture installs no OS jobs and uses no Azure account.
+
 ### Companion Skill
 
 The canonical agent workflow lives in

@@ -20,6 +20,10 @@ or get the full all-in-one image from
 [publishing workflow](https://github.com/monk-eee/MindLeak-Light/actions/workflows/docker-hub.yml)
 records image verification. Older binaries do not gain features from new settings.
 
+The [administrative backup CLI](BACKUP.md) is an unreleased source feature with
+separate restic/PG prerequisites and platform acceptance gates. Published v0.4.0
+packages do not include it.
+
 ## Native Binary
 
 Download your platform's archive and its `.sha256` file from

@@ -68,6 +68,21 @@ jobs:
           toolchain: 1.98.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features --locked
+      - name: Install pinned restic for backup integration
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/restic-bin"
+          curl --fail --silent --show-error --location https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2 -o "$RUNNER_TEMP/restic.bz2"
+          printf 'f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c  %s\n' "$RUNNER_TEMP/restic.bz2" | sha256sum --check -
+          bzip2 --decompress --stdout "$RUNNER_TEMP/restic.bz2" > "$RUNNER_TEMP/restic-bin/restic"
+          chmod 700 "$RUNNER_TEMP/restic-bin/restic"
+          echo "$RUNNER_TEMP/restic-bin" >> "$GITHUB_PATH"
+      - name: Encrypted backup and coherent restore
+        timeout-minutes: 10
+        env:
+          MINDLEAK_BACKUP_TEST_CONTAINER: ${{ job.services.postgres.id }}
+          MINDLEAK_BACKUP_CONTAINER_TOOL: docker
+        run: make backup-test
       - uses: actions/setup-node@v7
         with:
           node-version: 22
