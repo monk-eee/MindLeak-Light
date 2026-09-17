@@ -242,6 +242,12 @@ precision, load capacity, or end-to-end agent usefulness. See the
 
 ## Facts, Context, and Retention
 
+For explicit dependencies and other domain predicates, the unreleased
+[domain relationship extension](docs/DOMAIN-RELATIONSHIPS.md) adds stable entity/edge
+identities, attributed provenance, indexed one-hop queries and a verified JSONL
+importer. These claims do not confirm or reinforce facts, and do not add recursive
+graph reasoning. Published v0.4.0 does not include this extension.
+
 The fact lifecycle keeps facts attached to their original episodes and
 lets you link support, contradictions, and corrections explicitly. New facts are
 short-term; spaced usefulness or confirmation can consolidate them into long-term

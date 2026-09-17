@@ -348,6 +348,15 @@ context. Do not bypass client approvals to make the policy appear automatic.
 
 ## Tool Contract
 
+**Unreleased domain extension:** `write_memory.domain` stores an identified entity
+or directed source edge, separately from `facts` lifecycle operations.
+`recall_memory.domain` provides identity-only inspection or bounded predicate/direction
+queries, mutually exclusive with `query` and `fragmentId`. Both entity and edge imports
+retain exact source episodes and stable retry identities. See
+[domain relationships and the verified importer](DOMAIN-RELATIONSHIPS.md) for the
+contract, performance bounds and source accounting. Discover the actual server schema;
+published v0.4.0 does not accept these fields.
+
 | Tool | Arguments | Successful Result |
 |---|---|---|
 | `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (v0.3.0+) | `memoryId` and `fragments` with IDs, text, and tier after commit |

@@ -128,6 +128,10 @@ pub(super) fn recall_match(row: Row) -> Result<RecallMatch> {
         relationship_count: 0,
         relationship_count_exact: true,
         relationships_truncated: false,
+        domain: row
+            .try_get::<_, Option<String>>("domain")?
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
         fragment_index: row.try_get("fragment_index")?,
         document_context: None,
         source_count: None,

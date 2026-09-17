@@ -126,6 +126,10 @@ impl PostgresMemoryStore {
             .batch_execute(include_str!("../migrations/0008-fragment-order.sql"))
             .await
             .context("record fragment order for document context")?;
+        transaction
+            .batch_execute(include_str!("../migrations/0009-domain-relationships.sql"))
+            .await
+            .context("initialize stable domain identities and relationships")?;
         let Some(space) = &self.space else {
             transaction.commit().await?;
             return Ok(());

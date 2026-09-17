@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{documents, PostgresMemoryStore};
 
 pub(super) const LIFECYCLE_COLUMNS: &str = "memories.context::text AS context, \
+    (memories.request_payload->'domain')::text AS domain, \
     fragments.fragment_index, \
     fragments.tier, fragments.state, fragments.evidence, fragments.pinned, fragments.importance, \
     fragments.useful_sessions, fragments.confirmed_sessions, \

@@ -16,6 +16,7 @@ use tokio_postgres::{Client, NoTls};
 use url::Url;
 use uuid::Uuid;
 
+mod domain;
 mod lifecycle;
 
 fn filter(agent_id: Option<&str>) -> RecallFilter {
@@ -105,8 +106,65 @@ fn keyed_memory(agent_id: &str) -> PreparedMemory {
         text: memory.raw_text.clone(),
         context: memory.context.clone(),
         facts: Vec::new(),
+        domain: None,
     });
     memory
+}
+
+#[tokio::test]
+async fn domain_metadata_uses_the_existing_gin_and_preserves_vectors() {
+    use mindleak_memory::{DomainIdentity, DomainWrite};
+
+    let (store, mut database) = setup().await;
+    let agent_id = format!("domain-search-{}", Uuid::new_v4());
+    let mut entity = keyed_memory(&agent_id);
+    let domain = DomainWrite::Entity {
+        identity: DomainIdentity {
+            namespace: agent_id.clone(),
+            id: "graph-entity".into(),
+        },
+        label: "GraphIdentifierCanary.Cobalt".into(),
+        entity_type: "PackageTypeCanary".into(),
+    };
+    entity.request.as_mut().unwrap().domain = Some(domain.clone());
+    store.save(&entity).await.unwrap();
+    let retriever = KeywordMemoryRetriever::new(store.clone());
+    let found = retriever
+        .recall("GraphIdentifierCanary", &filter(Some(&agent_id)), 5)
+        .await
+        .unwrap();
+    assert!(
+        !found.is_empty(),
+        "Domain identity metadata must be available through indexed keyword discovery"
+    );
+    for result in found {
+        assert_eq!(result.memory_id, entity.id);
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["domain"],
+            serde_json::to_value(&domain).unwrap()
+        );
+    }
+    let unchanged: String = database
+        .query_one(
+            "SELECT embedding::text FROM public.fragments WHERE id = $1",
+            &[&entity.fragments[0].id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(unchanged, "[1,0]");
+    let transaction = database.transaction().await.unwrap();
+    transaction
+        .batch_execute("SET LOCAL enable_seqscan = off")
+        .await
+        .unwrap();
+    let plan = transaction.query("EXPLAIN SELECT id FROM public.fragments WHERE search_vector @@ plainto_tsquery('english', $1)", &[&"GraphIdentifierCanary"])
+        .await.unwrap().into_iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>().join("\n");
+    assert!(
+        plan.contains("fragments_document_search_idx"),
+        "Domain metadata must share the existing GIN: {plan}"
+    );
+    transaction.rollback().await.unwrap();
 }
 
 #[tokio::test]

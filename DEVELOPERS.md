@@ -153,6 +153,24 @@ checks, not model-behaviour or native Copilot/Claude/Codex activation evidence;
 record those separately using the [acceptance checklist](docs/INTEGRATION.md#verify-the-agent-behaviour).
 Never turn an unrun client combination into a compatibility claim.
 
+### Domain Import Verification
+
+The domain importer uses the existing SDK dependency and must be tested against a
+freshly built binary, not a stale executable. With an owned `_test` database:
+
+```sh
+cargo build --locked -p mindleak-mcp --bin mindleak-light
+npm ci --prefix examples --ignore-scripts
+MINDLEAK_DOMAIN_TEST_BINARY="$PWD/target/debug/mindleak-light" node --test --test-name-pattern='domain importer' scripts/repository.test.mjs
+```
+
+The test also requires `MINDLEAK_TEST_DATABASE_URL`; it rejects other database names.
+Include `MINDLEAK_DOMAIN_TEST_BINARY` when running `make ci` to execute this optional
+real-client slice locally. CI's PostgreSQL job runs it after building its release
+binary. Rust `--all-features` additionally runs the actual 12,000-edge EXPLAIN ANALYZE
+regression, metadata/GIN/vector preservation and edge integrity/pagination tests.
+See [the domain guide](docs/DOMAIN-RELATIONSHIPS.md) for import and migration limits.
+
 ### Released-Baseline Gate
 
 The required PostgreSQL CI job also runs
