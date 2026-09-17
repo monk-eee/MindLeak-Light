@@ -4,10 +4,12 @@ The supported trial path is Docker/stdio. Your operating-system account's access
 to Docker is the local trust boundary. No token generation, token copying,
 secret-store configuration or OAuth registration is required.
 
-**Unreleased:** these `local` commands are in source after v0.4.0. Published
-v0.4.0 native archives do not include them. Use a native build of this checkout
-until a release includes the launcher. The default image is the already
-published v0.4.0 all-in-one image, pinned by digest; setup does not upgrade it.
+The v0.5.0 native packages include these `local` commands; published v0.4.0
+native archives do not. The default server image remains the tested v0.4.0
+all-in-one image pinned by digest. The launcher and container can have different
+versions. To select v0.5.0 for a new trial, pass
+`--image monkeemagic/mindleak-light:0.5.0` to setup. Existing containers are
+attached unchanged, not upgraded by that flag.
 
 ## First Successful Write and Recall
 
@@ -33,9 +35,11 @@ published v0.4.0 all-in-one image, pinned by digest; setup does not upgrade it.
    the recall. The existing container restarts and the memory ID stays the same.
    Do not assume VS Code automatically restarts an errored server.
 
-This is an explicit connection test. Add the
-[agent memory policy](INTEGRATION.md#put-memory-into-the-agents-routine) separately
-to make memory part of ordinary work. Test data is scoped to `quickstart-demo`;
+This is an explicit connection test. Install the
+[agent memory policy](INSTALL.md#automatic-project-setup) for ordinary work with
+`agent setup --client vscode --server mindleak-light-local --general`, or use
+`--scope repo:your-org/your-project` instead of `--general`. Run it with the
+same native executable and workspace used above. Test data is scoped to `quickstart-demo`;
 do not treat it as a real policy or preference.
 
 MindLeak does not provide OAuth client registration. Cancel unexpected registration dialogs.

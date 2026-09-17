@@ -8,7 +8,7 @@
 Memory persistence is not a recovery plan. Operators need encrypted, coherent
 database/source snapshots, independently verified restores, explicit retention,
 and observable OS scheduling without extending MCP's three tools or application
-tables. Published v0.4.0 does not include this administrative interface. Platform
+tables. Published v0.4.0 and v0.5.0 do not include this administrative interface. Platform
 acceptance is a release prerequisite, not an inferred result of compilation.
 
 ## Decision

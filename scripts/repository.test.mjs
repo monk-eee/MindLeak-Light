@@ -338,7 +338,7 @@ test("quickstart documentation and editor config agree on a model-free setup", (
   assert.ok(readme.includes("local setup"));
   assert.ok(readme.includes("mindleak-light-local"));
   assert.ok(readme.includes("MCP: List Servers"));
-  assert.ok(readme.includes("unreleased"));
+  assert.match(readme, /The v\d+\.\d+\.\d+ native packages include the `local` launcher/);
   const defaults = parseEnv(readFileSync(join(root, ".env.example"), "utf8"));
   assert.equal(defaults.MINDLEAK_DECOMPOSITION, "sentences");
   assert.equal(defaults.MINDLEAK_RETRIEVAL, "keyword");

@@ -1,6 +1,6 @@
 # Administrative Backups
 
-**Unreleased development interface.** Published v0.4.0 binaries do not contain
+**Unreleased development interface.** Published v0.4.0 and v0.5.0 binaries do not contain
 these commands. Local PG/restic behavior has executable regression coverage;
 [platform acceptance](../gaps.d/backup-platform-acceptance.md) must be completed
 before a supported release. Successful upload alone is not verified recovery.

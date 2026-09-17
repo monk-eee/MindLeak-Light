@@ -218,7 +218,7 @@ impl BackupConfig {
                 || target
                     .container
                     .as_ref()
-                    .is_some_and(|value| !identifier(value))
+                    .is_some_and(|value| !container_selector(value))
                 || target.user.as_ref().is_some_and(|value| !identifier(value))
                 || target.database.is_some()
                 || target.connection_file.is_some() && target.user.is_some()
@@ -241,7 +241,7 @@ impl BackupConfig {
             if target
                 .container
                 .as_ref()
-                .is_some_and(|value| !identifier(value))
+                .is_some_and(|value| !container_selector(value))
                 || target
                     .database
                     .as_ref()
@@ -481,6 +481,10 @@ impl Repository {
     }
 }
 
+fn container_selector(value: &str) -> bool {
+    identifier(value) || value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 pub(super) fn identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 63
@@ -565,6 +569,23 @@ fn overlap(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn immutable_container_ids_are_valid_source_and_restore_selectors() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let mut value = serde_json::json!({"schemaVersion":1,"workDir":root,"repository":{"kind":"local","path":root.parent().unwrap().join("repository-fixture"),"passwordFile":root.parent().unwrap().join("key-fixture")},
+            "targets":[{"id":"fixture","container":"a".repeat(64)}],"restoreTarget":{"id":"recovery","container":"b".repeat(64)}});
+        serde_json::from_value::<BackupConfig>(value.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        value["targets"][0]["container"] = serde_json::json!("z".repeat(64));
+        assert!(serde_json::from_value::<BackupConfig>(value)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
 
     #[test]
     fn persistent_remote_credentials_are_references_not_inline_values() {

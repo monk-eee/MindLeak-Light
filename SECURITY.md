@@ -11,7 +11,7 @@ token on every route, including health. It rejects browser Origin headers, limit
 request bodies to 256 KiB, and does not enable CORS. Tokens are compared using a
 constant-time primitive. This is not OAuth or a per-agent authorization system.
 
-The unreleased [project instruction installer](docs/INSTALL.md#automatic-project-setup)
+The v0.5.0 [project instruction installer](docs/INSTALL.md#automatic-project-setup)
 edits only explicitly selected project files. It does not install credentials,
 grant tool permissions, create a database, or change global client profiles.
 Its default checks inspect files only. `--connect` explicitly authorizes contact
@@ -20,7 +20,7 @@ that command as you would any local program. Connection reports omit credential
 values and provider bodies. Installed instructions and server-supplied reminders
 remain guidance, not an enforcement or authorization mechanism.
 
-The unreleased local launcher offers credential-free Docker/stdio, validates
+The v0.5.0 local launcher offers credential-free Docker/stdio, validates
 local engine endpoints and pins the selected container ID in generated VS Code
 configuration. New trials publish no ports and use `--network none`. Their
 internal HTTP worker remains token-protected with an automatically generated
