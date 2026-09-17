@@ -37,9 +37,15 @@ struct Args {
     transport: Transport,
     #[arg(long, env = "MINDLEAK_LISTEN", default_value = "127.0.0.1:8088")]
     listen: SocketAddr,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Complete database migrations and configured canaries, then exit without serving"
+    )]
     migrate_only: bool,
-    #[arg(long, env = "MINDLEAK_MIGRATION_CANARIES")]
+    #[arg(
+        long,
+        help = "Private retrieval canary manifest; defaults to nonempty MINDLEAK_MIGRATION_CANARIES"
+    )]
     migration_canaries: Option<PathBuf>,
 }
 
@@ -78,10 +84,13 @@ async fn main() -> Result<()> {
             "warn,mindleak_light=info,mindleak_mcp=info,mindleak_storage_postgres::migrations=info",
         )
         .init();
-    let canaries = args
-        .migration_canaries
+    let canary_path = args.migration_canaries.or_else(|| {
+        std::env::var_os("MINDLEAK_MIGRATION_CANARIES")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    });
+    let canaries = canary_path
         .as_deref()
-        .filter(|path| !path.as_os_str().is_empty())
         .map(migration_canaries::CanarySuite::load)
         .transpose()?;
     let config = config::Config::from_env()?;

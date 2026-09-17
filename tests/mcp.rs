@@ -360,6 +360,26 @@ async fn actual_runtime_checks_retrieval_canaries_before_readiness_without_write
 }
 
 #[tokio::test]
+async fn empty_compose_canary_setting_does_not_prevent_startup() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .current_dir(directory.path())
+        .env_clear()
+        .env("MINDLEAK_DATABASE_URL", database_url())
+        .env("MINDLEAK_MIGRATION_CANARIES", "")
+        .arg("--migrate-only")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[tokio::test]
 async fn killed_runtime_resumes_checkpoint_and_never_serves_a_partial_upgrade() {
     let directory = tempfile::tempdir().unwrap();
     let (admin, connection) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
@@ -883,17 +903,40 @@ async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
     }
     let mut limited = request.clone();
     limited["limit"] = json!(1);
-    let limited = client
-        .call_tool(call("recall_memory", limited))
-        .await
-        .unwrap()
-        .structured_content
-        .unwrap();
-    assert_eq!(limited["results"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        limited["results"][0]["sourceCount"], 1,
-        "group counts cover only the returned working set"
-    );
+    for attempt in 0..32 {
+        let result = client
+            .call_tool(call("recall_memory", limited.clone()))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        let count = result["results"].as_array().unwrap().len();
+        if count != 1 {
+            let (database, connection) =
+                tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+                    .await
+                    .unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let counts = database
+                .query_one(
+                    "SELECT count(*), count(*) FILTER (WHERE state='active'),
+                 count(*) FILTER (WHERE search_vector @@ websearch_to_tsquery('english','restart'))
+                 FROM public.fragments JOIN public.memories ON memories.id=memory_id
+                 WHERE agent_id=$1 AND context->>'scope'=$2",
+                    &[&agent_id, &scope],
+                )
+                .await
+                .unwrap();
+            panic!("limited recall returned {count} at attempt {attempt}; scoped_rows={} active_rows={} keyword_matches={}",
+                counts.get::<_,i64>(0), counts.get::<_,i64>(1), counts.get::<_,i64>(2));
+        }
+        assert_eq!(
+            result["results"][0]["sourceCount"], 1,
+            "group counts cover only the returned working set"
+        );
+    }
     let archived = client.call_tool(call("write_memory", json!({
         "agentId": agent_id, "text": "Archive the older instruction.", "context": {"scope": scope},
         "facts": [{"text": "Archive the older instruction.", "links": [{
