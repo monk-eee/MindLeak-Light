@@ -1,6 +1,6 @@
 # Domain Relationships and Verified Imports
 
-**Unreleased after v0.4.0.** These additive `domain` fields use the existing
+**Unreleased after v0.5.0.** These additive `domain` fields use the existing
 `write_memory` and `recall_memory` tools. Older binaries reject them. There are
 still exactly three application tables and three MCP tools. No graph worker,
 recursive traversal, inference engine, or extra model dependency is added.

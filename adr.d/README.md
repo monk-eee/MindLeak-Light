@@ -29,4 +29,5 @@ record when the design changes instead of silently rewriting their rationale.
 | [0015](0015-document-keyword-recall.md) | Document Keyword Recall and Bounded Context | Accepted |
 | [0016](0016-release-regression-gates.md) | Released-Baseline Regression Gates | Accepted |
 | [0017](0017-credential-free-local-access.md) | Credential-Free Local Access | Accepted |
+| [0018](0018-project-memory-instructions.md) | Project Memory Instruction Installation | Accepted |
 | [0020](0020-domain-relationships.md) | Indexed Domain Relationships and Verified Imports | Accepted |

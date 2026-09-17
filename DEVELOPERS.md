@@ -128,7 +128,7 @@ Record both `local status` and the client's advertised server version. The
 published-image local checks used v0.4.0, image reference
 `docker.io/monkeemagic/mindleak-light@sha256:b0686294b22c31ea0b6bef64cb139947b04edc27fb2e196923fa5e1f554e381c`,
 ARM64 image ID `8c0b4b8ca0e002d65dff29f332187410c54e365777852a12cb4c57cd03e593b7`.
-The native launcher is new source, not a republished v0.4.0 artifact. Preserve
+The native launcher ships in v0.5.0, not the older v0.4.0 artifacts. Preserve
 only safe metadata and results; do not retain raw headers, memory text or client
 secret storage in CI artifacts.
 
@@ -170,6 +170,24 @@ real-client slice locally. CI's PostgreSQL job runs it after building its releas
 binary. Rust `--all-features` additionally runs the actual 12,000-edge EXPLAIN ANALYZE
 regression, metadata/GIN/vector preservation and edge integrity/pagination tests.
 See [the domain guide](docs/DOMAIN-RELATIONSHIPS.md) for import and migration limits.
+
+### Agent Setup
+
+The v0.5.0 [project installer](docs/INSTALL.md#automatic-project-setup) lives
+in [agent_setup.rs](crates/mindleak-mcp/src/agent_setup.rs); its
+[connection probe](crates/mindleak-mcp/src/agent_setup/probe.rs) uses the official
+SDK rather than hand-written MCP requests. Both run before server environment
+loading. The binary embeds the existing skill resources, so packaging and Docker
+builds must include their source paths. Keep installation in this owning module
+when integrating other setup commands; do not add another instruction writer.
+
+Focused checks are `cargo test -p mindleak-mcp --bin mindleak-light agent_` and
+the existing MCP HTTP test plus
+`mcp_lifecycle::agent_setup_installs_and_checks_real_stdio_without_writes` in the
+database suite. Cover unchanged project configuration, stable memory modes/scopes, repeated
+installation, edited managed blocks/resources, symlinks, credential privacy,
+actual SDK discovery, and honest unmeasured client behaviour. Schema discovery
+does not authorize tool use or prove that an agent invoked memory.
 
 ### Released-Baseline Gate
 
