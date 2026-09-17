@@ -1,9 +1,7 @@
 use super::*;
+use std::collections::HashMap;
 
-#[tokio::test]
-async fn companion_recipes_support_fresh_client_handoff_and_correction() {
-    use std::collections::HashMap;
-
+fn recipe(recipes: &Value, name: &str, bindings: &HashMap<&str, Value>) -> CallToolRequestParams {
     fn substitute(value: &Value, bindings: &HashMap<&str, Value>) -> Value {
         match value {
             Value::String(text) if text.starts_with('$') => bindings
@@ -26,22 +24,121 @@ async fn companion_recipes_support_fresh_client_handoff_and_correction() {
         }
     }
 
-    fn recipe(
-        recipes: &Value,
-        name: &str,
-        bindings: &HashMap<&str, Value>,
-    ) -> CallToolRequestParams {
-        let request = &recipes["calls"][name];
-        let arguments = substitute(&request["arguments"], bindings);
-        CallToolRequestParams::new(request["name"].as_str().unwrap().to_owned())
-            .with_arguments(arguments.as_object().unwrap().clone())
-    }
+    let request = &recipes["calls"][name];
+    let arguments = substitute(&request["arguments"], bindings);
+    CallToolRequestParams::new(request["name"].as_str().unwrap().to_owned())
+        .with_arguments(arguments.as_object().unwrap().clone())
+}
 
+#[tokio::test]
+async fn agent_setup_installs_and_checks_real_stdio_without_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let scope = format!("agent-setup-{}", Uuid::new_v4());
+    let config_directory = directory.path().join(".vscode");
+    std::fs::create_dir(&config_directory).unwrap();
+    let configuration = serde_json::to_vec_pretty(&json!({"servers":{"existing-memory":{
+        "type":"stdio", "command":env!("CARGO_BIN_EXE_mindleak-light"),
+        "args":["--transport","stdio"], "env":{
+            "MINDLEAK_DATABASE_URL":database_url(), "MINDLEAK_DECOMPOSITION":"sentences",
+            "MINDLEAK_RETRIEVAL":"keyword", "MINDLEAK_RELEVANCE":"off"
+        }
+    }}}))
+    .unwrap();
+    std::fs::write(config_directory.join("mcp.json"), &configuration).unwrap();
+    std::fs::write(
+        directory.path().join(".env"),
+        "MINDLEAK_DATABASE_URL='unterminated",
+    )
+    .unwrap();
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+        command.current_dir(directory.path()).env_clear();
+        command
+    };
+    let setup = [
+        "agent",
+        "setup",
+        "--client",
+        "vscode",
+        "--server",
+        "existing-memory",
+        "--scope",
+        &scope,
+    ];
+    for prefix in [Vec::<&str>::new(), vec!["--listen", "127.0.0.1:9999"]] {
+        let output = command()
+            .args(prefix)
+            .args(setup)
+            .arg("--dry-run")
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "dry-run must not load server .env: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["instructionsInstalled"], false);
+        assert_eq!(result["connection"]["status"], "not_checked");
+        assert!(!directory.path().join(".mindleak").exists());
+    }
+    let output = command().args(setup).output().await.unwrap();
+    assert!(output.status.success());
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["instructionsInstalled"], true);
+    assert_eq!(result["agentBehaviour"], "not_measured");
+    assert_eq!(
+        std::fs::read(config_directory.join("mcp.json")).unwrap(),
+        configuration
+    );
+    let instructions =
+        std::fs::read_to_string(directory.path().join(".github/copilot-instructions.md")).unwrap();
+    assert!(instructions.contains(&scope));
+    assert!(instructions.contains("existing-memory"));
+    assert!(!instructions.contains("postgresql://"));
+    let output = command().args(setup).output().await.unwrap();
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["changedFiles"], json!([]));
+    std::fs::remove_file(directory.path().join(".env")).unwrap();
+    let output = command()
+        .args(["agent", "check", "--client", "vscode", "--connect"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["connection"]["status"], "verified");
+    assert_eq!(result["connection"]["memoryCalls"], 0);
+    assert_eq!(result["agentBehaviour"], "not_measured");
+    let (database, task) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let task = tokio::spawn(task);
+    let count: i64 = database
+        .query_one(
+            "SELECT count(*) FROM public.memories WHERE context->>'scope' = $1",
+            &[&scope],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0);
+    drop(database);
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn companion_recipes_support_fresh_client_handoff_and_correction() {
     let recipes: Value = serde_json::from_str(include_str!(
         "../.agents/skills/mindleak-memory/references/tool-recipes.json"
     ))
     .unwrap();
-    assert_eq!(recipes["skillVersion"], "1.0.0");
+    assert_eq!(recipes["skillVersion"], "1.1.0");
     let scope = format!("companion-{}", Uuid::new_v4());
     let writer = format!("companion-writer-{}", Uuid::new_v4());
     let mut bindings = HashMap::from([
@@ -260,6 +357,222 @@ async fn companion_recipes_support_fresh_client_handoff_and_correction() {
         final_count, 3,
         "only the original, correction, and explicit usefulness episode persist"
     );
+}
+
+#[tokio::test]
+async fn general_recipes_preserve_unscoped_writes_and_cross_scope_read_semantics() {
+    let all_recipes: Value = serde_json::from_str(include_str!(
+        "../.agents/skills/mindleak-memory/references/tool-recipes.json"
+    ))
+    .unwrap();
+    let recipes = json!({"calls": all_recipes["generalCalls"]});
+    let directory = tempfile::tempdir().unwrap();
+    let subject = format!("generalmemory{}", Uuid::new_v4().simple());
+    let project_scope = format!("project-{subject}");
+    let mut bindings = HashMap::from([
+        ("$AGENT_ID", json!(format!("writer-{subject}"))),
+        ("$SESSION_ID", json!(Uuid::new_v4())),
+        ("$REQUEST_ID", json!(Uuid::new_v4())),
+        ("$QUERY", json!(subject)),
+        (
+            "$FACT_TEXT",
+            json!(format!("The {subject} timeout is seven seconds.")),
+        ),
+        (
+            "$CORRECTION_TEXT",
+            json!(format!("The {subject} timeout is twelve seconds.")),
+        ),
+    ]);
+    let environment = json!({
+        "MINDLEAK_DATABASE_URL":database_url(), "MINDLEAK_DECOMPOSITION":"sentences",
+        "MINDLEAK_RETRIEVAL":"keyword", "MINDLEAK_RELEVANCE":"off"
+    });
+    std::fs::create_dir(directory.path().join(".vscode")).unwrap();
+    std::fs::write(
+        directory.path().join(".vscode/mcp.json"),
+        serde_json::to_vec(&json!({"servers":{"memory":{
+            "type":"stdio", "command":env!("CARGO_BIN_EXE_mindleak-light"),
+            "args":["--transport","stdio"], "env":environment
+        }}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+        command.current_dir(directory.path()).env_clear();
+        command
+    };
+    for arguments in [
+        vec![
+            "agent",
+            "setup",
+            "--client",
+            "vscode",
+            "--server",
+            "memory",
+            "--general",
+        ],
+        vec!["agent", "check", "--client", "vscode", "--connect"],
+    ] {
+        let output = command().args(arguments).output().await.unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["mode"], "general");
+        assert_eq!(report["scope"], Value::Null);
+        assert_eq!(report["instructionsInstalled"], true);
+        assert_eq!(report["agentBehaviour"], "not_measured");
+    }
+    let server_command = || {
+        let mut server = command();
+        for (key, value) in environment.as_object().unwrap() {
+            server.env(key, value.as_str().unwrap());
+        }
+        server
+    };
+    let writer = tokio::time::timeout(
+        Duration::from_secs(15),
+        ().serve(TokioChildProcess::new(server_command()).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let saved = writer
+        .call_tool(recipe(&recipes, "remember", &bindings))
+        .await
+        .unwrap();
+    assert_ne!(saved.is_error, Some(true));
+    let general = saved.structured_content.unwrap();
+    let replay = writer
+        .call_tool(recipe(&recipes, "remember", &bindings))
+        .await
+        .unwrap();
+    assert_ne!(replay.is_error, Some(true));
+    assert_eq!(replay.structured_content.unwrap(), general);
+    let mut scoped_request = recipe(&recipes, "remember", &bindings);
+    let scoped_args = scoped_request.arguments.as_mut().unwrap();
+    scoped_args.insert("requestId".into(), json!(Uuid::new_v4()));
+    scoped_args.insert(
+        "context".into(),
+        json!({"scope":project_scope, "source":"synthetic:general-memory-project-control"}),
+    );
+    let saved = writer.call_tool(scoped_request).await.unwrap();
+    assert_ne!(saved.is_error, Some(true));
+    let project = saved.structured_content.unwrap();
+    writer.cancel().await.unwrap();
+
+    let reader = tokio::time::timeout(
+        Duration::from_secs(15),
+        ().serve(TokioChildProcess::new(server_command()).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let recalled = reader
+        .call_tool(recipe(&recipes, "search", &bindings))
+        .await
+        .unwrap();
+    assert_ne!(recalled.is_error, Some(true));
+    let recalled = recalled.structured_content.unwrap();
+    let facts = recalled["results"].as_array().unwrap();
+    assert_eq!(
+        facts.len(),
+        2,
+        "general recall must include both scoped and unscoped matches"
+    );
+    for expected in [&general, &project] {
+        assert!(facts
+            .iter()
+            .any(|fact| fact["memoryId"] == expected["memoryId"]));
+    }
+    let fact = facts
+        .iter()
+        .find(|fact| fact["memoryId"] == general["memoryId"])
+        .unwrap();
+    assert!(fact["context"]["scope"].is_null());
+    assert_eq!(fact["agentId"], bindings["$AGENT_ID"]);
+    bindings.insert("$FRAGMENT_ID", fact["fragmentId"].clone());
+    let inspected = reader
+        .call_tool(recipe(&recipes, "inspect", &bindings))
+        .await
+        .unwrap();
+    assert_ne!(inspected.is_error, Some(true));
+    let inspected = inspected.structured_content.unwrap();
+    assert_eq!(inspected["rawText"], bindings["$FACT_TEXT"]);
+    assert!(inspected["context"]["scope"].is_null());
+    let mut scoped_search = recipe(&recipes, "search", &bindings);
+    scoped_search
+        .arguments
+        .as_mut()
+        .unwrap()
+        .insert("scope".into(), json!(project_scope));
+    let scoped = reader.call_tool(scoped_search).await.unwrap();
+    assert_ne!(scoped.is_error, Some(true));
+    let scoped = scoped.structured_content.unwrap();
+    assert_eq!(scoped["results"].as_array().unwrap().len(), 1);
+    assert_eq!(scoped["results"][0]["memoryId"], project["memoryId"]);
+
+    bindings.insert("$AGENT_ID", json!(format!("reader-{subject}")));
+    bindings.insert("$REQUEST_ID", json!(Uuid::new_v4()));
+    let corrected = reader
+        .call_tool(recipe(&recipes, "correct", &bindings))
+        .await
+        .unwrap();
+    assert_ne!(corrected.is_error, Some(true));
+    let correction = corrected.structured_content.unwrap();
+    bindings.insert(
+        "$FRAGMENT_ID",
+        project["fragments"][0]["fragmentId"].clone(),
+    );
+    bindings.insert("$REQUEST_ID", json!(Uuid::new_v4()));
+    let cross_scope = reader
+        .call_tool(recipe(&recipes, "correct", &bindings))
+        .await;
+    assert!(
+        matches!(cross_scope, Err(rmcp::ServiceError::McpError(error))
+        if error.code == rmcp::model::ErrorCode::INVALID_PARAMS),
+        "a general write must not supersede a project-scoped target"
+    );
+    let current = reader
+        .call_tool(recipe(&recipes, "search", &bindings))
+        .await
+        .unwrap();
+    assert_ne!(current.is_error, Some(true));
+    let current = current.structured_content.unwrap();
+    assert_eq!(current["results"].as_array().unwrap().len(), 2);
+    assert!(current["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(
+            |fact| fact["memoryId"] == correction["memoryId"] && fact["context"]["scope"].is_null()
+        ));
+    assert!(current["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|fact| fact["memoryId"] == project["memoryId"]
+            && fact["lifecycle"]["state"] == "active"));
+    reader.cancel().await.unwrap();
+    let (database, task) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let task = tokio::spawn(task);
+    let counts = database.query_one(
+        "SELECT count(*), count(*) FILTER (WHERE context->>'scope' IS NULL) FROM public.memories WHERE agent_id = ANY($1)",
+        &[&vec![format!("writer-{subject}"), format!("reader-{subject}")]],
+    ).await.unwrap();
+    assert_eq!(
+        counts.get::<_, i64>(0),
+        3,
+        "a rejected correction must not persist a source episode"
+    );
+    assert_eq!(counts.get::<_, i64>(1), 2);
+    drop(database);
+    task.await.unwrap().unwrap();
 }
 
 #[tokio::test]

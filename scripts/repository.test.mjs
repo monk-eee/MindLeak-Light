@@ -384,7 +384,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   assert.match(frontmatter, /^name: mindleak-memory$/m);
   const description = JSON.parse(/^description: (".*")$/m.exec(frontmatter)?.[1] ?? "null");
   assert.ok(typeof description === "string" && description.length <= 1024 && description.includes("agents"));
-  assert.match(frontmatter, /version: "1\.0\.0"/);
+  assert.match(frontmatter, /version: "1\.1\.0"/);
   assert.doesNotMatch(frontmatter, /^(?:allowed-tools|hooks|context|agent|model):/m);
   assert.doesNotMatch(skill, /^!`|^```!/m);
   assert.ok(skill.split("\n").length < 250, "keep the on-demand workflow compact");
@@ -396,8 +396,20 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   }
   const recipes = JSON.parse(readFileSync(join(directory, "references/tool-recipes.json"), "utf8"));
   assert.equal(recipes.schemaVersion, 1);
-  assert.equal(recipes.skillVersion, "1.0.0");
+  assert.equal(recipes.skillVersion, "1.1.0");
   assert.equal(recipes.minimumServerVersion, "0.4.0");
+  assert.ok(skill.includes("General recall searches across all scopes"));
+  assert.ok(skill.includes("Two unscoped facts may be linked"));
+  for (const recipe of Object.values(recipes.generalCalls)) {
+    assert.equal(recipe.arguments.scope, undefined, "general recall must not set a project filter");
+    assert.equal(recipe.arguments.context?.scope, undefined, "general writes must not create a synthetic scope");
+    if (recipe.name === "recall_memory") assert.equal(recipe.arguments.agentId, undefined);
+    if (recipe.name === "write_memory") {
+      assert.equal(recipe.arguments.agentId, "$AGENT_ID");
+      assert.equal(recipe.arguments.requestId, "$REQUEST_ID");
+      assert.equal(recipe.arguments.context.sessionId, "$SESSION_ID");
+    }
+  }
   for (const recipe of Object.values(recipes.calls)) {
     assert.ok(["write_memory", "recall_memory", "decompose_memory"].includes(recipe.name));
     assert.ok(recipe.arguments && typeof recipe.arguments === "object");

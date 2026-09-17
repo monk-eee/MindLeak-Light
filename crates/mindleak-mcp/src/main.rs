@@ -1,9 +1,10 @@
+mod agent_setup;
 mod config;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use mindleak_decomposition::{OpenAiDecomposer, SentenceDecomposer};
 use mindleak_embeddings::{OpenAiEmbedder, OpenAiRelevanceRetriever};
 use mindleak_mcp::{http_router, MemoryMcp};
@@ -27,14 +28,28 @@ enum Transport {
     about = "Shared, decomposed agent memory over MCP"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     #[arg(long, value_enum, env = "MINDLEAK_TRANSPORT", default_value = "stdio")]
     transport: Transport,
     #[arg(long, env = "MINDLEAK_LISTEN", default_value = "127.0.0.1:8088")]
     listen: SocketAddr,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    #[command(
+        subcommand,
+        about = "Install or check project memory instructions for an existing MCP connection"
+    )]
+    Agent(agent_setup::AgentCommand),
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(Command::Agent(command)) = Args::parse().command {
+        return agent_setup::run(command).await;
+    }
     match dotenvy::dotenv() {
         Ok(_) => {}
         Err(error) if error.not_found() => {}
@@ -151,4 +166,75 @@ async fn shutdown() {
     }
     #[cfg(not(unix))]
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(test)]
+mod agent_cli_tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[test]
+    fn accepts_project_agent_setup_without_server_configuration() {
+        assert!(Args::try_parse_from([
+            "mindleak-light",
+            "agent",
+            "setup",
+            "--client",
+            "vscode",
+            "--server",
+            "mindleak-light",
+            "--scope",
+            "repo:example/project",
+            "--workspace",
+            ".",
+            "--dry-run",
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn dry_run_never_accepts_connection_side_effects() {
+        assert!(Args::try_parse_from([
+            "mindleak-light",
+            "agent",
+            "setup",
+            "--client",
+            "vscode",
+            "--server",
+            "memory",
+            "--scope",
+            "repo:example/project",
+            "--dry-run",
+            "--connect",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn agent_setup_requires_exactly_one_general_or_scoped_mode() {
+        let base = [
+            "mindleak-light",
+            "agent",
+            "setup",
+            "--client",
+            "vscode",
+            "--server",
+            "memory",
+            "--dry-run",
+        ];
+        assert!(Args::try_parse_from(base.into_iter().chain(["--general"])).is_ok());
+        assert!(
+            Args::try_parse_from(base).is_err(),
+            "memory mode must be explicit"
+        );
+        assert!(
+            Args::try_parse_from(base.into_iter().chain([
+                "--general",
+                "--scope",
+                "repo:example/project",
+            ]))
+            .is_err(),
+            "general and scoped modes are mutually exclusive"
+        );
+    }
 }

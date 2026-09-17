@@ -1,14 +1,17 @@
 {
   "schemaVersion": 1,
-  "skillVersion": "1.0.0",
+  "skillVersion": "1.1.0",
   "minimumServerVersion": "0.4.0",
   "purpose": "Synthetic call templates for the companion workflow and its contract tests. Replace the example content with verified task evidence. Do not ingest these demonstration facts into production.",
   "placeholders": {
     "$AGENT_ID": "Stable contribution identity of the actual writer; different agents use their own identities.",
-    "$SCOPE": "One agreed scope shared by cooperating agents; tests must use a fresh disposable namespace.",
+    "$SCOPE": "One agreed project scope; omit scope entirely for generalCalls. Project tests use a fresh disposable namespace.",
+    "$QUERY": "Focused search terms for the current task; general-memory tests use a unique synthetic subject in a disposable database.",
+    "$FACT_TEXT": "One verified general-memory fact including its actual conditions; use a synthetic fact only in a disposable test database.",
+    "$CORRECTION_TEXT": "A verified replacement fact for the unscoped target; the directive text must match decomposition exactly.",
     "$SESSION_ID": "The actual stable session ID; do not invent sessions to manufacture feedback.",
     "$REQUEST_ID": "A UUID generated once per logical write and retained with its exact arguments for retries.",
-    "$FRAGMENT_ID": "The verified target ID returned by a scoped search or successful write, never a guessed ID."
+    "$FRAGMENT_ID": "The verified target ID returned by search or a successful write, never guessed. A general correction requires an unscoped target."
   },
   "calls": {
     "search": {
@@ -59,6 +62,35 @@
     "document_search": {
       "name": "recall_memory",
       "arguments": {"query": "Solstice timeout", "scope": "$SCOPE", "limit": 5, "matchMode": "all", "diagnostics": true, "contextLimit": 1, "groupDuplicates": true}
+    }
+  },
+  "generalCalls": {
+    "search": {
+      "name": "recall_memory",
+      "arguments": {"query": "$QUERY", "limit": 5}
+    },
+    "remember": {
+      "name": "write_memory",
+      "arguments": {
+        "agentId": "$AGENT_ID",
+        "requestId": "$REQUEST_ID",
+        "text": "$FACT_TEXT",
+        "context": {"sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/general"}
+      }
+    },
+    "inspect": {
+      "name": "recall_memory",
+      "arguments": {"fragmentId": "$FRAGMENT_ID", "limit": 8}
+    },
+    "correct": {
+      "name": "write_memory",
+      "arguments": {
+        "agentId": "$AGENT_ID",
+        "requestId": "$REQUEST_ID",
+        "text": "$CORRECTION_TEXT",
+        "context": {"sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/general-correction"},
+        "facts": [{"text": "$CORRECTION_TEXT", "links": [{"targetFragmentId": "$FRAGMENT_ID", "relationshipType": "supersedes"}]}]
+      }
     }
   }
 }

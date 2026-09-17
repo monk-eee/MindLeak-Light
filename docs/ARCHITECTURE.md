@@ -9,6 +9,16 @@ are described below but are not yet diagrammed. Both are included in v0.4.0;
 older packages do not gain these features from updated documentation.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
+The unreleased `agent setup`/`agent check` CLI installs the bundled workflow on
+the client side. It never adds MCP tools or application tables. Project files
+record the selected connection, explicit general/scoped mode, and optional scope;
+an opt-in SDK probe reports tool
+compatibility separately from native client behaviour. Existing initialization
+instructions also carry a compact activation reminder, which clients may ignore.
+See [project setup](INSTALL.md#automatic-project-setup) for its ownership and
+failure semantics and [ADR-0018](../adr.d/0018-project-memory-instructions.md)
+for the installation boundary.
+
 All four diagrams are editable frames in the
 [Excalidraw architecture board](../assets/architecture.excalidraw). The SVG
 previews include their fonts and scene data, so they can also be opened in

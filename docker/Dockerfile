@@ -3,6 +3,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY tests ./tests
+COPY .agents/skills/mindleak-memory ./.agents/skills/mindleak-memory
 RUN cargo build --locked --release -p mindleak-mcp --bin mindleak-light -j 1
 
 FROM debian:bookworm-slim AS app
