@@ -127,9 +127,10 @@ pub(super) async fn private(path: &Path, cancel: &CancellationToken) -> AdminRes
             "-Command",
             script,
         ]);
-        command
-            .env
-            .insert("MINDLEAK_PRIVATE_PATH".into(), path.as_os_str().to_owned());
+        command.env.insert(
+            "MINDLEAK_PRIVATE_PATH".into(),
+            dunce::simplified(path).as_os_str().to_owned(),
+        );
         let bytes = succeeded(
             capture(&command, &[], 15, cancel, "permissions").await?,
             "permissions",
