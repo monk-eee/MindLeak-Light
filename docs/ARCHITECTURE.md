@@ -108,7 +108,9 @@ prevents cycles without recursive graph reasoning.
 observations still available. Knowledge and its references share a final read-only
 snapshot after provider work; observations use their normal separate snapshot.
 Changed support sets `requiresReview` without rewriting historical acceptance.
-Revisions retain direct and inherited counterexamples.
+Revisions retain direct and inherited counterexamples, including those added to
+prior supports after pinning. Revision transactions lock old and new supporting
+heads in stable order; missing prior heads cannot be treated as absent evidence.
 
 Unreleased v0.7.0 controls add a deterministic `compact` projection with a 32 KiB
 JSON cap. It keeps complete conditions, counterexample IDs/reasons and factual
@@ -116,6 +118,14 @@ review reasons; full evidence stays behind exact inspection. Capability discover
 reads the configured abstractions without model/database work, separating agent
 authoring from optional extraction, formation and semantic retrieval. Knowledge
 search reuses ordinary keyword parsing with explicit modes and no broadening.
+Projection precedes the chosen view's aggregate byte check. Search hydration skips
+inspection-only raw source/history; full inspection keeps its own existing cap.
+
+Agent-guided evidence checkpoints expose capture moments and a format through
+capabilities, MCP instructions and the companion skill. Capture templates use
+ordinary atomic writes and the existing source-summary search index. They add no
+server triggers, scheduler, table, permissions or automatic feedback. Agents decide
+whether new verified evidence warrants capture, correction or no write.
 
 Optional search cost diagnostics collect request-local embedding/relevance calls,
 provider-reported usage, elapsed retrieval time and structured response bytes.

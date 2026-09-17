@@ -20,7 +20,7 @@ use crate::{
     PostgresMemoryStore,
 };
 
-const CHAIN_COLUMNS: &str = "memories.id AS memory_id, memories.agent_id, memories.context::text AS context, memories.raw_text, \
+const CHAIN_COLUMNS: &str = "memories.id AS memory_id, memories.agent_id, memories.context::text AS context, \
     extract(epoch from memories.created_at)::bigint AS created_at, memories.chain_id, memories.chain_revision, \
     memories.chain_current, memories.chain_snapshot::text AS snapshot, memories.chain_operation";
 
@@ -315,6 +315,55 @@ impl PostgresMemoryStore {
         let snapshot = request
             .chain
             .apply(previous.as_ref().map(|previous| &previous.snapshot))?;
+        let mut latest_prior_counterevidence = BTreeSet::new();
+        if matches!(request.chain, ChainCommand::Revise { .. })
+            && snapshot.document.kind == KnowledgeKind::Principle
+        {
+            let previous = previous
+                .as_ref()
+                .context("missing prior principle revision")?;
+            let identifiers: Vec<_> = previous
+                .snapshot
+                .document
+                .supported_by
+                .iter()
+                .chain(&snapshot.document.supported_by)
+                .map(|reference| reference.chain_id)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let rows = transaction
+                .query(
+                    "SELECT chain_id, chain_snapshot::text AS snapshot FROM public.memories \
+                 WHERE chain_id=ANY($1) AND chain_current \
+                   AND (context->>'scope') IS NOT DISTINCT FROM $2::text \
+                 ORDER BY chain_id FOR SHARE",
+                    &[&identifiers, &memory.context.scope],
+                )
+                .await?;
+            let heads: HashMap<Uuid, ChainSnapshot> = rows
+                .iter()
+                .map(|row| {
+                    Ok((
+                        row.try_get("chain_id")?,
+                        serde_json::from_str(&row.try_get::<_, String>("snapshot")?)
+                            .map_err(|_| anyhow::anyhow!("invalid stored chain snapshot"))?,
+                    ))
+                })
+                .collect::<Result<_>>()?;
+            for reference in &previous.snapshot.document.supported_by {
+                let head = heads.get(&reference.chain_id)
+                    .filter(|head| head.document.kind == KnowledgeKind::Chain)
+                    .ok_or_else(|| invalid("current prior principle support is unavailable; restore the source or retire the principle instead of discarding unknown counterevidence"))?;
+                latest_prior_counterevidence.extend(
+                    head.document
+                        .evidence
+                        .iter()
+                        .filter(|evidence| evidence.role == ChainEvidenceRole::Counterexample)
+                        .map(|evidence| evidence.fragment_id),
+                );
+            }
+        }
         let supporting =
             supporting_chains(&transaction, &snapshot, &memory.context.scope, true).await?;
         if matches!(
@@ -358,14 +407,15 @@ impl PostgresMemoryStore {
                 .filter(|reference| reference.role == ChainEvidenceRole::Counterexample)
                 .map(|reference| reference.fragment_id)
                 .collect();
-            if previous_support
-                .iter()
-                .filter_map(|support| support.document.as_ref())
-                .flat_map(|document| &document.evidence)
-                .any(|reference| {
-                    reference.role == ChainEvidenceRole::Counterexample
-                        && !retained.contains(&reference.fragment_id)
-                })
+            if !latest_prior_counterevidence.is_subset(&retained)
+                || previous_support
+                    .iter()
+                    .filter_map(|support| support.document.as_ref())
+                    .flat_map(|document| &document.evidence)
+                    .any(|reference| {
+                        reference.role == ChainEvidenceRole::Counterexample
+                            && !retained.contains(&reference.fragment_id)
+                    })
             {
                 return Err(invalid("principle revisions must retain inherited counterevidence directly or through their supporting chains"));
             }
@@ -474,7 +524,7 @@ impl PostgresMemoryStore {
             selected_revision,
             after_revision,
             filter,
-            limit,
+            Some(limit),
         )
         .await?;
         transaction.commit().await?;
@@ -487,14 +537,19 @@ impl PostgresMemoryStore {
         selected_revision: Option<u32>,
         after_revision: Option<u32>,
         filter: &ChainFilter,
-        limit: usize,
+        inspection_limit: Option<usize>,
     ) -> Result<Option<ChainInspection>> {
         let selected_revision = selected_revision.map(i32::try_from).transpose()?;
         let after_revision = i32::try_from(after_revision.unwrap_or(0))?;
+        let source_column = if inspection_limit.is_some() {
+            ", memories.raw_text"
+        } else {
+            ""
+        };
         let row = transaction
             .query_opt(
                 &format!(
-                    "SELECT {CHAIN_COLUMNS} FROM public.memories \
+                    "SELECT {CHAIN_COLUMNS}{source_column} FROM public.memories \
             WHERE chain_id=$1 AND (($2::integer IS NULL AND chain_current) OR chain_revision=$2) \
             AND ($3::text IS NULL OR agent_id=$3) AND ($4::text IS NULL OR context->>'scope'=$4) \
             AND ($5::boolean OR chain_snapshot->>'state' <> 'retired')"
@@ -528,37 +583,46 @@ impl PostgresMemoryStore {
         let mut remaining = MAX_RELATED_CONTEXT_BYTES;
         let evidence_details_truncated =
             budget_details(&mut evidence, &mut supporting, &mut remaining)?;
-        let history_rows = transaction
-            .query(
-                &format!(
-                    "SELECT {CHAIN_COLUMNS} FROM public.memories \
+        let (history, next_revision) = if let Some(limit) = inspection_limit {
+            let history_rows = transaction
+                .query(
+                    &format!(
+                        "SELECT {CHAIN_COLUMNS} FROM public.memories \
             WHERE chain_id=$1 AND chain_revision > $2 \
               AND ($3::text IS NULL OR agent_id=$3) AND ($4::text IS NULL OR context->>'scope'=$4) \
             ORDER BY chain_revision LIMIT $5"
-                ),
-                &[
-                    &chain_id,
-                    &after_revision,
-                    &filter.agent_id,
-                    &filter.scope,
-                    &i64::try_from(limit + 1)?,
-                ],
-            )
-            .await?;
-        let mut history = history_rows
-            .iter()
-            .map(revision)
-            .collect::<Result<Vec<_>>>()?;
-        let next_revision = if history.len() > limit {
-            history.truncate(limit);
-            history.last().map(|revision| revision.revision)
+                    ),
+                    &[
+                        &chain_id,
+                        &after_revision,
+                        &filter.agent_id,
+                        &filter.scope,
+                        &i64::try_from(limit + 1)?,
+                    ],
+                )
+                .await?;
+            let mut history = history_rows
+                .iter()
+                .map(revision)
+                .collect::<Result<Vec<_>>>()?;
+            let next_revision = if history.len() > limit {
+                history.truncate(limit);
+                history.last().map(|revision| revision.revision)
+            } else {
+                None
+            };
+            (history, next_revision)
         } else {
-            None
+            (Vec::new(), None)
         };
         let result = ChainInspection {
             requires_review: needs_review,
             chain,
-            raw_text: row.try_get("raw_text")?,
+            raw_text: if inspection_limit.is_some() {
+                row.try_get("raw_text")?
+            } else {
+                String::new()
+            },
             evidence,
             supporting_chains: supporting,
             observation_sources: observation_sources.into_iter().collect(),
@@ -566,7 +630,9 @@ impl PostgresMemoryStore {
             history,
             next_revision,
         };
-        if serde_json::to_vec(&result)?.len() > MAX_RECALL_RESULT_BYTES {
+        if inspection_limit.is_some()
+            && serde_json::to_vec(&result)?.len() > MAX_RECALL_RESULT_BYTES
+        {
             return Err(invalid(
                 "chain inspection exceeds the response budget; lower limit",
             ));

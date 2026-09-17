@@ -1,7 +1,11 @@
 use super::*;
 use std::collections::HashMap;
 
-fn recipe(recipes: &Value, name: &str, bindings: &HashMap<&str, Value>) -> CallToolRequestParams {
+pub(super) fn recipe(
+    recipes: &Value,
+    name: &str,
+    bindings: &HashMap<&str, Value>,
+) -> CallToolRequestParams {
     fn substitute(value: &Value, bindings: &HashMap<&str, Value>) -> Value {
         match value {
             Value::String(text) if text.starts_with('$') => bindings
@@ -215,7 +219,7 @@ async fn companion_recipes_support_fresh_client_handoff_and_correction() {
         "../.agents/skills/mindleak-memory/references/tool-recipes.json"
     ))
     .unwrap();
-    assert_eq!(recipes["skillVersion"], "1.3.0");
+    assert_eq!(recipes["skillVersion"], "1.4.0");
     let scope = format!("companion-{}", Uuid::new_v4());
     let writer = format!("companion-writer-{}", Uuid::new_v4());
     let mut bindings = HashMap::from([
