@@ -139,6 +139,16 @@ jobs:
           node-version: 22
       - run: npm ci --prefix examples --ignore-scripts
       - run: docker build --target all-in-one -f docker/Dockerfile -t mindleak-light:all-in-one-test .
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p mindleak-mcp --bin mindleak-light
+      - name: Credential-free local onboarding
+        timeout-minutes: 10
+        env:
+          MINDLEAK_IMAGE: mindleak-light:all-in-one-test
+        run: node scripts/local-access-smoke.mjs
       - name: Upgrade from published 0.1.0
         run: node scripts/container-smoke.mjs
         env:

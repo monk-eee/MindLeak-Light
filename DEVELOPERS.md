@@ -21,7 +21,10 @@ commands listed below. The hooks themselves do not require Make.
 Use [.env.example](.env.example) for a local `.env`; never commit credentials.
 Start the database with `docker compose up -d postgres`. By default, sentence/list
 decomposition and keyword recall need no model settings. The checked-in VS Code
-MCP configuration connects to the Compose HTTP server without invoking Cargo.
+MCP configuration is initially empty. For the credential-free all-in-one trial,
+run `cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup`;
+it generates a pinned Docker/stdio entry. For the two-service development stack,
+configure authenticated HTTP as described in [integration](docs/INTEGRATION.md#shared-http).
 
 Shared configuration preserves MindLeak's `MINDLEAK_LLM_URL`, `MINDLEAK_MODEL`,
 `MINDLEAK_LLM_API_KEY`, `MINDLEAK_EMBED_URL`, `MINDLEAK_EMBED_MODEL`, and
@@ -42,8 +45,10 @@ Both Compose templates forward these settings without enabling the filter by def
 Other settings are `MINDLEAK_DATABASE_URL`, `MINDLEAK_DATABASE_CA_FILE`,
 `MINDLEAK_DB_POOL_SIZE` (1..64, default 8), `MINDLEAK_MODEL_TIMEOUT_SECS`
 (1..300, default 60), `MINDLEAK_HTTP_TOKEN`, `MINDLEAK_TRANSPORT` (stdio/http),
-and `MINDLEAK_LISTEN`. The binary reads `.env` before resolving CLI defaults.
-HTTP always requires a token of at least 32 non-whitespace ASCII characters.
+and `MINDLEAK_LISTEN`. Ordinary server mode reads `.env` before resolving CLI
+defaults. `local` subcommands do not load a workspace `.env` or require a native
+database URL. Ordinary HTTP always requires a token of at least 32 non-whitespace
+ASCII characters; the explicit host-only bridge has a separate guarded entry point.
 
 Run `cargo run --locked -p mindleak-mcp -- --transport http` for native HTTP.
 The [debug configuration](.vscode/launch.json) uses port 8089 to avoid the Compose
@@ -88,6 +93,44 @@ The JavaScript integration example is optional and isolated from the server:
 `npm ci --prefix examples` installs its dependencies. Run it against a disposable
 test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 `npm --prefix examples run memory`. It writes one sample memory per run.
+
+### Local Access Acceptance
+
+```sh
+cargo build --locked -p mindleak-mcp --bin mindleak-light
+npm ci --prefix examples --ignore-scripts
+node scripts/local-access-smoke.mjs
+```
+
+Use `CONTAINER_ENGINE=podman` for Podman, `MINDLEAK_BINARY` for an absolute
+launcher path, and `MINDLEAK_IMAGE` for the candidate all-in-one image. The test
+creates unique containers, volumes and a `_test` database, exercises the generated
+configuration with the official MCP SDK, and removes only its own resources.
+It checks three tools, exact source and keyed receipt persistence after restart,
+idempotent configuration, missing engine/container, remote contexts, existing
+volume refusal, unavailable database recovery and diagnostic privacy. On native
+macOS/Windows it also tests the loopback HTTP bridge; on Linux it verifies that
+the opt-out is refused. CI runs this against the built all-in-one image.
+
+SDK checks are not a substitute for a real client check. The
+[VS Code happy path](docs/LOCAL.md#first-successful-write-and-recall) and
+[cached-input recovery](docs/INTEGRATION.md#recover-a-rejected-or-cached-token)
+were exercised in an isolated VS Code 1.138.0 macOS profile with disposable data.
+The test used VS Code's own MCP tool discovery and `vscode.lm.invokeTool`, with
+normal tool confirmations, not an inferred success from an HTTP response body.
+Missing/wrong/malformed/cached-old credentials all produced 401 and the unsupported
+registration dialog; editing the specific stored input and restarting recovered
+three tools and write/recall. A window reload can leave the server stopped, so
+the documented Start Server step is explicit. Windows UI acceptance must still
+run on a Windows host before claiming that platform was client-tested.
+
+Record both `local status` and the client's advertised server version. The
+published-image local checks used v0.4.0, image reference
+`docker.io/monkeemagic/mindleak-light@sha256:b0686294b22c31ea0b6bef64cb139947b04edc27fb2e196923fa5e1f554e381c`,
+ARM64 image ID `8c0b4b8ca0e002d65dff29f332187410c54e365777852a12cb4c57cd03e593b7`.
+The native launcher is new source, not a republished v0.4.0 artifact. Preserve
+only safe metadata and results; do not retain raw headers, memory text or client
+secret storage in CI artifacts.
 
 ### Released-Baseline Gate
 

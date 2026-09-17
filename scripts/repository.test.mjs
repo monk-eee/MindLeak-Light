@@ -328,10 +328,12 @@ test("repository record commands validate the actual checkout", () => {
 test("quickstart documentation and editor config agree on a model-free setup", () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
   const readme = readFileSync(join(root, "README.md"), "utf8");
-  const configurations = [...readme.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) => JSON.parse(match[1]));
   const editor = JSON.parse(readFileSync(join(root, ".vscode/mcp.json"), "utf8"));
-  assert.deepEqual(configurations.find((config) => config.servers), editor);
-  assert.equal(editor.servers["mindleak-light"].type, "http");
+  assert.deepEqual(editor, { servers: {} });
+  assert.ok(readme.includes("local setup"));
+  assert.ok(readme.includes("mindleak-light-local"));
+  assert.ok(readme.includes("MCP: List Servers"));
+  assert.ok(readme.includes("unreleased"));
   const defaults = parseEnv(readFileSync(join(root, ".env.example"), "utf8"));
   assert.equal(defaults.MINDLEAK_DECOMPOSITION, "sentences");
   assert.equal(defaults.MINDLEAK_RETRIEVAL, "keyword");
@@ -341,19 +343,19 @@ test("quickstart documentation and editor config agree on a model-free setup", (
   assert.equal(defaults.MINDLEAK_RELEVANCE_MODEL, undefined);
 });
 
-test("README points directly to a versioned standalone Docker Hub container", () => {
+test("README leads with credential-free local setup and separates shared HTTP", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
   const containerStart = readme.indexOf("\n## Standalone Container\n");
   const sourceStart = readme.indexOf("\n## Quickstart\n");
-  assert.ok(containerStart > 0 && sourceStart > containerStart,
-    "the standalone container must be discoverable before the source build");
-  const section = readme.slice(containerStart, sourceStart);
+  assert.ok(sourceStart > 0 && containerStart > sourceStart,
+    "credential-free local use must precede shared container configuration");
+  const local = readme.slice(sourceStart, containerStart);
+  assert.ok(local.includes("local setup"));
+  assert.ok(!local.includes("Authorization") && !local.includes("MINDLEAK_HTTP_TOKEN="));
+  const section = readme.slice(containerStart, readme.indexOf("\n## Give Your Agent a Memory Policy\n"));
   assert.ok(section.includes("https://hub.docker.com/r/monkeemagic/mindleak-light"));
-  assert.match(section, /docker run[^\n]*monkeemagic\/mindleak-light:\d+\.\d+\.\d+/);
-  assert.ok(section.includes("127.0.0.1:8088:8088"));
-  assert.ok(section.includes("mindleak-light-data:/var/lib/postgresql/data"));
-  assert.ok(section.includes("MINDLEAK_HTTP_TOKEN="));
-  assert.ok(section.includes("http://127.0.0.1:8088/mcp"));
+  assert.match(section, /monkeemagic\/mindleak-light:\d+\.\d+\.\d+/);
+  assert.ok(section.includes("TLS") && section.includes("token"));
   assert.match(section, /PostgreSQL.*pgvector/);
   assert.ok(!section.includes("monkeemagic/mindleak-light:latest"));
 });
@@ -374,6 +376,22 @@ test("README teaches the agent memory policy before the explicit tool smoke test
   assert.match(policy, /save nothing/i);
   assert.ok(section.includes("docs/INTEGRATION.md#put-memory-into-the-agents-routine"));
   assert.ok(readme.slice(0, policyStart).includes("#give-your-agent-a-memory-policy"));
+});
+
+test("local and shared guides describe the verified authentication boundaries", () => {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const integration = readFileSync(join(root, "docs/INTEGRATION.md"), "utf8");
+  const local = readFileSync(join(root, "docs/LOCAL.md"), "utf8");
+  const security = readFileSync(join(root, "SECURITY.md"), "utf8");
+  const notice = "MindLeak does not provide OAuth client registration. Cancel unexpected registration dialogs.";
+  for (const guide of [integration, local, security]) assert.ok(guide.includes(notice));
+  assert.ok(integration.includes("## Shared HTTP"));
+  assert.ok(integration.includes("TLS") && integration.includes(".env.http"));
+  assert.ok(integration.includes("**Edit**") && integration.includes("**Restart Server**"));
+  assert.ok(integration.includes("does not suppress"));
+  assert.ok(integration.includes("force-recreate"));
+  assert.ok(local.includes("--allow-unauthenticated-loopback") && local.includes("Linux"));
+  assert.ok(security.includes("native macOS/Windows") && security.includes("port mappings"));
 });
 
 test("architecture diagrams cover the integrated write and recall contracts", () => {
@@ -538,7 +556,7 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md"];
+  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md"];
   for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
@@ -555,9 +573,13 @@ test("release packaging includes a pluggable binary, installation guide, brandin
     assert.ok(contents.includes(`docs/${name}`), `release archive is missing ${name}`);
   }
   const mcp = JSON.parse(execFileSync("tar", ["-xOf", archive, "./mcp.example.json"], { encoding: "utf8" }));
-  assert.equal(mcp.mcpServers["mindleak-light"].command, "mindleak-light");
-  assert.deepEqual(mcp.mcpServers["mindleak-light"].args, ["--transport", "stdio"]);
-  assert.ok(mcp.mcpServers["mindleak-light"].env.MINDLEAK_DATABASE_URL);
+  assert.equal(mcp.mcpServers["mindleak-light-local"].command, "mindleak-light");
+  assert.deepEqual(mcp.mcpServers["mindleak-light-local"].args, ["local", "connect", "--container", "mindleak-light"]);
+  assert.equal(mcp.mcpServers["mindleak-light-local"].env, undefined);
+  const vscode = JSON.parse(execFileSync("tar", ["-xOf", archive, "./mcp.vscode.example.json"], { encoding: "utf8" }));
+  assert.deepEqual(vscode.servers["mindleak-light-local"], { type: "stdio", ...mcp.mcpServers["mindleak-light-local"] });
+  const postgres = JSON.parse(execFileSync("tar", ["-xOf", archive, "./mcp.postgres.example.json"], { encoding: "utf8" }));
+  assert.ok(postgres.mcpServers["mindleak-light"].env.MINDLEAK_DATABASE_URL);
   const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
   assert.ok(readFileSync(`${archive}.sha256`, "utf8").startsWith(`${digest}  mindleak-light-0.1.0-`));
   assert.throws(() => packageBinary(directory, "../../invalid", "0.1.0"), /unsupported/);
@@ -567,5 +589,5 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   writeFileSync(join(windowsRelease, "mindleak-light.exe"), "test executable\n");
   const windowsArchive = packageBinary(directory, windowsTarget, "0.1.0");
   const windowsConfig = JSON.parse(execFileSync("tar", ["-xOf", windowsArchive, "./mcp.example.json"], { encoding: "utf8" }));
-  assert.equal(windowsConfig.mcpServers["mindleak-light"].command, "mindleak-light.exe");
+  assert.equal(windowsConfig.mcpServers["mindleak-light-local"].command, "mindleak-light.exe");
 });
