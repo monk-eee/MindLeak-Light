@@ -112,6 +112,10 @@ Never turn an unrun client combination into a compatibility claim.
 
 ### Released-Baseline Gate
 
+For populated-database upgrade, failure/resume, and pre-readiness checks, see
+the [bounded migration guide](docs/MIGRATIONS.md). Its explicit capacity drill is
+not part of routine `make ci`; the regular failure and canary regressions are.
+
 The required PostgreSQL CI job also runs
 [regression-check.mjs](scripts/regression-check.mjs) against the published native
 release pinned in [regression-baseline.json](scripts/regression-baseline.json).

@@ -117,7 +117,13 @@
 - HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.
-- Startup applies the initial schema and explicit keyword, lifecycle, and
+- The unreleased [bounded migration path](MIGRATIONS.md) preserves completed
+  data batches after interruption but restarts an interrupted index build or
+  validation statement. Stop all older servers and other writers; this is not a
+  rolling upgrade. Preserve checkpoint column comments with partial backups.
+  Supply deployment-specific canaries before claiming retrieval acceptance;
+  built-in verification and synthetic tests do not validate private corpora.
+- Published v0.4.0 startup applies the initial schema and explicit keyword, lifecycle, and
   idempotency/evidence-index migrations transactionally. It needs permission to alter tables
   and create indexes, functions, and triggers. The v0.4.0 document-search
   migration backfills derived search vectors and recoverable fragment order,

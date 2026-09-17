@@ -1,6 +1,7 @@
 mod config;
+mod migration_canaries;
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
@@ -31,6 +32,10 @@ struct Args {
     transport: Transport,
     #[arg(long, env = "MINDLEAK_LISTEN", default_value = "127.0.0.1:8088")]
     listen: SocketAddr,
+    #[arg(long)]
+    migrate_only: bool,
+    #[arg(long, env = "MINDLEAK_MIGRATION_CANARIES")]
+    migration_canaries: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -44,8 +49,16 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
-        .with_env_filter("warn,mindleak_mcp=info")
+        .with_env_filter(
+            "warn,mindleak_light=info,mindleak_mcp=info,mindleak_storage_postgres::migrations=info",
+        )
         .init();
+    let canaries = args
+        .migration_canaries
+        .as_deref()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(migration_canaries::CanarySuite::load)
+        .transpose()?;
     let config = config::Config::from_env()?;
     let model_client = || {
         reqwest::Client::builder()
@@ -54,7 +67,7 @@ async fn main() -> Result<()> {
             .redirect(reqwest::redirect::Policy::none())
             .build()
     };
-    let store = PostgresMemoryStore::connect(
+    let store = PostgresMemoryStore::connect_with_migration_options(
         &config.database_url,
         config
             .embeddings
@@ -62,6 +75,7 @@ async fn main() -> Result<()> {
             .map(|embedding| (embedding.provider.model.as_str(), embedding.dimensions)),
         config.pool_size,
         config.database_ca.as_deref(),
+        config.migrations,
     )
     .await?;
     let embedder: Option<Arc<dyn TextEmbedder>> = match config.embeddings {
@@ -111,6 +125,13 @@ async fn main() -> Result<()> {
         embedder,
         retriever,
     ));
+    if let Some(canaries) = canaries {
+        canaries.verify(server.clone()).await?;
+    }
+    if args.migrate_only {
+        tracing::info!("migration and configured verification complete; no listener started");
+        return Ok(());
+    }
     match args.transport {
         Transport::Stdio => {
             server.serve(stdio()).await?.waiting().await?;
