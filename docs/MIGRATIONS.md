@@ -1,8 +1,8 @@
 # Bounded Database Upgrades
 
-These changes are **unreleased**. Published v0.4.0 still runs its document-search
-and fragment-order migrations in one startup transaction under a 15-second
-statement timeout. Merely updating this document does not fix an installed binary.
+These changes are **unreleased**. Published v0.4.0 and v0.5.0 still run their
+document-search and fragment-order migrations in one startup transaction under
+a 15-second statement timeout. Updating this document does not fix an installed binary.
 
 The candidate keeps the three application tables and exact stored source data.
 It commits each schema phase separately, then backfills using keyset batches.

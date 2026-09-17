@@ -84,6 +84,131 @@ fn call(name: &'static str, arguments: Value) -> CallToolRequestParams {
     CallToolRequestParams::new(name).with_arguments(arguments.as_object().unwrap().clone())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn local_connect_never_starts_a_container_with_missing_postgres_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let engine = directory.path().join("docker");
+    let started = directory.path().join("started");
+    let inspection = json!([{
+        "Id": "a".repeat(64), "Image": "sha256:test", "State": {"Running": false, "Status": "exited"},
+        "Config": {"Image": "test:0.4.0", "Env": ["POSTGRES_USER=mindleak_light", "POSTGRES_DB=existing_test"]},
+        "Mounts": [{"Destination": "/var/lib/postgresql/data", "Type": "volume", "RW": true}]
+    }]);
+    std::fs::write(
+        &engine,
+        format!(
+            r#"#!/bin/sh
+case "$1" in
+context) printf '"unix:///var/run/docker.sock"\n' ;;
+version) printf '1\n' ;;
+container) printf '%s\n' '{inspection}' ;;
+cp) exit 1 ;;
+start) printf 'started\n' > "$MINDLEAK_TEST_STARTED" ;;
+exec) case "$*" in *--version*) printf 'mindleak-light 0.4.0\n' ;; *) printf 'true\n' ;; esac ;;
+*) exit 1 ;;
+esac
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .args(["local", "connect", "--container", "existing"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("PATH", directory.path())
+        .env("MINDLEAK_TEST_STARTED", &started)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !started.exists(),
+        "Connecting must inspect PostgreSQL files before starting the container"
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("existing PostgreSQL"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_setup_refuses_to_attach_an_existing_volume_implicitly() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let engine = directory.path().join("docker");
+    let created = directory.path().join("created");
+    std::fs::write(
+        &engine,
+        r#"#!/bin/sh
+case "$1" in
+context) printf '"%s"\n' "${MINDLEAK_TEST_ENDPOINT:-unix:///var/run/docker.sock}" ;;
+version) printf '1\n' ;;
+container) case "$2" in inspect) exit 1 ;; ls) exit 0 ;; esac ;;
+volume) case "$2" in
+    ls) if [ "${MINDLEAK_TEST_RACE:-}" != 1 ]; then printf '"mindleak-light-data"\n'; fi ;;
+    create) printf 'mindleak-light-data\n' ;;
+    inspect) printf '{"io.mindleak.local-setup":"another-owner"}\n' ;;
+    esac ;;
+run) printf 'created\n' > "$MINDLEAK_TEST_CREATED"; exit 1 ;;
+*) exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .args(["local", "setup"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("PATH", directory.path())
+        .env("MINDLEAK_TEST_CREATED", &created)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !created.exists(),
+        "Setup must not attach a volume whose ownership is unknown"
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("volume already exists"));
+    let raced = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .args(["local", "setup"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("PATH", directory.path())
+        .env("MINDLEAK_TEST_RACE", "1")
+        .env("MINDLEAK_TEST_CREATED", &created)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        !created.exists(),
+        "Concurrent volume creation must not attach another setup's data"
+    );
+    assert!(String::from_utf8_lossy(&raced.stderr).contains("another setup"));
+    let remote = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .args(["local", "setup"])
+        .current_dir(directory.path())
+        .env_clear()
+        .env("PATH", directory.path())
+        .env("DOCKER_HOST", "unix:///var/run/docker.sock")
+        .env("DOCKER_CONTEXT", "remote")
+        .env("MINDLEAK_TEST_ENDPOINT", "ssh://remote.invalid")
+        .env("MINDLEAK_TEST_CREATED", &created)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&remote.stderr).contains("refuses remote or TCP"),
+        "DOCKER_CONTEXT overrides DOCKER_HOST and must be checked as the actual endpoint"
+    );
+}
+
 #[tokio::test]
 async fn actual_runtime_checks_retrieval_canaries_before_readiness_without_writes() {
     let directory = tempfile::tempdir().unwrap();
@@ -1573,6 +1698,28 @@ async fn http_requires_auth_rejects_origins_and_serves_the_same_tools() {
             .unwrap();
     });
     for route in ["health", "mcp"] {
+        for authorization in [
+            None,
+            Some("Bearer wrong-secret-canary"),
+            Some("Basic malformed"),
+            Some("Bearer stale-cached-token"),
+        ] {
+            let mut request = client.get(format!("{base}/{route}"));
+            if let Some(value) = authorization {
+                request = request.header("Authorization", value);
+            }
+            let rejected = request.send().await.unwrap();
+            assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                rejected.headers()["www-authenticate"],
+                "Bearer realm=\"mindleak-light\""
+            );
+            let body = rejected.text().await.unwrap();
+            assert!(body.contains("MindLeak does not provide OAuth client registration. Cancel unexpected registration dialogs."));
+            assert!(!body.contains("wrong-secret-canary"));
+            assert!(!body.contains("stale-cached-token"));
+            assert!(!body.contains(TOKEN));
+        }
         assert_eq!(
             client
                 .get(format!("{base}/{route}"))
@@ -1637,6 +1784,89 @@ async fn http_requires_auth_rejects_origins_and_serves_the_same_tools() {
         .unwrap();
     assert_eq!(result.structured_content.unwrap()["results"], json!(FACTS));
     sdk_client.cancel().await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join(".vscode")).unwrap();
+    let configuration = serde_json::to_vec_pretty(&json!({"servers":{"selected-memory":{
+        "type":"http", "url":format!("{base}/mcp"),
+        "headers":{"Authorization":"Bearer ${input:private-token}"}
+    }}}))
+    .unwrap();
+    let config_path = directory.path().join(".vscode/mcp.json");
+    std::fs::write(&config_path, &configuration).unwrap();
+    let provider_calls = provider.received_requests().await.unwrap().len();
+    let scope = format!("agent-http-{}", Uuid::new_v4());
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+        command.current_dir(directory.path()).env_clear();
+        command
+    };
+    let arguments = [
+        "agent",
+        "setup",
+        "--client",
+        "vscode",
+        "--server",
+        "selected-memory",
+        "--scope",
+        &scope,
+        "--connect",
+    ];
+    let unresolved = command().args(arguments).output().await.unwrap();
+    assert!(!unresolved.status.success());
+    let result: Value = serde_json::from_slice(&unresolved.stdout).unwrap();
+    assert_eq!(result["connection"]["status"], "failed");
+    assert!(result["connection"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("--token-env"));
+    assert!(!directory.path().join(".mindleak").exists());
+    let connected = command()
+        .args(arguments)
+        .args(["--token-env", "MINDLEAK_AGENT_CHECK_TOKEN"])
+        .env("MINDLEAK_AGENT_CHECK_TOKEN", TOKEN)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        connected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&connected.stderr)
+    );
+    let result: Value = serde_json::from_slice(&connected.stdout).unwrap();
+    assert_eq!(result["connection"]["status"], "verified");
+    assert_eq!(result["connection"]["memoryCalls"], 0);
+    assert_eq!(result["instructionsInstalled"], true);
+    assert_eq!(result["agentBehaviour"], "not_measured");
+    assert_eq!(std::fs::read(&config_path).unwrap(), configuration);
+    assert!(!String::from_utf8_lossy(&connected.stdout).contains(TOKEN));
+    assert!(!String::from_utf8_lossy(&connected.stderr).contains(TOKEN));
+    let wrong = command()
+        .args([
+            "agent",
+            "check",
+            "--client",
+            "vscode",
+            "--connect",
+            "--token-env",
+            "MINDLEAK_AGENT_CHECK_TOKEN",
+        ])
+        .env(
+            "MINDLEAK_AGENT_CHECK_TOKEN",
+            "mindleak-wrong-private-credential-canary",
+        )
+        .output()
+        .await
+        .unwrap();
+    assert!(!wrong.status.success());
+    assert!(!String::from_utf8_lossy(&wrong.stdout).contains("credential-canary"));
+    assert!(!String::from_utf8_lossy(&wrong.stderr).contains("credential-canary"));
+    let result: Value = serde_json::from_slice(&wrong.stdout).unwrap();
+    assert_eq!(result["instructionsInstalled"], true);
+    assert_eq!(result["connection"]["status"], "failed");
+    assert_eq!(
+        provider.received_requests().await.unwrap().len(),
+        provider_calls
+    );
     cancellation.cancel();
     server.await.unwrap();
 }

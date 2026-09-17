@@ -1,6 +1,6 @@
 # Architecture
 
-This describes v0.4.0, including bounded evidence, original-source inspection, and document recall:
+This describes v0.5.0, including local access and agent instruction setup alongside bounded evidence, original-source inspection, and document recall:
 contextual fact lifecycle, hybrid recall, shared query
 embeddings, provider safeguards, retry-safe writes, modular storage, response
 budgets, and ranking diagnostics.
@@ -9,6 +9,16 @@ are described below but are not yet diagrammed. Both are included in v0.4.0;
 older packages do not gain these features from updated documentation.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
+The v0.5.0 `agent setup`/`agent check` CLI installs the bundled workflow on
+the client side. It never adds MCP tools or application tables. Project files
+record the selected connection, explicit general/scoped mode, and optional scope;
+an opt-in SDK probe reports tool
+compatibility separately from native client behaviour. Existing initialization
+instructions also carry a compact activation reminder, which clients may ignore.
+See [project setup](INSTALL.md#automatic-project-setup) for its ownership and
+failure semantics and [ADR-0018](../adr.d/0018-project-memory-instructions.md)
+for the installation boundary.
+
 All four diagrams are editable frames in the
 [Excalidraw architecture board](../assets/architecture.excalidraw). The SVG
 previews include their fonts and scene data, so they can also be opened in
@@ -16,6 +26,29 @@ previews include their fonts and scene data, so they can also be opened in
 [editing guide](../DEVELOPERS.md#architecture-diagrams) when updating them.
 
 ![System overview: one MCP executable, optional model providers, and three PostgreSQL tables](../assets/architecture-overview.svg)
+
+## Local and Shared Access
+
+From v0.5.0, the native executable also provides `local setup`,
+`configure`, `connect`, `status`, and an explicit native macOS/Windows loopback
+HTTP bridge. These are CLI operations, not additional MCP tools. The existing
+three tools, storage abstractions and three-table schema are unchanged. The
+diagrams above show the memory server; this launcher boundary is described here
+and in [ADR-0017](../adr.d/0017-credential-free-local-access.md).
+
+`local.rs` owns container identity, local engine validation, explicit trial
+volume creation and atomic JSONC configuration. Connections require the selected
+existing database and persistent volume. A stopped container's PostgreSQL files
+are checked before startup; no connect fallback creates a database. Fresh trials
+publish no ports and use `--network none`. Their HTTP worker remains authenticated.
+
+`local_http.rs` uses the official SDK to bridge host-loopback HTTP to that stdio
+connection, forwarding request cancellation. An explicit opt-out, native supported
+OS, loopback listener/peer, exact Host and absence of Origin/proxy headers are
+required. Every Linux container build refuses the opt-out before binding, so
+changing Docker host publishing cannot expose an unauthenticated container
+listener. Shared HTTP remains in `http.rs` with bearer authentication, bounded
+bodies and Origin rejection; TLS is required at network ingress.
 
 ## Storage Module Map
 

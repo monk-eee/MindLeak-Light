@@ -5,6 +5,87 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-17
+
+### Added
+- Add native `local setup`, `configure`, `connect`, and `status` commands for
+  credential-free Docker/stdio trials with pinned container identity, persistent
+  database checks, secret-safe diagnostics and preserving VS Code configuration.
+  Serialize Windows/UNC launcher paths correctly and validate the generated
+  JSONC before replacing an existing configuration.
+- Add an explicit host-loopback HTTP bridge on native macOS/Windows; Linux and
+  container builds refuse the unauthenticated opt-out. Shared/network HTTP stays
+  authenticated and requires TLS at network ingress.
+- Lead setup with a tested VS Code write/recall and restart path. Document
+  durable advanced token storage, scoped cached-input recovery and rotation;
+  add fixed 401 recovery semantics without claiming to prevent client OAuth fallback.
+- Add a portable, versioned mindleak-memory companion skill with explicit scope,
+  capability discovery, evidence verification, selective writes, safe retries,
+  corrections, and fresh-session handoff guidance. No permissions or endpoints
+  are granted by the skill.
+- Route repository agent instructions and onboarding through one tested
+  activation policy, document client-specific installation, and include the
+  complete bundle in future native packages without changing existing releases.
+- Add structural, package, and real MCP recipe checks; distinguish protocol
+  handoff coverage from unmeasured native-client discovery and agent judgement.
+- Add workspace-local `agent setup` and `agent check` commands that install the
+  canonical memory skill and managed activation policy for VS Code, Claude Code,
+  and Codex without rewriting their existing MCP configuration or global profiles.
+- Support explicit `--general` shared memory without scope or `--scope` project
+  filtering. General recall searches across scopes; existing scoped installations
+  never broaden implicitly. Update the canonical skill and recipes to v1.1.0.
+- Preserve project rules, record the chosen mode and optional scope, detect conflicting edits,
+  and support dry runs and repeatable updates of owned instruction resources.
+- Add explicit HTTP/stdio SDK connection checks with environment-backed token
+  support and separate installed, connected, and unmeasured-agent states; no
+  memory writes or model requests are made by the checks.
+- Include a compact memory-use reminder in existing MCP initialization
+  instructions while retaining the same three-tool contract and approval boundaries.
+- Compare PR candidates against a checksum-pinned v0.4.0 native release using
+  frozen engineering and useful-negative corpora, independent test databases,
+  per-query regression checks, and response-size limits. Retain reports on failure.
+- Add an opt-in per-query failure gate to the benchmark comparator, alongside
+  existing macro quality and byte-budget checks. Catch failures on every executed
+  pass without counting repeated queries as new accuracy evidence.
+- Require a v0.4.0 container upgrade and real backup restoration into a fresh
+  volume. Add a separately dispatched model-free load report; timing thresholds
+  and model-backed runs remain explicit controlled-host opt-ins.
+- Reject encoded aliases of the same test database, enforce subprocess deadlines,
+  and attempt all owned container cleanups while preserving the original failure.
+- Add a JSON-reporting validation harness for persistence, extraction, recall,
+  agent handoff, corpus growth, poisoning, corrections, compression, coding,
+  and resumable multi-day observations, reusing the existing scoring helpers.
+- Add opt-in fresh-context agent comparisons and a container-isolated bug
+  rediscovery demo, with actual test/tool/time measurements and provider-reported
+  token usage. Failures and unmeasured outcomes remain explicit; no performance
+  reduction or real-world accuracy is assumed.
+- Emit chart-ready scale data and optional rendered graphs, record executable
+  and scenario provenance, and integrate deterministic harness tests into CI.
+
+### Fixed
+- Keep PR release-comparison output in a per-run runner-temporary directory,
+  outside the restored Rust build cache, and upload evidence from that same
+  directory. Preserve the runner's refusal to overwrite existing reports.
+- Terminate the owned benchmark process group/tree and remove child-created
+  temporary executables on deadlines, cancellation, and output overflow.
+- Enforce a shared whole-run regression deadline with CI time reserved for
+  cleanup and failure-report uploads; write success only after cleanup.
+- Verify fresh writes, combined text/source indexing, exact inspection, and
+  duplicate-free receipt replay after restoring a backup and restarting again.
+- Separate unconstrained agent tool work from a measured schema-constrained
+  final response, expose bounded output/reasoning controls, and distinguish
+  truncation, refusal, malformed answers, and sanitized provider failures.
+- Expose existing scoped recall modes, context, diagnostics, grouping, and source
+  inspection to the agent harness; validate nested provenance and count actual
+  delivered evidence rather than just database results.
+- Version reports to 2 and separate preparation, write, retrieval, exposure, and
+  answer outcomes. Attribute savings only when preparation is verified, memory
+  is delivered, and both tasks pass. Preserve all earlier reports and fact labels.
+- Add structured coding handoffs and a separate guaranteed-exposure poisoning
+  control, judging substantive answers independently of acceptance self-reports.
+- Disclose the existing coding edit allowlist in the tool schema without widening
+  file access or allowing changes to the fixed tests.
+
 ## [0.4.0] - 2026-09-16
 
 ### Added

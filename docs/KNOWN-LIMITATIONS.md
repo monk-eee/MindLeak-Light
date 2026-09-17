@@ -114,7 +114,7 @@
   false-premise corrections as useful evidence. Prompt compliance still depends
   on the model. Older benchmarks used stricter direct-answer labels and must not
   be presented as measurements of this revised policy.
-- HTTP uses bearer authentication for trusted MCP clients, not an OAuth
+- Shared HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.
 - The unreleased [bounded migration path](MIGRATIONS.md) preserves completed
@@ -123,7 +123,16 @@
   rolling upgrade. Preserve checkpoint column comments with partial backups.
   Supply deployment-specific canaries before claiming retrieval acceptance;
   built-in verification and synthetic tests do not validate private corpora.
-- Published v0.4.0 startup applies the initial schema and explicit keyword, lifecycle, and
+- The v0.5.0 credential-free launcher requires a local Docker/Podman engine
+  and the intended existing all-in-one database. It does not discover arbitrary
+  PostgreSQL layouts or silently recreate missing stores. Container replacement
+  requires explicit reconfiguration of the pinned container ID.
+- Unauthenticated HTTP is an explicit native macOS/Windows loopback bridge only;
+  Linux and shipped container builds refuse it. Never proxy or tunnel that port.
+  Local users and administrators remain inside its trust boundary. The isolated
+  trial cannot reach optional model providers until deliberately reconfigured
+  as a networked deployment. See [local access](LOCAL.md).
+- Published v0.4.0 and v0.5.0 startup applies the initial schema and explicit keyword, lifecycle, and
   idempotency/evidence-index migrations transactionally. It needs permission to alter tables
   and create indexes, functions, and triggers. The v0.4.0 document-search
   migration backfills derived search vectors and recoverable fragment order,
