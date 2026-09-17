@@ -231,6 +231,10 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
         "knowledge.operation=capabilities",
         "view=compact",
         "Recall never accepts or reinforces knowledge",
+        "evidence checkpoints",
+        "before handoff",
+        "no write quota",
+        "retrieval cues in context.summary",
     ] {
         assert!(
             instructions.contains(phrase),

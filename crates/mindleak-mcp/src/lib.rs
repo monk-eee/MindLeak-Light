@@ -443,6 +443,8 @@ impl ServerHandler for MemoryMcp {
             "General recall searches across all scopes, not only unscoped facts. ",
             "Omit the agentId filter for shared recall. Verify applicability against current evidence. ",
             "After a verified reusable discovery, check for an equivalent fact before write_memory. ",
+            "Use evidence checkpoints after verified fixes or failures, changed assumptions, and before handoff. Keep candidate lessons in task state until verified, then capture new evidence or explicitly correct existing knowledge; no write quota. ",
+            "Reuse already inspected context for duplicate checks. Capture conditions, outcome, reusable next action and actual verification/source; put short real retrieval cues in context.summary. Verify a new capture is findable once, without duplicate writes or feedback merely for recall. ",
             "Include context.scope for project writes; omit it for general writes. ",
             "Preserve source, conditions and uncertainty; use your stable agentId. Links must match the target scope. ",
             "Never store secrets or routine transcripts. Save nothing when nothing durable was learned. ",

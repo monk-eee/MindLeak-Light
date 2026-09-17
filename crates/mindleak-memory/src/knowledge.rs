@@ -353,6 +353,9 @@ impl MemoryService {
             learning:crate::diagnostics::LearningCapabilities {
                 agent_authored_chains:true, agent_authored_principles:true, model_preview_required:false,
                 acceptance:"explicit_validation", recall_changes_knowledge:false,
+                checkpoint_mode:"agent_guided",
+                checkpoint_triggers:vec!["verified_fix", "verified_failure", "changed_assumption", "before_handoff"],
+                capture_format:"Conditions; observed outcome; reusable next action; actual verification and source; retrieval cues a future task would know. Reuse already inspected context for duplicate checks; save nothing without new durable evidence. Checkpoints grant no permissions and do not run automatically.",
             },
             decomposition:self.decomposer.capabilities(), formation:self.former.as_ref().map_or(
                 ProcessingCapabilities { mode:"off", model:None }, |former| former.capabilities()),
@@ -372,7 +375,7 @@ impl MemoryService {
         let started = Instant::now();
         let (response, usage) = crate::diagnostics::capture_usage(
             options.cost_diagnostics,
-            self.recall_knowledge(query, filter, limit),
+            self.retrieve_knowledge(query, filter, limit),
         )
         .await;
         let response = response?;
@@ -394,7 +397,7 @@ impl MemoryService {
             None
         };
         let response = match options.view {
-            KnowledgeView::Full => KnowledgeViewResponse::Full(response),
+            KnowledgeView::Full => KnowledgeViewResponse::Full(bounded(response)?),
             KnowledgeView::Compact => KnowledgeViewResponse::Compact(CompactKnowledgeResponse {
                 kind: response.kind,
                 view: "compact",
@@ -434,6 +437,15 @@ impl MemoryService {
     }
 
     pub async fn recall_knowledge(
+        &self,
+        query: &str,
+        filter: &ChainFilter,
+        limit: usize,
+    ) -> Result<KnowledgeSearchResponse> {
+        bounded(self.retrieve_knowledge(query, filter, limit).await?)
+    }
+
+    async fn retrieve_knowledge(
         &self,
         query: &str,
         filter: &ChainFilter,
@@ -483,7 +495,7 @@ impl MemoryService {
         let (principles, chains) = hydrated.into_iter().partition(|result| {
             result.matched.chain.snapshot.document.kind == KnowledgeKind::Principle
         });
-        bounded(KnowledgeSearchResponse { kind:"knowledge", strategy:self.retriever.chain_strategy(),
+        Ok(KnowledgeSearchResponse { kind:"knowledge", strategy:self.retriever.chain_strategy(),
             consistency:"knowledge and its references share one snapshot; independent observations use a separate read snapshot",
             principles, chains, observations })
     }
