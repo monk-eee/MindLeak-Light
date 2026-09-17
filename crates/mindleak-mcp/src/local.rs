@@ -457,6 +457,16 @@ fn configuration(
 }
 
 fn configure(workspace: &Path, target: &Target, container_id: &str) -> Result<()> {
+    let executable = std::env::current_exe().context("Cannot identify launcher path.")?;
+    configure_with_executable(workspace, target, container_id, &executable)
+}
+
+fn configure_with_executable(
+    workspace: &Path,
+    target: &Target,
+    container_id: &str,
+    executable: &Path,
+) -> Result<()> {
     ensure!(
         workspace.is_dir(),
         "Open or create the intended workspace folder before running local setup/configure."
@@ -483,8 +493,7 @@ fn configure(workspace: &Path, target: &Target, container_id: &str) -> Result<()
             .context("Existing MCP configuration is empty; it was not changed.")?,
         None => json!({"servers": {}}),
     };
-    let executable = std::env::current_exe().context("Cannot identify launcher path.")?;
-    let updated = configuration(&executable, target, container_id, document.clone())?;
+    let updated = configuration(executable, target, container_id, document.clone())?;
     if updated != document {
         let root = jsonc_parser::cst::CstRootNode::parse(
             original.as_deref().unwrap_or("{\n  \"servers\": {}\n}\n"),
@@ -506,7 +515,7 @@ fn configure(workspace: &Path, target: &Target, container_id: &str) -> Result<()
             "mindleak-light-local",
             CstInputValue::Object(vec![
                 ("type".into(), "stdio".into()),
-                ("command".into(), executable.into()),
+                ("command".into(), "".into()),
                 (
                     "args".into(),
                     vec![
@@ -521,10 +530,26 @@ fn configure(workspace: &Path, target: &Target, container_id: &str) -> Result<()
                 ),
             ]),
         );
+        let command = servers
+            .object_value("mindleak-light-local")
+            .and_then(|local| local.get("command"))
+            .and_then(|property| property.value())
+            .and_then(|value| value.as_string_lit())
+            .context("Cannot prepare the local launcher command; prior settings were preserved.")?;
+        command.set_raw_value(serde_json::to_string(executable)?);
+        let rendered = root.to_string();
+        let verified =
+            jsonc_parser::parse_to_serde_value(&rendered, &Default::default()).map_err(|_| {
+                anyhow::anyhow!(
+                    "Generated MCP configuration is invalid; prior settings were preserved."
+                )
+            })?;
+        ensure!(verified.as_ref() == Some(&updated),
+            "Generated MCP configuration does not match the intended settings; prior settings were preserved.");
         let mut pending = tempfile::NamedTempFile::new_in(&directory)
             .context("Cannot prepare MCP configuration.")?;
         pending
-            .write_all(root.to_string().as_bytes())
+            .write_all(rendered.as_bytes())
             .context("Cannot prepare MCP configuration.")?;
         pending
             .as_file()
@@ -813,6 +838,45 @@ mod tests {
             result
         )
         .is_err());
+    }
+
+    #[test]
+    fn local_configuration_preserves_platform_path_characters() {
+        let target = Target {
+            container: "selected".into(),
+            engine: Engine::Docker,
+        };
+        for executable in [
+            r"C:\Program Files\MindLeak\mindleak-light.exe",
+            r"\\?\C:\Users\operator\mindleak-light.exe",
+            "/opt/launcher \"quoted\"\\name\n/mindleak-light",
+        ] {
+            let workspace = tempfile::tempdir().unwrap();
+            let path = workspace.path().join(".vscode/mcp.json");
+            configure_with_executable(
+                workspace.path(),
+                &target,
+                &"a".repeat(64),
+                Path::new(executable),
+            )
+            .unwrap();
+            let rendered = std::fs::read_to_string(&path).unwrap();
+            let parsed = jsonc_parser::parse_to_serde_value(&rendered, &Default::default())
+                .expect("Generated JSONC must escape executable path characters")
+                .unwrap();
+            assert_eq!(
+                parsed["servers"]["mindleak-light-local"]["command"],
+                executable
+            );
+            configure_with_executable(
+                workspace.path(),
+                &target,
+                &"a".repeat(64),
+                Path::new(executable),
+            )
+            .unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), rendered);
+        }
     }
 
     #[test]
