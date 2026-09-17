@@ -217,7 +217,7 @@ async fn actual_runtime_checks_retrieval_canaries_before_readiness_without_write
     let memory_id = Uuid::new_v4();
     let fragment_id = Uuid::new_v4();
     let detail_id = Uuid::new_v4();
-    let store = PostgresMemoryStore::connect(&database_url(), None, 1, None)
+    let store = PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 1, None)
         .await
         .unwrap();
     let (database, connection) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
@@ -777,6 +777,9 @@ async fn large_corpus_v02_upgrade_preserves_data_and_passes_runtime_canaries() {
 #[tokio::test]
 async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
     let directory = tempfile::tempdir().unwrap();
+    let _store = PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 1, None)
+        .await
+        .unwrap();
     let agent_id = format!("duplicate-groups-{}", Uuid::new_v4());
     let scope = format!("duplicate-scope-{}", Uuid::new_v4());
     let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));

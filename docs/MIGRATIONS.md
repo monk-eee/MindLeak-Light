@@ -25,6 +25,12 @@ current transaction; restart resumes from the last committed checkpoint.
    mindleak-light --migrate-only --migration-canaries /private/upgrade-canaries.json
    ```
 
+  First enabling a different vector typmod on a model-free database also
+  requires this offline maintenance window. PostgreSQL table rewrites are not
+  MVCC-safe for snapshots established before the rewrite; a concurrently
+  running old reader can temporarily see an empty table even though logical
+  records are preserved.
+
 4. Require successful exit and the `retrieval canaries passed before readiness`
    event. Start the **same candidate** with `MINDLEAK_MIGRATION_CANARIES` set to
    the same manifest. It reruns the read-only canaries before either opening HTTP
