@@ -908,6 +908,15 @@ test("swarm provider failures stop dependent work and keep usage unknown", async
   assert.equal(closed, true);
 });
 
+test("CI runs the real lab workflows without external model calls", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.ok(workflow.includes("Verify isolated memory labs"));
+  assert.ok(workflow.includes("MINDLEAK_LAB2_TEST_BINARY: ${{ github.workspace }}/target/release/mindleak-light"));
+  assert.ok(workflow.includes("MINDLEAK_VALIDATION_CODE_ENGINE: docker"));
+  assert.ok(workflow.includes("/mindleak_labs_test?sslmode=disable"));
+  assert.ok(workflow.includes("--test-name-pattern='Lab [123]|swarm project'"));
+});
+
 test("Lab 3 freezes three main arms and a separate diagnostic across genuine change", async () => {
   const { rediscoveryPlan, rediscoveryPrompt, compactPriorLesson } = await import("./rediscovery-lab.mjs");
   const plan = rediscoveryPlan();
