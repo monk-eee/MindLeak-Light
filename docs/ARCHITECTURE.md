@@ -1,15 +1,42 @@
-# Architecture
+# Knowledge Formation Architecture
 
-One executable exposes three MCP tools over one PostgreSQL database. Models are
-optional. The default preserves source text and uses sentence/list decomposition
-with keyword recall.
+MindLeak turns agent experience into reusable knowledge:
+
+**Observations -> evidence-backed Chains of Memory -> validated Principles -> later reuse.**
+
+The authoring agent captures sources, proposes conditional beliefs, runs its
+validation, and records the outcome. The server preserves evidence, validates
+references and revisions, and retrieves the resulting knowledge for future agents.
+Explicit challenge and revision close the loop when experience changes a belief.
+There is no automatic acceptance or learning side effect from retrieval.
+
+One executable exposes three MCP tools over one PostgreSQL database. Agent-authored
+knowledge needs no helper model. The underlying observation path preserves source
+text with sentence/list decomposition and keyword recall by default.
 
 This guide describes v0.6.0: knowledge formation, domain records, bounded migrations
 and administrative backups, plus explicitly marked unreleased work targeting v0.7.0.
 The v0.6.0 additions are not in older v0.5.0 packages.
 See [installation](INSTALL.md) for release availability. The existing memory-engine
 diagrams are editable in the [architecture board](../assets/architecture.excalidraw);
-the optional knowledge flow is shown separately below.
+the knowledge-formation flow is described first below. See the
+[product thesis](../RATIONALE.md) and [ADR-0024](../adr.d/0024-knowledge-formation-product.md).
+
+## Knowledge Comes First
+
+| Stage | Owner | Durable Result |
+|---|---|---|
+| Observe | Agent using `write_memory` | Exact source episode and fragment IDs |
+| Form | Agent, optionally assisted by `decompose_memory.formation` | Candidate chain with source-backed justification and limits |
+| Validate | Agent runs actual checks, then records `chain.operation: accept` | Attributed validation and an accepted revision |
+| Generalize | Agent proposes and validates a principle | Pinned supporting chains, distinct source lineage, preserved exceptions |
+| Reuse | Fresh agent uses `recall_memory.knowledge` | Read-only principles, chains, and observations with applicability |
+| Learn Again | Agent records new outcomes and explicit challenge/revision | Changed beliefs and review-required dependents without lost history |
+
+The hierarchy is bounded and source-linked, not recursive graph inference.
+Application-level policy chooses this workflow; ordinary wire defaults do not
+change. Formation integrity, demonstrated later use, and measured comparative
+improvement have separate [verification criteria](VALIDATION.md#learning-acceptance).
 
 ![System overview: one MCP executable, optional model providers, and three PostgreSQL tables](../assets/architecture-overview.svg)
 
@@ -86,10 +113,10 @@ accuracy of extracted prose. See [retry safety](../adr.d/0011-idempotent-memory-
 
 ## Knowledge Formation
 
-The v0.7.0 question is whether agents can form chains from verified work and build
-on them across tasks. The core preserves observations, conditional conclusions
-and revisions; real agent formation, later reuse and measured benefit are distinct
-evaluation claims. A formation model is an optional assistant to the authoring agent.
+Knowledge formation is the product's central workflow. The core preserves
+observations, conditional conclusions and revisions; real agent formation, later
+reuse and measured benefit are distinct evaluation claims. A formation model is
+an optional assistant to the authoring agent.
 
 1. Preserve observations and their exact sources.
 2. Preview candidate chains, optionally using a configured model.

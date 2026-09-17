@@ -38,6 +38,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - run: npm ci --prefix examples --ignore-scripts
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -88,6 +89,18 @@ jobs:
           node-version: 22
       - run: npm ci --prefix examples --ignore-scripts
       - run: cargo build --release --locked -p mindleak-mcp --bin mindleak-light
+      - name: Verify isolated memory labs
+        timeout-minutes: 5
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+          MINDLEAK_LAB2_TEST_BINARY: ${{ github.workspace }}/target/release/mindleak-light
+          MINDLEAK_LAB2_TEST_DATABASE_URL: postgresql://mindleak_light:mindleak-light-test-only@127.0.0.1:5432/mindleak_labs_test?sslmode=disable
+          MINDLEAK_VALIDATION_CODE_ENGINE: docker
+        run: |
+          docker exec "$POSTGRES_CONTAINER" createdb -U mindleak_light mindleak_labs_test
+          trap 'docker exec "$POSTGRES_CONTAINER" dropdb -U mindleak_light mindleak_labs_test' EXIT
+          docker pull docker.io/library/node:22-bookworm-slim
+          node --test --test-name-pattern='Lab [123]|swarm project' examples/validation-harness.test.mjs
       - name: Benchmark knowledge workflow and source preservation
         timeout-minutes: 5
         env:
@@ -143,6 +156,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - run: npm ci --prefix examples --ignore-scripts
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -205,7 +219,8 @@ jobs:
         env:
           MINDLEAK_IMAGE: mindleak-light:all-in-one-test
         run: |
-          export MINDLEAK_UPGRADE_FROM="$(node -p 'require("./scripts/regression-baseline.json").image')"
+          MINDLEAK_UPGRADE_FROM="$(node -p 'require("./scripts/regression-baseline.json").image')"
+          export MINDLEAK_UPGRADE_FROM
           mkdir -p target
           node scripts/container-smoke.mjs --restore 2>&1 | tee target/baseline-restore.log
       - name: Preserve backup restoration evidence

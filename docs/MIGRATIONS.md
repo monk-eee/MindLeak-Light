@@ -1,5 +1,10 @@
 # Bounded Database Upgrades
 
+Knowledge formation depends on preserving the observations, chain revisions,
+principles and evidence relationships across upgrades. The product name is
+MindLeak; executable names and database migration procedures remain unchanged.
+Never trade source history for a smaller knowledge count.
+
 The bounded runner ships in **v0.6.0**. Published v0.4.0 and v0.5.0 still run their
 document-search and fragment-order migrations in one startup transaction under
 a 15-second statement timeout. Updating this document does not fix an installed binary.

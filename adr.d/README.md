@@ -35,3 +35,4 @@ record when the design changes instead of silently rewriting their rationale.
 | [0021](0021-encrypted-administrative-backups.md) | Encrypted Administrative Backups | Proposed |
 | [0022](0022-opt-in-chains-of-memory.md) | Opt-In Knowledge Formation | Accepted |
 | [0023](0023-agent-learning-context.md) | Agent Learning Context and Observable Retrieval | Accepted |
+| [0024](0024-knowledge-formation-product.md) | Knowledge Formation as the Product | Accepted |
