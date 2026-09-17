@@ -631,11 +631,11 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md", "BACKUP.md"];
+  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md", "BACKUP.md", "MIGRATIONS.md"];
   for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
-  const backupRecords = ["adr.d/0019-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md"];
+  const backupRecords = ["adr.d/0020-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md"];
   for (const name of backupRecords) {
     mkdirSync(dirname(join(directory, name)), { recursive: true });
     writeFileSync(join(directory, name), `# ${name}\n`);

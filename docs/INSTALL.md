@@ -332,6 +332,11 @@ or small deployment, not a high-availability database service.
 
 ### Upgrade from 0.1.0, 0.2.0, 0.3.0, or 0.4.0
 
+For the **unreleased bounded-migration candidate**, follow the
+[maintenance, resumption, and canary procedure](MIGRATIONS.md). The published
+v0.4.0 behavior described below does not include those fixes; large restored
+databases can exceed its monolithic migration timeout.
+
 Back up and test the restore first. Stop all old MCP processes, then replace the
 binary or container with 0.5.0 using the same database or volume. Startup applies
 the required migrations atomically under the existing database advisory lock.

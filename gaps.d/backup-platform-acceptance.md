@@ -7,7 +7,7 @@ selection, concurrent snapshot capture, records/schema/assets, retained restore,
 owned cleanup, lost acknowledgment, immutable asset failure, and retention.
 Portable tests and HTTP doubles do not certify every deployment.
 
-Before accepting [ADR-0019](../adr.d/0019-encrypted-administrative-backups.md) or
+Before accepting [ADR-0020](../adr.d/0020-encrypted-administrative-backups.md) or
 shipping this interface as supported, retain evidence for:
 
 - Native Windows ACL inheritance, tree cancellation, logged-out S4U execution,

@@ -3,8 +3,9 @@ mod agent_setup;
 mod config;
 mod local;
 mod local_http;
+mod migration_canaries;
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::{
@@ -45,8 +46,18 @@ struct ServerArgs {
     transport: Option<Transport>,
     #[arg(long)]
     listen: Option<SocketAddr>,
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["migrate_only", "migration_canaries"])]
     database_read_only: bool,
+    #[arg(
+        long,
+        help = "Complete database migrations and configured canaries, then exit without serving"
+    )]
+    migrate_only: bool,
+    #[arg(
+        long,
+        help = "Private retrieval canary manifest; defaults to nonempty MINDLEAK_MIGRATION_CANARIES"
+    )]
+    migration_canaries: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -84,6 +95,8 @@ async fn main() -> Result<()> {
             if args.server.transport.is_some()
                 || args.server.listen.is_some()
                 || args.server.database_read_only
+                || args.server.migrate_only
+                || args.server.migration_canaries.is_some()
             {
                 admin::argument_error();
                 std::process::exit(2);
@@ -121,8 +134,23 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
-        .with_env_filter("warn,mindleak_mcp=info")
+        .with_env_filter(
+            "warn,mindleak_light=info,mindleak_mcp=info,mindleak_storage_postgres::migrations=info",
+        )
         .init();
+    let canary_path = if server_args.database_read_only {
+        None
+    } else {
+        server_args.migration_canaries.or_else(|| {
+            std::env::var_os("MINDLEAK_MIGRATION_CANARIES")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+        })
+    };
+    let canaries = canary_path
+        .as_deref()
+        .map(migration_canaries::CanarySuite::load)
+        .transpose()?;
     let config = config::Config::from_env()?;
     let model_client = || {
         reqwest::Client::builder()
@@ -145,7 +173,7 @@ async fn main() -> Result<()> {
         )
         .await?
     } else {
-        PostgresMemoryStore::connect(
+        PostgresMemoryStore::connect_with_migration_options(
             &config.database_url,
             config
                 .embeddings
@@ -153,6 +181,7 @@ async fn main() -> Result<()> {
                 .map(|embedding| (embedding.provider.model.as_str(), embedding.dimensions)),
             config.pool_size,
             config.database_ca.as_deref(),
+            config.migrations,
         )
         .await?
     };
@@ -203,6 +232,13 @@ async fn main() -> Result<()> {
         embedder,
         retriever,
     ));
+    if let Some(canaries) = canaries {
+        canaries.verify(server.clone()).await?;
+    }
+    if server_args.migrate_only {
+        tracing::info!("migration and configured verification complete; no listener started");
+        return Ok(());
+    }
     match transport {
         Transport::Stdio => {
             server.serve(stdio()).await?.waiting().await?;
@@ -248,6 +284,23 @@ async fn shutdown() {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn read_only_verification_cannot_request_schema_migration() {
+        assert!(
+            Args::try_parse_from(["mindleak-light", "--database-read-only", "--migrate-only"])
+                .is_err()
+        );
+        assert!(Args::try_parse_from([
+            "mindleak-light",
+            "serve",
+            "--database-read-only",
+            "--migration-canaries",
+            "canaries.json"
+        ])
+        .is_err());
+        assert!(Args::try_parse_from(["mindleak-light", "--migrate-only"]).is_ok());
+    }
 
     #[test]
     fn administrative_commands_parse_without_server_configuration() {

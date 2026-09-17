@@ -97,7 +97,7 @@ test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 ### Backup Administration
 
 See [the operator guide](docs/BACKUP.md) and
-[ADR-0019](adr.d/0019-encrypted-administrative-backups.md). Offline CLI/safety
+[ADR-0020](adr.d/0020-encrypted-administrative-backups.md). Offline CLI/safety
 tests run with the ordinary Rust suite. To run real encryption/restore and
 concurrent-capture tests, install restic 0.19.x and select a disposable PG16
 container, in addition to the test database URL above:
@@ -189,6 +189,10 @@ actual SDK discovery, and honest unmeasured client behaviour. Schema discovery
 does not authorize tool use or prove that an agent invoked memory.
 
 ### Released-Baseline Gate
+
+For populated-database upgrade, failure/resume, and pre-readiness checks, see
+the [bounded migration guide](docs/MIGRATIONS.md). Its explicit capacity drill is
+not part of routine `make ci`; the regular failure and canary regressions are.
 
 The required PostgreSQL CI job also runs
 [regression-check.mjs](scripts/regression-check.mjs) against the published native

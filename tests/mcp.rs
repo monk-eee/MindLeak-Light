@@ -1,4 +1,5 @@
 use std::{
+    process::Stdio,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -209,8 +210,576 @@ esac
 }
 
 #[tokio::test]
+async fn actual_runtime_checks_retrieval_canaries_before_readiness_without_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let agent_id = format!("migration-canaries-{}", Uuid::new_v4());
+    let scope = format!("migration-scope-{}", Uuid::new_v4());
+    let memory_id = Uuid::new_v4();
+    let fragment_id = Uuid::new_v4();
+    let detail_id = Uuid::new_v4();
+    let store = PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 1, None)
+        .await
+        .unwrap();
+    let (database, connection) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let raw_text = "System.Reflection.TargetInvocationException wraps the underlying error.\nPRIVATE-CANARY-SOURCE detail.";
+    let context = json!({"scope": scope, "source": "wiki/AuthFlow/config-file.md", "summary": "rollout review"}).to_string();
+    database.execute("INSERT INTO public.memories(id, agent_id, raw_text, context) VALUES ($1,$2,$3,$4::text::jsonb)",
+        &[&memory_id, &agent_id, &raw_text, &context]).await.unwrap();
+    database
+        .execute(
+            "INSERT INTO public.fragments(id, memory_id, text, fragment_index) VALUES
+        ($1,$2,'System.Reflection.TargetInvocationException wraps the underlying error.',0),
+        ($3,$2,'PRIVATE-CANARY-SOURCE detail.',1)",
+            &[&fragment_id, &memory_id, &detail_id],
+        )
+        .await
+        .unwrap();
+    let cases = vec![
+        json!({"arguments": {"query":"TargetInvocationException", "scope":scope},
+            "expected": {"/results/0/fragmentId":fragment_id}}),
+        json!({"arguments": {"query":"System.Reflection.TargetInvocationException", "scope":scope},
+            "expected": {"/results/0/memoryId":memory_id}}),
+        json!({"arguments": {"query":"TargetInvocationException AuthFlow rollout", "scope":scope,
+            "matchMode":"all", "contextLimit":1, "diagnostics":true},
+            "expected": {"/results/0/fragmentId":fragment_id, "/results/0/documentContext/orderKnown":true,
+                "/results/0/documentContext/fragments/0/fragmentId":detail_id}}),
+        json!({"arguments": {"query":"missingterm TargetInvocationException", "scope":scope, "matchMode":"any"},
+            "expected": {"/results/0/fragmentId":fragment_id}}),
+        json!({"arguments": {"query":"\"underlying error\"", "scope":scope},
+            "expected": {"/results/0/fragmentId":fragment_id}}),
+        json!({"arguments": {"query":"TargetInvocationException -wraps", "scope":scope},
+            "expected": {"/results":[]}}),
+        json!({"arguments": {"query":"TargetInvocationException", "scope":format!("wrong-{scope}")},
+            "expected": {"/results":[]}}),
+        json!({"arguments": {"fragmentId":fragment_id, "scope":scope},
+            "expected": {"/rawText":raw_text, "/fragmentId":fragment_id}}),
+    ];
+    let path = directory.path().join("canaries.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({"version":1,"cases":cases})).unwrap(),
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command
+        .current_dir(directory.path())
+        .env_clear()
+        .env("MINDLEAK_DATABASE_URL", database_url())
+        .args(["--migrate-only", "--migration-canaries"])
+        .arg(&path);
+    let accepted = command.output().await.unwrap();
+    let mut invalid = cases;
+    invalid[0]["expected"]["/results/0/fragmentId"] = json!("PRIVATE-CANARY-EXPECTATION");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({"version":1,"cases":invalid})).unwrap(),
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let rejected = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .current_dir(directory.path())
+        .env_clear()
+        .env("MINDLEAK_DATABASE_URL", database_url())
+        .env("MINDLEAK_HTTP_TOKEN", TOKEN)
+        .args([
+            "--transport",
+            "http",
+            "--listen",
+            &address.to_string(),
+            "--migration-canaries",
+        ])
+        .arg(&path)
+        .output()
+        .await
+        .unwrap();
+    let healthy = Client::new()
+        .get(format!("http://{address}/health"))
+        .send()
+        .await
+        .is_ok();
+    let count: i64 = database
+        .query_one(
+            "SELECT count(*) FROM public.memories WHERE agent_id=$1",
+            &[&agent_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let any_matches = database.query_one(
+        "SELECT count(*), count(*) FILTER (WHERE fragments.id <> $2) FROM public.fragments
+         JOIN public.memories ON memories.id = fragments.memory_id
+         WHERE context->>'scope' = $1 AND search_vector @@ (
+            SELECT coalesce(string_agg(quote_literal(term), ' | '), '')::tsquery
+            FROM unnest(tsvector_to_array(to_tsvector('english', 'missingterm TargetInvocationException'))) AS terms(term))",
+        &[&scope, &fragment_id],
+    ).await.unwrap();
+    database
+        .execute("DELETE FROM public.memories WHERE id=$1", &[&memory_id])
+        .await
+        .unwrap();
+    drop(store);
+    assert_eq!(
+        any_matches.get::<_, i64>(0),
+        1,
+        "literal-any fixture must have one matching fragment"
+    );
+    assert_eq!(
+        any_matches.get::<_, i64>(1),
+        0,
+        "literal-any fixture must not match the detail fragment"
+    );
+    assert!(
+        accepted.status.success(),
+        "literal_any_matches={} other_fragments={} {}",
+        any_matches.get::<_, i64>(0),
+        any_matches.get::<_, i64>(1),
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert!(!rejected.status.success());
+    assert!(
+        !healthy,
+        "readiness must not be advertised after a failed canary"
+    );
+    assert_eq!(count, 1, "canaries must be read-only");
+    assert!(accepted.stdout.is_empty() && rejected.stdout.is_empty());
+    for output in [&accepted.stderr, &rejected.stderr] {
+        let log = String::from_utf8_lossy(output);
+        assert!(!log.contains("PRIVATE-CANARY-SOURCE"));
+        assert!(!log.contains("PRIVATE-CANARY-EXPECTATION"));
+        assert!(!log.contains(TOKEN));
+        assert!(log.contains("phase=canaries") || log.contains("phase=\"canaries\""));
+    }
+    assert!(String::from_utf8_lossy(&accepted.stderr).contains("completed_rows=8"));
+}
+
+#[tokio::test]
+async fn empty_compose_canary_setting_does_not_prevent_startup() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .current_dir(directory.path())
+        .env_clear()
+        .env("MINDLEAK_DATABASE_URL", database_url())
+        .env("MINDLEAK_MIGRATION_CANARIES", "")
+        .arg("--migrate-only")
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[tokio::test]
+async fn killed_runtime_resumes_checkpoint_and_never_serves_a_partial_upgrade() {
+    let directory = tempfile::tempdir().unwrap();
+    let (admin, connection) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let name = format!("mindleak_process_{}_test", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!("CREATE DATABASE {name}"))
+        .await
+        .unwrap();
+    let mut url = Url::parse(&database_url()).unwrap();
+    url.set_path(&name);
+    let store = PostgresMemoryStore::connect(url.as_str(), None, 1, None)
+        .await
+        .unwrap();
+    drop(store);
+    let (database, connection) = tokio_postgres::connect(url.as_str(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    database
+        .batch_execute(
+            "INSERT INTO public.memories(id, agent_id, raw_text, context)
+         SELECT ('00000000-0000-0000-0000-' || lpad(number::text,12,'0'))::uuid,
+             'process-regression', 'System.Reflection.TargetInvocationException wraps error.',
+             '{\"scope\":\"process-canary\",\"source\":\"wiki/AuthFlow\"}'::jsonb
+         FROM generate_series(1,129) AS number;
+         INSERT INTO public.fragments(id, memory_id, text, fragment_index)
+         SELECT id, id, raw_text, 0 FROM public.memories;
+         ALTER TABLE public.fragments DROP COLUMN search_vector CASCADE;
+         SELECT pg_advisory_lock(6743148022);
+         CREATE FUNCTION public.block_last_batch() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF NEW.id = '00000000-0000-0000-0000-000000000129'::uuid THEN
+                 PERFORM pg_advisory_xact_lock(6743148022);
+             END IF;
+             RETURN NEW;
+         END $$;
+         CREATE TRIGGER block_last_batch BEFORE UPDATE ON public.fragments
+             FOR EACH ROW EXECUTE FUNCTION public.block_last_batch();",
+        )
+        .await
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .current_dir(directory.path())
+        .env_clear()
+        .env("MINDLEAK_DATABASE_URL", url.as_str())
+        .env("MINDLEAK_HTTP_TOKEN", TOKEN)
+        .env("MINDLEAK_MIGRATION_BATCH_SIZE", "16")
+        .args(["--transport", "http", "--listen", &address.to_string()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let blocked: bool = database
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database()
+                 AND application_name='mindleak-light-migration' AND wait_event='advisory')",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if blocked {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let partial_healthy = Client::new()
+        .get(format!("http://{address}/health"))
+        .send()
+        .await
+        .is_ok();
+    child.start_kill().unwrap();
+    let killed = child.wait_with_output().await.unwrap();
+    let completed: i64 = database
+        .query_one(
+            "SELECT count(*) FROM public.fragments WHERE search_vector IS NOT NULL",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    database
+        .batch_execute(
+            "CREATE TEMP TABLE completed_batches AS SELECT id, xmin::text AS original_xmin
+        FROM public.fragments WHERE search_vector IS NOT NULL;
+        SELECT pg_advisory_unlock(6743148022);
+        DROP TRIGGER block_last_batch ON public.fragments",
+        )
+        .await
+        .unwrap();
+    let manifest = directory.path().join("canaries.json");
+    std::fs::write(&manifest, serde_json::to_vec(&json!({"version":1,"cases":[{
+        "arguments":{"query":"TargetInvocationException AuthFlow","matchMode":"all","scope":"process-canary","limit":1},
+        "expected":{"/results/0/text":"System.Reflection.TargetInvocationException wraps error."}
+    }]})).unwrap()).unwrap();
+    let resumed = Command::new(env!("CARGO_BIN_EXE_mindleak-light"))
+        .current_dir(directory.path())
+        .env_clear()
+        .env("MINDLEAK_DATABASE_URL", url.as_str())
+        .env("MINDLEAK_MIGRATION_BATCH_SIZE", "16")
+        .args(["--migrate-only", "--migration-canaries"])
+        .arg(&manifest)
+        .output()
+        .await
+        .unwrap();
+    let unchanged: bool = database
+        .query_one(
+            "SELECT NOT EXISTS(SELECT 1 FROM public.fragments
+        JOIN completed_batches USING(id) WHERE fragments.xmin::text <> original_xmin)",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    admin
+        .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+        .await
+        .unwrap();
+    assert!(!partial_healthy);
+    assert!(!killed.status.success() && killed.stdout.is_empty());
+    assert_eq!(completed, 128);
+    assert!(unchanged);
+    assert!(
+        resumed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&resumed.stderr)
+        .contains("retrieval canaries passed before readiness"));
+}
+
+#[tokio::test]
+#[ignore = "explicit populated-database capacity drill; see docs/MIGRATIONS.md"]
+async fn large_corpus_v02_upgrade_preserves_data_and_passes_runtime_canaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let memory_count: i64 = std::env::var("MINDLEAK_MIGRATION_SCALE_MEMORIES")
+        .unwrap_or_else(|_| "2048".into())
+        .parse()
+        .unwrap();
+    assert!((1..=519_422).contains(&memory_count));
+    let extra = if memory_count == 519_422 { 6_363 } else { 0 };
+    let (admin, connection) = tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let name = format!("mindleak_capacity_{}_test", Uuid::new_v4().simple());
+    eprintln!("capacity drill owns disposable database {name}");
+    admin
+        .batch_execute(&format!("CREATE DATABASE {name}"))
+        .await
+        .unwrap();
+    let mut url = Url::parse(&database_url()).unwrap();
+    url.set_path(&name);
+    let mut execution = tokio::spawn(async move {
+        let (database, connection) = tokio_postgres::connect(url.as_str(), tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        database
+            .batch_execute(&format!(
+                include_str!("../crates/mindleak-storage-postgres/schema.sql"),
+                dimensions = 2
+            ))
+            .await
+            .unwrap();
+        for sql in [
+            include_str!(
+                "../crates/mindleak-storage-postgres/migrations/0002-optional-embeddings.sql"
+            ),
+            include_str!("../crates/mindleak-storage-postgres/migrations/0003-fact-lifecycle.sql"),
+        ] {
+            database.batch_execute(sql).await.unwrap();
+        }
+        database
+            .batch_execute(
+                "SET statement_timeout='120s'; SET lock_timeout='5s';
+        COMMENT ON TABLE public.fragments IS '{\"model\":\"test-model\",\"dimensions\":2}'",
+            )
+            .await
+            .unwrap();
+        let seed_started = Instant::now();
+        for first in (1..=memory_count).step_by(4096) {
+            let last = (first + 4095).min(memory_count);
+            database.execute(
+            "WITH sources AS MATERIALIZED (
+                SELECT number,
+                    ('00000000-0000-0000-0000-' || lpad(number::text,12,'0'))::uuid AS id,
+                    11 + CASE WHEN number <= $3 THEN 1 ELSE 0 END AS fragments
+                FROM generate_series($1::bigint,$2::bigint) AS number
+             ) INSERT INTO public.memories(id, agent_id, raw_text, context, created_at)
+             SELECT id, 'capacity-fixture',
+                (SELECT string_agg('Corpus' || sources.number || ' Step' || step ||
+                    ' System.Reflection.TargetInvocationException wraps underlying error.', E'\n' ORDER BY step)
+                 FROM generate_series(1, sources.fragments) AS step),
+                jsonb_build_object('scope','capacity-fixture','sessionId','seed-session',
+                    'source','https://docs.example.com/wiki/AuthFlow/config-file.md',
+                    'summary',repeat('Release review preserves exact context and rollback evidence. ',8)),
+                '2026-01-01T00:00:00Z'
+             FROM sources",
+            &[&first, &last, &extra],
+        ).await.unwrap();
+            database.execute(
+            "INSERT INTO public.fragments(id, memory_id, text, embedding, tier, pinned,
+                useful_sessions, confirmed_sessions, reinforced_at, first_evidence_at)
+             SELECT ('10000000-0000-0000-' || lpad(step::text,4,'0') || '-' || lpad(number::text,12,'0'))::uuid,
+                ('00000000-0000-0000-0000-' || lpad(number::text,12,'0'))::uuid,
+                'Corpus' || number || ' Step' || step || ' System.Reflection.TargetInvocationException wraps underlying error.',
+                CASE WHEN step % 2 = 0 THEN '[1,0]'::vector ELSE NULL END,
+                CASE WHEN step % 2 = 0 THEN 'long_term' ELSE 'short_term' END,
+                step = 2, CASE WHEN step = 2 THEN 4 ELSE 0 END,
+                CASE WHEN step = 2 THEN 3 ELSE 0 END,
+                '2026-01-03T00:00:00Z', '2026-01-01T00:00:00Z'
+             FROM generate_series($1::bigint,$2::bigint) AS number
+             CROSS JOIN LATERAL generate_series(1,11 + CASE WHEN number <= $3 THEN 1 ELSE 0 END) AS step",
+            &[&first, &last, &extra],
+        ).await.unwrap();
+        }
+        database
+        .execute(
+            "INSERT INTO public.relationships(source_fragment,target_fragment,relationship_type)
+         SELECT ('10000000-0000-0000-0001-' || lpad(number::text,12,'0'))::uuid,
+                ('10000000-0000-0000-0002-' || lpad(number::text,12,'0'))::uuid, 'supports'
+         FROM generate_series(1,$1::bigint) AS number",
+            &[&memory_count],
+        )
+        .await
+        .unwrap();
+        database
+            .batch_execute(
+                "ANALYZE public.memories; ANALYZE public.fragments; ANALYZE public.relationships",
+            )
+            .await
+            .unwrap();
+        let seed_ms = seed_started.elapsed().as_millis();
+        let fingerprint_sql = "SELECT json_build_array(
+        (SELECT json_build_array(count(*), sum(hashtextextended((to_jsonb(memories) - 'request_id' - 'request_payload' - 'write_result')::text,0)::numeric)::text)
+         FROM public.memories),
+        (SELECT json_build_array(count(*), sum(hashtextextended((to_jsonb(fragments) - 'search_vector' - 'fragment_index')::text,0)::numeric)::text)
+         FROM public.fragments),
+        (SELECT json_build_array(count(*), sum(hashtextextended(to_jsonb(relationships)::text,0)::numeric)::text)
+         FROM public.relationships), obj_description('public.fragments'::regclass,'pg_class'))::text";
+        let before: String = database
+            .query_one(fingerprint_sql, &[])
+            .await
+            .unwrap()
+            .get(0);
+        let before_bytes: i64 = database
+            .query_one("SELECT pg_database_size(current_database())", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let manifest = directory.path().join("canaries.json");
+        let mut cases = Vec::new();
+        for source in [1, memory_count / 2 + 1, memory_count] {
+            let expected_id = format!("10000000-0000-0000-0002-{source:012}");
+            for (query, mode) in [
+                (
+                    format!("Corpus{source} Step2 TargetInvocationException"),
+                    "websearch",
+                ),
+                (format!("Corpus{source} Step2 AuthFlow review"), "all"),
+                (
+                    format!("Corpus{source} Step2 \"underlying error\""),
+                    "websearch",
+                ),
+            ] {
+                cases.push(json!({"arguments":{"query":query,"scope":"capacity-fixture","matchMode":mode,"limit":1,"contextLimit":1},
+                "expected":{"/results/0/fragmentId":expected_id,"/results/0/fragmentIndex":1,
+                    "/results/0/documentContext/orderKnown":true}}));
+            }
+            cases.push(json!({"arguments":{"query":format!("Corpus{source} Step2 -wraps"),"scope":"capacity-fixture"},
+            "expected":{"/results":[]}}));
+        }
+        let canary_count = cases.len();
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&json!({"version":1,"cases":cases})).unwrap(),
+        )
+        .unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+        command
+            .current_dir(directory.path())
+            .env_clear()
+            .env("MINDLEAK_DATABASE_URL", url.as_str())
+            .args(["--migrate-only", "--migration-canaries"])
+            .arg(&manifest)
+            .kill_on_drop(true);
+        let started = Instant::now();
+        let migrated = tokio::time::timeout(Duration::from_secs(1800), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        let migration_ms = started.elapsed().as_millis();
+        let after: String = database
+            .query_one(fingerprint_sql, &[])
+            .await
+            .unwrap()
+            .get(0);
+        let derived = database.query_one(
+        "SELECT count(*), count(*) FILTER (WHERE search_vector IS NULL OR fragment_index IS NULL),
+         count(*) FILTER (WHERE fragment_index <> split_part(id::text,'-',4)::integer - 1),
+         sum(hashtextextended(xmin::text,0)::numeric)::text FROM public.fragments", &[]
+    ).await.unwrap();
+        let final_bytes: i64 = database
+            .query_one("SELECT pg_database_size(current_database())", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let started = Instant::now();
+        let restarted = tokio::time::timeout(Duration::from_secs(15), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        let restart_ms = started.elapsed().as_millis();
+        let restart_xmin: String = database
+            .query_one(
+                "SELECT sum(hashtextextended(xmin::text,0)::numeric)::text FROM public.fragments",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let settings = database
+            .query_one(
+                "SELECT current_setting('fsync'), current_setting('full_page_writes'),
+        current_setting('synchronous_commit'), version()",
+                &[],
+            )
+            .await
+            .unwrap();
+        let log = String::from_utf8_lossy(&migrated.stderr);
+        eprintln!(
+            "{}",
+            json!({"memories":memory_count,"fragments":memory_count*11+extra,"relationships":memory_count,
+        "seedMs":seed_ms,"migrationAndCanariesMs":migration_ms,"restartAndCanariesMs":restart_ms,
+        "beforeBytes":before_bytes,"afterBytes":final_bytes,"canaries":canary_count,
+        "beforeFingerprint":serde_json::from_str::<Value>(&before).unwrap(),
+        "afterFingerprint":serde_json::from_str::<Value>(&after).unwrap(),
+        "fsync":settings.get::<_,String>(0),"fullPageWrites":settings.get::<_,String>(1),
+        "synchronousCommit":settings.get::<_,String>(2),"postgres":settings.get::<_,String>(3),
+        "migrationSucceeded":migrated.status.success(),"restartSucceeded":restarted.status.success()})
+        );
+        assert!(migrated.status.success(), "{log}");
+        assert!(
+            restarted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&restarted.stderr)
+        );
+        assert_eq!(before, after);
+        assert_eq!(derived.get::<_, i64>(0), memory_count * 11 + extra);
+        assert_eq!(derived.get::<_, i64>(1), 0);
+        assert_eq!(derived.get::<_, i64>(2), 0);
+        assert_eq!(derived.get::<_, String>(3), restart_xmin);
+        assert!(!String::from_utf8_lossy(&restarted.stderr).contains("phase=\"backfill\""));
+        assert!(log.contains(&format!("completed_rows={canary_count}")));
+        for position in 0..3 {
+            assert_eq!(settings.get::<_, String>(position), "on");
+        }
+    });
+    let outcome = tokio::select! {
+        result = &mut execution => result,
+        _ = tokio::signal::ctrl_c() => {
+            execution.abort();
+            execution.await
+        }
+    };
+    admin
+        .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+        .await
+        .unwrap();
+    eprintln!("capacity drill removed disposable database {name}");
+    outcome.unwrap();
+}
+
+#[tokio::test]
 async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
     let directory = tempfile::tempdir().unwrap();
+    let _store = PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 1, None)
+        .await
+        .unwrap();
     let agent_id = format!("duplicate-groups-{}", Uuid::new_v4());
     let scope = format!("duplicate-scope-{}", Uuid::new_v4());
     let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
@@ -337,17 +906,40 @@ async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
     }
     let mut limited = request.clone();
     limited["limit"] = json!(1);
-    let limited = client
-        .call_tool(call("recall_memory", limited))
-        .await
-        .unwrap()
-        .structured_content
-        .unwrap();
-    assert_eq!(limited["results"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        limited["results"][0]["sourceCount"], 1,
-        "group counts cover only the returned working set"
-    );
+    for attempt in 0..32 {
+        let result = client
+            .call_tool(call("recall_memory", limited.clone()))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        let count = result["results"].as_array().unwrap().len();
+        if count != 1 {
+            let (database, connection) =
+                tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)
+                    .await
+                    .unwrap();
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let counts = database
+                .query_one(
+                    "SELECT count(*), count(*) FILTER (WHERE state='active'),
+                 count(*) FILTER (WHERE search_vector @@ websearch_to_tsquery('english','restart'))
+                 FROM public.fragments JOIN public.memories ON memories.id=memory_id
+                 WHERE agent_id=$1 AND context->>'scope'=$2",
+                    &[&agent_id, &scope],
+                )
+                .await
+                .unwrap();
+            panic!("limited recall returned {count} at attempt {attempt}; scoped_rows={} active_rows={} keyword_matches={}",
+                counts.get::<_,i64>(0), counts.get::<_,i64>(1), counts.get::<_,i64>(2));
+        }
+        assert_eq!(
+            result["results"][0]["sourceCount"], 1,
+            "group counts cover only the returned working set"
+        );
+    }
     let archived = client.call_tool(call("write_memory", json!({
         "agentId": agent_id, "text": "Archive the older instruction.", "context": {"scope": scope},
         "facts": [{"text": "Archive the older instruction.", "links": [{

@@ -59,7 +59,8 @@ existing store rather than a parallel persistence path:
 | Module | Responsibility |
 |---|---|
 | [lib.rs](../crates/mindleak-storage-postgres/src/lib.rs) | Store types and public retriever re-exports |
-| [connection.rs](../crates/mindleak-storage-postgres/src/connection.rs) | TLS, pooling, schema initialization, model binding, and health |
+| [connection.rs](../crates/mindleak-storage-postgres/src/connection.rs) | TLS, pooling, detached migration connection, model binding, and health |
+| [migrations.rs](../crates/mindleak-storage-postgres/src/migrations.rs) | Bounded checkpointed backfills, maintenance limits, index recovery, and pre-readiness schema verification (unreleased) |
 | [persistence.rs](../crates/mindleak-storage-postgres/src/persistence.rs) | Validated atomic writes, request-key arbitration, and immutable receipt lookup/replay |
 | [queries.rs](../crates/mindleak-storage-postgres/src/queries.rs) | Filtered SQL searches and result decoding |
 | [retrieval.rs](../crates/mindleak-storage-postgres/src/retrieval.rs) | Keyword/vector/hybrid strategies, query cache, and rank fusion |
@@ -73,9 +74,15 @@ The unreleased [backup interface](BACKUP.md) is a separate CLI path in the same
 executable, not another MCP tool or table. Capture reads PG maintenance utilities
 without schema initialization; restore canaries use the explicit read-only store
 connection. Format, ownership, and release gates are in
-[ADR-0019](../adr.d/0019-encrypted-administrative-backups.md).
+[ADR-0020](../adr.d/0020-encrypted-administrative-backups.md).
 
 ## Write
+
+The unreleased startup path commits bounded migration batches before serving.
+Checkpoints live in comments on the derived columns, not a fourth table.
+The optional candidate-runtime canary manifest is read-only and runs through the
+official MCP SDK before external readiness. See [database upgrades](MIGRATIONS.md)
+and [ADR-0019](../adr.d/0019-bounded-resumable-migrations.md).
 
 ![Write flow: validate and replay before preparation, then atomically commit or roll back the complete memory](../assets/architecture-write.svg)
 

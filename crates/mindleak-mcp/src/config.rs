@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::{ensure, Context, Result};
 use reqwest::Url;
@@ -7,6 +7,7 @@ pub struct Config {
     pub database_url: String,
     pub database_ca: Option<PathBuf>,
     pub pool_size: usize,
+    pub migrations: mindleak_storage_postgres::MigrationOptions,
     pub decomposition: Option<ModelConfig>,
     pub embeddings: Option<EmbeddingConfig>,
     pub relevance: Option<ModelConfig>,
@@ -174,6 +175,23 @@ impl Config {
                 "MINDLEAK_DB_POOL_SIZE",
                 64,
             )?,
+            migrations: mindleak_storage_postgres::MigrationOptions {
+                batch_size: positive(
+                    &setting("MINDLEAK_MIGRATION_BATCH_SIZE", "1024"),
+                    "MINDLEAK_MIGRATION_BATCH_SIZE",
+                    8192,
+                )?,
+                statement_timeout: Duration::from_secs(positive(
+                    &setting("MINDLEAK_MIGRATION_STATEMENT_TIMEOUT_SECS", "30"),
+                    "MINDLEAK_MIGRATION_STATEMENT_TIMEOUT_SECS",
+                    300,
+                )? as u64),
+                ddl_timeout: Duration::from_secs(positive(
+                    &setting("MINDLEAK_MIGRATION_DDL_TIMEOUT_SECS", "900"),
+                    "MINDLEAK_MIGRATION_DDL_TIMEOUT_SECS",
+                    7200,
+                )? as u64),
+            },
             decomposition,
             embeddings,
             relevance,
@@ -226,6 +244,9 @@ mod tests {
         .unwrap();
         assert!(config.decomposition.is_none());
         assert!(config.embeddings.is_none());
+        assert_eq!(config.migrations.batch_size, 1024);
+        assert_eq!(config.migrations.statement_timeout, Duration::from_secs(30));
+        assert_eq!(config.migrations.ddl_timeout, Duration::from_secs(900));
     }
 
     #[test]
@@ -254,23 +275,54 @@ mod tests {
 
     #[test]
     fn disabled_model_settings_are_not_parsed_or_required() {
-        let config = Config::load(|name| {
-            Some(if name == "MINDLEAK_DATABASE_URL" {
-                "postgresql://localhost/memory".into()
-            } else if name == "MINDLEAK_DECOMPOSITION" {
-                "sentences".into()
-            } else if name == "MINDLEAK_RETRIEVAL" {
-                "keyword".into()
-            } else if name == "MINDLEAK_RELEVANCE" {
-                "off".into()
-            } else if name == "MINDLEAK_DB_POOL_SIZE" {
-                "8".into()
-            } else {
-                "unused invalid model setting".into()
-            })
+        let config = Config::load(|name| match name {
+            "MINDLEAK_DATABASE_URL" => Some("postgresql://localhost/memory".into()),
+            "MINDLEAK_MODEL" | "MINDLEAK_MODEL_TIMEOUT_SECS" => {
+                Some("unused invalid model setting".into())
+            }
+            name if [
+                "MINDLEAK_LLM_",
+                "MINDLEAK_EMBED_",
+                "MINDLEAK_RELEVANCE_",
+                "MINDLEAK_RECALL_",
+            ]
+            .iter()
+            .any(|prefix| name.starts_with(prefix)) =>
+            {
+                Some("unused invalid model setting".into())
+            }
+            _ => None,
         })
         .unwrap();
         assert!(config.decomposition.is_none() && config.embeddings.is_none());
+    }
+
+    #[test]
+    fn migration_settings_remain_bounded_without_models() {
+        for (name, maximum) in [
+            ("MINDLEAK_MIGRATION_BATCH_SIZE", 8192),
+            ("MINDLEAK_MIGRATION_STATEMENT_TIMEOUT_SECS", 300),
+            ("MINDLEAK_MIGRATION_DDL_TIMEOUT_SECS", 7200),
+        ] {
+            for value in ["0".to_owned(), "invalid".into(), (maximum + 1).to_string()] {
+                assert!(
+                    Config::load(|key| match key {
+                        "MINDLEAK_DATABASE_URL" => Some("postgresql://localhost/memory".into()),
+                        key if key == name => Some(value.clone()),
+                        _ => None,
+                    })
+                    .is_err(),
+                    "invalid {name} must not be ignored when models are disabled"
+                );
+            }
+            let config = Config::load(|key| match key {
+                "MINDLEAK_DATABASE_URL" => Some("postgresql://localhost/memory".into()),
+                key if key == name => Some(maximum.to_string()),
+                _ => None,
+            })
+            .unwrap();
+            config.migrations.validate().unwrap();
+        }
     }
 
     #[test]

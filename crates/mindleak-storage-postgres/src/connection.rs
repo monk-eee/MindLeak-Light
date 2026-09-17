@@ -16,7 +16,14 @@ impl PostgresMemoryStore {
         pool_size: usize,
         ca_file: Option<&Path>,
     ) -> Result<Self> {
-        Self::connect_mode(database_url, embedding_space, pool_size, ca_file, false).await
+        Self::connect_with_migration_options(
+            database_url,
+            embedding_space,
+            pool_size,
+            ca_file,
+            crate::MigrationOptions::default(),
+        )
+        .await
     }
 
     pub async fn connect_read_only(
@@ -24,7 +31,24 @@ impl PostgresMemoryStore {
         pool_size: usize,
         ca_file: Option<&Path>,
     ) -> Result<Self> {
-        Self::connect_mode(database_url, None, pool_size, ca_file, true).await
+        Self::connect_mode(database_url, None, pool_size, ca_file, None).await
+    }
+
+    pub async fn connect_with_migration_options(
+        database_url: &str,
+        embedding_space: Option<(&str, usize)>,
+        pool_size: usize,
+        ca_file: Option<&Path>,
+        migration_options: crate::MigrationOptions,
+    ) -> Result<Self> {
+        Self::connect_mode(
+            database_url,
+            embedding_space,
+            pool_size,
+            ca_file,
+            Some(migration_options),
+        )
+        .await
     }
 
     async fn connect_mode(
@@ -32,8 +56,12 @@ impl PostgresMemoryStore {
         embedding_space: Option<(&str, usize)>,
         pool_size: usize,
         ca_file: Option<&Path>,
-        read_only: bool,
+        migration_options: Option<crate::MigrationOptions>,
     ) -> Result<Self> {
+        if let Some(options) = &migration_options {
+            options.validate()?;
+        }
+        let read_only = migration_options.is_none();
         if let Some((model, dimensions)) = embedding_space {
             validate_embeddings(&[], 0, dimensions)?;
             validate_text(model, "embedding model", 256)?;
@@ -97,7 +125,9 @@ impl PostgresMemoryStore {
                 dimensions,
             }),
         };
-        if read_only {
+        if let Some(options) = migration_options {
+            store.initialize(options).await?;
+        } else {
             let connection = store.pool.get().await?;
             let ready: bool = connection.query_one(
                 "SELECT current_setting('transaction_read_only') = 'on' AND to_regclass('public.memories') IS NOT NULL AND to_regclass('public.fragments') IS NOT NULL AND to_regclass('public.relationships') IS NOT NULL", &[]
@@ -106,59 +136,24 @@ impl PostgresMemoryStore {
                 ready,
                 "read-only connection requires an existing memory schema"
             );
-        } else {
-            store.initialize().await?;
         }
         Ok(store)
     }
 
-    async fn initialize(&self) -> Result<()> {
-        let mut connection = self
-            .pool
-            .get()
-            .await
-            .context("acquire database connection")?;
+    async fn initialize(&self, migration_options: crate::MigrationOptions) -> Result<()> {
+        let mut connection = deadpool_postgres::Object::take(
+            self.pool
+                .get()
+                .await
+                .context("acquire migration connection")?,
+        );
+        crate::migrations::initialize(
+            &mut connection,
+            self.space.as_ref().map_or(768, |space| space.dimensions),
+            migration_options,
+        )
+        .await?;
         let transaction = connection.transaction().await?;
-        transaction
-            .query_one("SELECT pg_advisory_xact_lock(5570197736903360513)", &[])
-            .await?;
-        transaction
-            .batch_execute(&format!(
-                include_str!("../schema.sql"),
-                dimensions = self.space.as_ref().map_or(768, |space| space.dimensions),
-            ))
-            .await
-            .context("initialize the three-table memory schema")?;
-        transaction
-            .batch_execute(include_str!("../migrations/0002-optional-embeddings.sql"))
-            .await
-            .context("enable model-free storage and keyword recall")?;
-        transaction
-            .batch_execute(include_str!("../migrations/0003-fact-lifecycle.sql"))
-            .await
-            .context("initialize contextual fact lifecycle")?;
-        transaction
-            .batch_execute(include_str!("../migrations/0004-idempotent-writes.sql"))
-            .await
-            .context("initialize retry-safe writes")?;
-        transaction
-            .batch_execute(include_str!(
-                "../migrations/0005-bounded-relationship-reads.sql"
-            ))
-            .await
-            .context("initialize bounded relationship reads")?;
-        transaction
-            .batch_execute(include_str!("../migrations/0006-keyword-identifiers.sql"))
-            .await
-            .context("index qualified identifiers for keyword recall")?;
-        transaction
-            .batch_execute(include_str!("../migrations/0007-document-search.sql"))
-            .await
-            .context("index source metadata for keyword recall")?;
-        transaction
-            .batch_execute(include_str!("../migrations/0008-fragment-order.sql"))
-            .await
-            .context("record fragment order for document context")?;
         let Some(space) = &self.space else {
             transaction.commit().await?;
             return Ok(());
@@ -225,5 +220,39 @@ impl PostgresMemoryStore {
     pub async fn health(&self) -> Result<()> {
         self.pool.get().await?.query_one("SELECT 1", &[]).await?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "postgres-tests"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn migration_settings_never_enter_the_application_pool() {
+        let url = std::env::var("MINDLEAK_TEST_DATABASE_URL").unwrap();
+        let config: tokio_postgres::Config = url.parse().unwrap();
+        assert!(config.get_dbname().unwrap().ends_with("_test"));
+        let store = PostgresMemoryStore::connect(&url, None, 1, None)
+            .await
+            .unwrap();
+        let settings = store
+            .pool
+            .get()
+            .await
+            .unwrap()
+            .query_one(
+                "SELECT current_setting('statement_timeout'), current_setting('lock_timeout'),
+             current_setting('application_name'), current_setting('synchronous_commit'),
+             current_setting('fsync'), current_setting('full_page_writes')",
+                &[],
+            )
+            .await
+            .unwrap();
+        for (position, expected) in ["15s", "5s", "mindleak-light", "on", "on", "on"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(settings.get::<_, String>(position), *expected);
+        }
     }
 }
