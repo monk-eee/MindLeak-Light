@@ -26,15 +26,26 @@ rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
+fs2 = "0.4"
+quick-xml = "0.41"
+tar = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 subtle.workspace = true
-tempfile = "3"
 toml = "0.8"
-tokio = { workspace = true, features = ["process"] }
+tokio = { workspace = true, features = ["process", "fs", "io-util"] }
 tokio-util.workspace = true
 tower-http.workspace = true
 uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+dunce = "1"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_SystemServices"] }
 
 [dev-dependencies]
 async-trait.workspace = true
@@ -50,3 +61,7 @@ postgres-tests = []
 name = "mcp"
 path = "../../tests/mcp.rs"
 required-features = ["postgres-tests"]
+
+[[test]]
+name = "backup"
+path = "../../tests/backup.rs"

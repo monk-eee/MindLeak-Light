@@ -76,6 +76,14 @@ existing store rather than a parallel persistence path:
 | [relationships.rs](../crates/mindleak-storage-postgres/src/relationships.rs) | Shared indexed evidence windows, exact raw-source inspection, and keyset pagination |
 | [documents.rs](../crates/mindleak-storage-postgres/src/documents.rs) | Bounded same-episode context and shared context-budget allocation |
 
+## Administrative Backups
+
+The unreleased [backup interface](BACKUP.md) is a separate CLI path in the same
+executable, not another MCP tool or table. Capture reads PG maintenance utilities
+without schema initialization; restore canaries use the explicit read-only store
+connection. Format, ownership, and release gates are in
+[ADR-0021](../adr.d/0021-encrypted-administrative-backups.md).
+
 ## Write
 
 The unreleased startup path commits bounded migration batches before serving.

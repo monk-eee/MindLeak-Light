@@ -1,4 +1,4 @@
-.PHONY: setup build test test-postgres script-test fmt fmt-check clippy adr-index changelog repo-check ci up down
+.PHONY: setup build test test-postgres backup-test script-test fmt fmt-check clippy adr-index changelog repo-check ci up down
 
 COMPOSE ?= docker compose
 
@@ -14,6 +14,10 @@ test:
 
 test-postgres:
 	cargo test --workspace --all-features --locked
+
+backup-test:
+	cargo test -p mindleak-mcp --test backup --locked -- --include-ignored
+	cargo test -p mindleak-mcp --bin mindleak-light --locked exported_snapshot_excludes -- --include-ignored
 
 script-test:
 	node --test scripts/repository.test.mjs examples/benchmark-recall.test.mjs examples/validation-harness.test.mjs

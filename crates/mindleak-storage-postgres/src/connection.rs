@@ -26,6 +26,14 @@ impl PostgresMemoryStore {
         .await
     }
 
+    pub async fn connect_read_only(
+        database_url: &str,
+        pool_size: usize,
+        ca_file: Option<&Path>,
+    ) -> Result<Self> {
+        Self::connect_mode(database_url, None, pool_size, ca_file, None).await
+    }
+
     pub async fn connect_with_migration_options(
         database_url: &str,
         embedding_space: Option<(&str, usize)>,
@@ -33,7 +41,27 @@ impl PostgresMemoryStore {
         ca_file: Option<&Path>,
         migration_options: crate::MigrationOptions,
     ) -> Result<Self> {
-        migration_options.validate()?;
+        Self::connect_mode(
+            database_url,
+            embedding_space,
+            pool_size,
+            ca_file,
+            Some(migration_options),
+        )
+        .await
+    }
+
+    async fn connect_mode(
+        database_url: &str,
+        embedding_space: Option<(&str, usize)>,
+        pool_size: usize,
+        ca_file: Option<&Path>,
+        migration_options: Option<crate::MigrationOptions>,
+    ) -> Result<Self> {
+        if let Some(options) = &migration_options {
+            options.validate()?;
+        }
+        let read_only = migration_options.is_none();
         if let Some((model, dimensions)) = embedding_space {
             validate_embeddings(&[], 0, dimensions)?;
             validate_text(model, "embedding model", 256)?;
@@ -46,7 +74,11 @@ impl PostgresMemoryStore {
             database_url.parse().context("invalid database URL")?;
         config.connect_timeout(Duration::from_secs(5));
         config.application_name("mindleak-light");
-        config.options("-c statement_timeout=15000 -c lock_timeout=5000");
+        config.options(if read_only {
+            "-c statement_timeout=15000 -c lock_timeout=5000 -c default_transaction_read_only=on"
+        } else {
+            "-c statement_timeout=15000 -c lock_timeout=5000"
+        });
         if config.get_ssl_mode() == SslMode::Prefer {
             config.ssl_mode(SslMode::Require);
         }
@@ -93,7 +125,18 @@ impl PostgresMemoryStore {
                 dimensions,
             }),
         };
-        store.initialize(migration_options).await?;
+        if let Some(options) = migration_options {
+            store.initialize(options).await?;
+        } else {
+            let connection = store.pool.get().await?;
+            let ready: bool = connection.query_one(
+                "SELECT current_setting('transaction_read_only') = 'on' AND to_regclass('public.memories') IS NOT NULL AND to_regclass('public.fragments') IS NOT NULL AND to_regclass('public.relationships') IS NOT NULL", &[]
+            ).await?.get(0);
+            ensure!(
+                ready,
+                "read-only connection requires an existing memory schema"
+            );
+        }
         Ok(store)
     }
 

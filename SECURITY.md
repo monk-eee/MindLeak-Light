@@ -108,6 +108,16 @@ The Docker Hub workflow only consumes `DOCKERHUB_TOKEN` in the credential check
 and registry login steps. It is never a build argument or image layer. Store it
 in GitHub Actions secrets, with only the repository access needed to publish.
 
+## Encrypted Backups
+
+The unreleased [backup CLI](docs/BACKUP.md) uses restic for encryption. Plaintext
+staging and credentials need owner-only access outside archived sources and
+file-sync folders. Keep keys and matching engine artifacts independently off-host.
+Backups preserve executable schema definitions as well as data: restore only
+repositories/source databases within the operator's trust boundary. Checksums
+prove integrity, not that stored claims or SQL are trustworthy. Native scheduler
+and Azure production support require the recorded platform gates.
+
 ## Reporting
 
 Report suspected vulnerabilities privately to the repository owner listed in
