@@ -2,15 +2,27 @@
   "name": "mindleak-light-examples",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "memory": "node agent-memory.mjs",
     "benchmark": "node benchmark-recall.mjs",
-    "validate": "node validation-harness.mjs"
+    "validate": "node validation-harness.mjs",
+    "swarm": "node swarm-demo.mjs",
+    "replay": "node demo-replay.mjs"
   },
   "dependencies": {
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "@github/copilot-sdk": "1.0.14",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "esbuild": "0.28.2",
+    "linkedom": "0.18.13",
+    "lucide": "1.43.0",
+    "minisearch": "7.2.0",
     "openai": "7.12.1",
+    "semver": "7.8.5",
     "vega": "6.4.0",
     "vega-lite": "6.4.3",
     "zod": "4.5.4"

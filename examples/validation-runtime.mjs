@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { codingFixture, digest, handoffSchema, scaleCharts } from "./validation-scenarios.mjs";
 import { matchesContract } from "./validation-agent.mjs";
 
@@ -21,6 +22,7 @@ export async function openMemoryDriver(binary, settings) {
   let session;
   let restarts = 0;
   let server;
+  let capabilities = {};
   await writeFile(executable, bytes, { mode: 0o700, flag: "wx" });
   await writeFile(join(directory, ".env"), "", { mode: 0o600 });
   async function connect() {
@@ -32,6 +34,10 @@ export async function openMemoryDriver(binary, settings) {
       await client.connect(transport, { timeout: 30000 });
       server = client.getServerVersion();
       const { tools } = await client.listTools();
+      const recall = tools.find(tool => tool.name === "recall_memory")?.inputSchema?.properties;
+      const write = tools.find(tool => tool.name === "write_memory")?.inputSchema?.properties;
+      capabilities = { knowledge: Boolean(recall?.knowledge), chains: Boolean(recall?.chain && write?.chain),
+        formation: Boolean(tools.find(tool => tool.name === "decompose_memory")?.inputSchema?.properties?.formation) };
       if (!tools.find(tool => tool.name === "recall_memory")?.inputSchema?.properties?.fragmentId
         || !tools.find(tool => tool.name === "write_memory")?.inputSchema?.properties?.requestId) {
         throw new Error("harness_requires_source_inspection_and_retry_safe_writes");
@@ -49,6 +55,7 @@ export async function openMemoryDriver(binary, settings) {
     binarySha256: digest(bytes), realProcess: true,
     configuration: settings.configuration,
     get server() { return server; },
+    get capabilities() { return capabilities; },
     get session() { return session; },
     get restarts() { return restarts; },
     async call(name, arguments_) {
@@ -62,10 +69,11 @@ export async function openMemoryDriver(binary, settings) {
     },
     async restart() {
       const previous = session;
+      const previousPid = transport.pid;
       await client.close();
       await connect();
       restarts += 1;
-      return { previous, current: session };
+      return { previous, current: session, previousPid, currentPid: transport.pid };
     },
     async close() {
       try { await client.close(); } finally { await rm(directory, { recursive: true, force: true }); }
@@ -160,12 +168,18 @@ export async function containerConfiguration(engine, image = "docker.io/library/
   } catch { throw new Error("code_container_image_unavailable_pull_it_explicitly"); }
 }
 
-export async function createCodingWorkspace(kind, configuration) {
-  const fixture = codingFixture(kind);
+export async function createCodingWorkspace(kind, configuration, fixture = codingFixture(kind)) {
+  let tests = fixture.tests;
+  if (fixture.bundleTests) {
+    const { build } = await import("esbuild");
+    const bundled = await build({ stdin: { contents: tests, resolveDir: dirname(fileURLToPath(import.meta.url)), sourcefile: "workflow.test.mjs" },
+      bundle: true, write: false, platform: "node", format: "esm", external: ["../src/*", "node:*"], logLevel: "silent" });
+    tests = bundled.outputFiles[0].text;
+  }
   const directory = await realpath(await mkdtemp(join(tmpdir(), "mindleak-validation-code-")));
   await chmod(directory, 0o755);
-  const files = new Set([...Object.keys(fixture.files), ...fixture.editable, "tests/workflow.test.mjs"]);
-  for (const [path, text] of Object.entries({ ...fixture.files, "tests/workflow.test.mjs": fixture.tests })) {
+  const files = new Set([...Object.keys(fixture.files), ...fixture.editable, "tests/workflow.test.mjs", ...(fixture.bundleTests ? ["tests/specification.mjs"] : [])]);
+  for (const [path, text] of Object.entries({ ...fixture.files, "tests/workflow.test.mjs": tests, ...(fixture.bundleTests ? { "tests/specification.mjs": fixture.tests } : {}) })) {
     await mkdir(dirname(join(directory, path)), { recursive: true });
     await writeFile(join(directory, path), text, { mode: 0o644, flag: "wx" });
   }
@@ -200,35 +214,58 @@ export async function createCodingWorkspace(kind, configuration) {
       if (!fixture.editable.includes(path) || typeof content !== "string" || Buffer.byteLength(content) > 32768) {
         throw new Error("fixture_edit_not_allowed");
       }
-      await writeFile(await checkedPath(path), content, { mode: 0o644 });
+      const target = await checkedPath(path);
+      const temporary = `${target}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, content, { mode: 0o644, flag: "wx" });
+        await rename(temporary, target);
+      } finally { await rm(temporary, { force: true }); }
       return { written: true };
     },
-    async test() {
+    async test(group = null) {
       if (!configuration) throw new Error("code_execution_requires_explicit_container");
-      const name = `mindleak-validation-${randomUUID()}`;
-      const args = ["run", "--rm", "--pull=never", "--name", name, "--network=none", "--read-only",
-        "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=64", "--memory=256m", "--cpus=1",
-        "--user=65534:65534", "--tmpfs=/tmp:rw,noexec,nosuid,size=16m", "-v", `${directory}:/work:ro`,
-        "-w", "/work", configuration.image, "node", "--test", "--test-reporter=tap", "tests/workflow.test.mjs"];
-      let output;
-      let exitCode;
+      if (group !== null && !Object.hasOwn(fixture.testGroups ?? {}, group)) throw new Error("fixture_test_group_not_allowed");
+      const expectedTests = group === null ? fixture.testCount : fixture.testGroups[group];
+      const snapshot = await realpath(await mkdtemp(join(tmpdir(), "mindleak-validation-run-")));
       try {
-        const result = await execute(configuration.engine, args, { timeout: 45000, maxBuffer: 1024 * 1024 });
-        output = result.stdout;
-        exitCode = 0;
-      } catch (error) {
-        if (error.killed || !Number.isInteger(error.code)) {
-          await execute(configuration.engine, ["rm", "-f", name], { timeout: 15000 }).catch(() => {});
-          throw new Error("container_execution_failed");
+        await chmod(snapshot, 0o755);
+        const fingerprints = [];
+        for (const path of [...files].sort()) {
+          const destination = join(snapshot, path);
+          await mkdir(dirname(destination), { recursive: true });
+          try { await copyFile(await checkedPath(path), destination); }
+          catch (error) { if (error.code === "ENOENT" && fixture.editable.includes(path)) continue; throw error; }
+          fingerprints.push([path, digest(await readFile(destination))]);
         }
-        output = error.stdout ?? "";
-        exitCode = error.code;
-      }
-      const count = Number(output.match(/^# tests (\d+)$/m)?.[1]);
-      const passed = Number(output.match(/^# pass (\d+)$/m)?.[1]);
-      return { passed: exitCode === 0 && count === fixture.testCount && passed === fixture.testCount,
-        tests: Number.isFinite(count) ? count : 0, expectedTests: fixture.testCount,
-        passedTests: Number.isFinite(passed) ? passed : 0 };
+        const name = `mindleak-validation-${randomUUID()}`;
+        const args = ["run", "--rm", "--pull=never", "--name", name, "--network=none", "--read-only",
+          "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=64", "--memory=256m", "--cpus=1",
+          "--user=65534:65534", "--tmpfs=/tmp:rw,noexec,nosuid,size=16m", "-v", `${snapshot}:/work:ro`,
+          "-w", "/work", configuration.image, "node", "--test", "--test-reporter=tap",
+          ...(group === null ? [] : ["--test-name-pattern", `^${group}/`]), "tests/workflow.test.mjs"];
+        let output;
+        let exitCode;
+        try {
+          const result = await execute(configuration.engine, args, { timeout: 45000, maxBuffer: 1024 * 1024 });
+          output = result.stdout;
+          exitCode = 0;
+        } catch (error) {
+          if (error.killed || !Number.isInteger(error.code)) {
+            await execute(configuration.engine, ["rm", "-f", name], { timeout: 15000 }).catch(() => {});
+            throw new Error("container_execution_failed");
+          }
+          output = error.stdout ?? "";
+          exitCode = error.code;
+        }
+        const count = Number(output.match(/^# tests (\d+)$/m)?.[1]);
+        const passed = Number(output.match(/^# pass (\d+)$/m)?.[1]);
+        const skipped = Number(output.match(/^# skipped (\d+)$/m)?.[1] ?? 0);
+        const executed = count - skipped;
+        return { passed: exitCode === 0 && executed === expectedTests && passed === expectedTests,
+          tests: Number.isFinite(executed) ? executed : 0, expectedTests,
+          passedTests: Number.isFinite(passed) ? passed : 0, sourceSha256: digest(fingerprints),
+          ...(fixture.testNames ? { failedTests: [...output.matchAll(/^not ok \d+ - ([^\n]+)$/gm)].map(match => match[1]).filter(name => fixture.testNames.includes(name)) } : {}) };
+      } finally { await rm(snapshot, { recursive: true, force: true }); }
     },
     async close() { await rm(directory, { recursive: true, force: true }); },
   };
