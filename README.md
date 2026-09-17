@@ -26,14 +26,13 @@ from the same agent or another one. Keep your existing agent framework and model
 keyword search, with no model calls. Add LM Studio, Ollama, or another
 OpenAI-compatible provider for richer fact extraction and semantic recall.
 
-**Atomic storage, not guaranteed atomic facts.** Successful writes commit the
-exact source and every fragment together. Without a model, decomposition splits
-sentences and lists, not semantic claims. Optional extraction aims to produce
-self-contained claims but can lose or misinterpret meaning; validate it on your
-data. See [extraction quality](docs/MODELS.md#what-decomposition-guarantees).
+**Every memory keeps its source.** MindLeak stores the exact original text and
+its searchable fragments together in one transaction, so you can inspect the
+source behind a recalled fact.
+See [how extraction works](docs/MODELS.md#what-decomposition-guarantees).
 
-For a native stdio binary, see [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
-and the [installation guide](docs/INSTALL.md).
+For a native stdio binary, download [v0.5.0](https://github.com/monk-eee/MindLeak-Light/releases/tag/v0.5.0)
+and follow the [installation guide](docs/INSTALL.md).
 
 ## Quickstart
 
@@ -42,9 +41,8 @@ Docker/stdio: no token to generate or copy, no secret-store setup, and no OAuth
 registration. No chat or embedding model is needed.
 
 The v0.5.0 native packages include the `local` launcher and `agent` instruction
-installer. Older v0.4.0 native binaries do not. The launcher defaults to the
-tested v0.4.0 all-in-one image pinned by digest; the native package and server
-image are separate versions. Existing containers are never upgraded implicitly.
+installer. The commands below explicitly select the v0.5.0 server image.
+Existing containers are never upgraded implicitly.
 
 1. Install and start **Docker Desktop** with Linux containers. Install VS Code
    and your agent extension. [Download and verify the v0.5.0 native package](docs/INSTALL.md#native-binary),
@@ -53,14 +51,15 @@ image are separate versions. Existing containers are never upgraded implicitly.
    in that folder's VS Code terminal. If the executable is in the folder:
 
    ```powershell
-   .\mindleak-light.exe local setup
+   .\mindleak-light.exe local setup --image monkeemagic/mindleak-light:0.5.0
    ```
 
-   On macOS/Linux, use `./mindleak-light local setup`. From this source checkout
+   On macOS/Linux, use `./mindleak-light local setup --image monkeemagic/mindleak-light:0.5.0`.
+   From this source checkout
    with Rust installed, the equivalent single command is:
 
    ```sh
-   cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup
+   cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup --image monkeemagic/mindleak-light:0.5.0
    ```
 
 3. Run **MCP: List Servers** in VS Code's Command Palette. Select
@@ -96,11 +95,13 @@ uses the official MCP SDK and needs no agent model to verify storage and recall.
 
 ## Standalone Container
 
-The local launcher uses the standalone MCP/PostgreSQL/pgvector container from
-[Docker Hub: monkeemagic/mindleak-light](https://hub.docker.com/r/monkeemagic/mindleak-light),
-pinned to the published `monkeemagic/mindleak-light:0.4.0` image's immutable digest.
-For a new v0.5.0 trial, pass `--image monkeemagic/mindleak-light:0.5.0` to
-`local setup`. Existing stores need the [explicit upgrade procedure](docs/INSTALL.md#upgrade-from-010-020-030-or-040).
+The v0.5.0 standalone container bundles the MCP server, PostgreSQL, and pgvector.
+It is published as `monkeemagic/mindleak-light:0.5.0` on
+[Docker Hub: monkeemagic/mindleak-light](https://hub.docker.com/r/monkeemagic/mindleak-light).
+The quickstart selects this version with `--image`.
+
+Without an explicit `--image`, the v0.5.0 launcher retains its original pinned
+v0.4.0 default. Existing stores use the [explicit upgrade procedure](docs/INSTALL.md#upgrade-from-010-020-030-or-040).
 
 **Multiple trusted agents can use the same store. For shared or network HTTP,
 configure a private bearer token; use TLS for network access.** Do not publish
