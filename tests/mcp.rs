@@ -85,6 +85,9 @@ fn call(name: &'static str, arguments: Value) -> CallToolRequestParams {
 
 #[tokio::test]
 async fn omitted_scope_searches_general_memory_across_scopes() {
+    PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 4, None)
+        .await
+        .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
     command.current_dir(directory.path()).env_clear().envs([
@@ -168,6 +171,9 @@ async fn omitted_scope_searches_general_memory_across_scopes() {
 
 #[tokio::test]
 async fn domain_entities_replay_the_same_stable_source_episode() {
+    PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 4, None)
+        .await
+        .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
     command.current_dir(directory.path()).env_clear().envs([
