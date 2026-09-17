@@ -18,6 +18,12 @@ The older v1 source-ID scores are not comparable with current fact-level scores.
 
 ## Useful Negative Evidence
 
+For the newer chain/principle workflow, use the existing validation harness's
+explicit [knowledge benchmark](VALIDATION.md#check-chains-and-principles). It
+measures hierarchical retrieval, evidence preservation, dependency review,
+revision/export and optional real model formation. It does not change the frozen
+legacy recall corpora or give a source match automatic reasoning-quality credit.
+
 Relevance is not restricted to a positive value. A directly relevant prohibition,
 explicit unknown, missing prerequisite, or correction to the question's premise
 can help an agent act correctly. Use

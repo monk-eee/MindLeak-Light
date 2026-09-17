@@ -5,7 +5,8 @@ pub use http::http_router;
 use std::future::Future;
 
 use mindleak_memory::{
-    DomainQuery, DomainWrite, FactDirective, InvalidInput, KeywordMatchMode, MemoryContext,
+    ChainCommand, ChainFilter, ChainQuery, ChainWriteRequest, DomainQuery, DomainWrite,
+    FactDirective, FormationInput, InvalidInput, KeywordMatchMode, KnowledgeQuery, MemoryContext,
     MemoryService, MemoryTier, RecallFilter, RelationshipCursor, WriteOptions,
 };
 use rmcp::{
@@ -51,6 +52,10 @@ pub struct WriteMemoryInput {
         description = "Optional identified domain record, separate from fact lifecycle operations. Requires requestId; cannot be combined with facts. Identities are source claims, not authentication or verified truth."
     )]
     domain: Option<DomainWrite>,
+    #[schemars(
+        description = "Opt-in chain or principle proposal, validation, challenge, revision or retirement. Principles use document.kind=principle and pin validated chain revisions. Requires requestId, sessionId and source; cannot be combined with facts. Ordinary writes are unchanged when omitted."
+    )]
+    chain: Option<ChainCommand>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -107,12 +112,24 @@ pub struct RecallMemoryInput {
         description = "Group exact equal text within the returned working set. Each additional occurrence keeps its IDs, context, scores, lifecycle, links, and document context in duplicateSources. No stored facts are merged; sourceCount is not a corpus-wide count. Default false."
     )]
     group_duplicates: bool,
+    #[schemars(
+        description = "Opt-in chain/principle inspection or configured keyword/vector/hybrid search, including configured relevance selection. Do not combine with knowledge or ordinary fact controls. Scope and agentId remain optional; limit is 1..10. Default recall never returns derived knowledge."
+    )]
+    chain: Option<ChainQuery>,
+    #[schemars(
+        description = "Opt-in principles-first knowledge search, dependency review, or bounded JSON/Markdown export. Search also returns independent observations. Cannot be mixed with chain or ordinary fact modes; limit 1..10."
+    )]
+    knowledge: Option<KnowledgeQuery>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DecomposeMemoryInput {
     text: String,
+    #[schemars(
+        description = "Explicit model-assisted chain/principle formation from selected stored sources. Read-only candidate preview; requires separately configured MINDLEAK_FORMATION. Omit for unchanged fragment decomposition."
+    )]
+    formation: Option<FormationInput>,
 }
 
 #[tool_router]
@@ -122,7 +139,7 @@ impl MemoryMcp {
     }
 
     #[tool(
-        description = "Store an episode and its fact fragments atomically. Returns memoryId and fragment IDs. Optional domain stores an identified entity or directed edge with source provenance, requires requestId, and cannot include facts. Domain predicates never confirm, reinforce or change fact lifecycle. Ordinary facts directives support explicit retention, links and lifecycle feedback; feedback is an attributed claim, not proof of truth. context.scope is optional. Works without a model; semantic modes retain pgvector embeddings.",
+        description = "Store an episode and its fragments atomically. Ordinary fact directives control explicit links and lifecycle. Optional domain stores identified entities or directed edges without lifecycle feedback. Optional chain proposes, accepts, challenges, revises or retires chains and principles with immutable evidence and keyed history. Domain and chain modes require requestId and cannot be mixed with facts or each other. Formation previews and reported validation are not proof of truth. Scope is optional. Defaults need no model; semantic modes retain pgvector embeddings.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -135,6 +152,28 @@ impl MemoryMcp {
         Parameters(input): Parameters<WriteMemoryInput>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Some(chain) = input.chain {
+            if !input.facts.is_empty() || input.domain.is_some() {
+                return Err(ErrorData::invalid_params(
+                    "chain writes cannot include ordinary fact directives or domain records",
+                    None,
+                ));
+            }
+            let request_id = input
+                .request_id
+                .ok_or_else(|| ErrorData::invalid_params("chain writes require requestId", None))?;
+            return cancellable_result(
+                context,
+                self.memory.write_chain(ChainWriteRequest {
+                    request_id,
+                    agent_id: input.agent_id,
+                    text: input.text,
+                    context: input.context,
+                    chain,
+                }),
+            )
+            .await;
+        }
         cancellable_result(
             context,
             self.memory.write_memory(
@@ -165,6 +204,123 @@ impl MemoryMcp {
         Parameters(input): Parameters<RecallMemoryInput>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        if input.chain.is_some() || input.knowledge.is_some() {
+            if (input.chain.is_some() && input.knowledge.is_some())
+                || input.domain.is_some()
+                || input.query.is_some()
+                || input.fragment_id.is_some()
+                || input.after.is_some()
+                || input.tier.is_some()
+                || input.match_mode != KeywordMatchMode::Websearch
+                || input.diagnostics
+                || input.context_limit != 0
+                || input.group_duplicates
+            {
+                return Err(ErrorData::invalid_params("choose one chain, knowledge or ordinary fact mode; do not mix query, fragmentId, after or fact search controls", None));
+            }
+            let mut filter = ChainFilter {
+                kind: None,
+                agent_id: input.agent_id,
+                scope: input.scope,
+                include_inactive: input.include_inactive,
+                include_candidates: false,
+            };
+            if let Some(knowledge) = input.knowledge {
+                return match knowledge {
+                    KnowledgeQuery::Search {
+                        query,
+                        include_candidates,
+                    } => {
+                        filter.include_candidates = include_candidates;
+                        cancellable_result(
+                            context,
+                            self.memory
+                                .recall_knowledge(&query, &filter, input.limit.unwrap_or(5)),
+                        )
+                        .await
+                    }
+                    KnowledgeQuery::Review { after } => {
+                        cancellable_result(
+                            context,
+                            self.memory.review_knowledge(
+                                None,
+                                &filter,
+                                after,
+                                input.limit.unwrap_or(5),
+                            ),
+                        )
+                        .await
+                    }
+                    KnowledgeQuery::Dependents { chain_id, after } => {
+                        cancellable_result(
+                            context,
+                            self.memory.review_knowledge(
+                                Some(chain_id),
+                                &filter,
+                                after,
+                                input.limit.unwrap_or(5),
+                            ),
+                        )
+                        .await
+                    }
+                    KnowledgeQuery::Export {
+                        chain_id,
+                        revision,
+                        after_revision,
+                        format,
+                    } => {
+                        cancellable_result(
+                            context,
+                            self.memory.export_knowledge(
+                                chain_id,
+                                revision,
+                                after_revision,
+                                &filter,
+                                input.limit.unwrap_or(5),
+                                format,
+                            ),
+                        )
+                        .await
+                    }
+                };
+            }
+            let chain = input
+                .chain
+                .ok_or_else(|| ErrorData::invalid_params("missing chain operation", None))?;
+            return match chain {
+                ChainQuery::Search {
+                    query,
+                    kind,
+                    include_candidates,
+                } => {
+                    filter.kind = kind;
+                    filter.include_candidates = include_candidates;
+                    cancellable_result(
+                        context,
+                        self.memory
+                            .recall_chains(&query, &filter, input.limit.unwrap_or(5)),
+                    )
+                    .await
+                }
+                ChainQuery::Inspect {
+                    chain_id,
+                    revision,
+                    after_revision,
+                } => {
+                    cancellable_result(
+                        context,
+                        self.memory.inspect_chain(
+                            chain_id,
+                            revision,
+                            after_revision,
+                            &filter,
+                            input.limit.unwrap_or(5),
+                        ),
+                    )
+                    .await
+                }
+            };
+        }
         let filter = RecallFilter {
             agent_id: input.agent_id,
             scope: input.scope,
@@ -218,7 +374,7 @@ impl MemoryMcp {
     }
 
     #[tool(
-        description = "Preview memory fragments without storing anything. By default, splits sentences and list items without rewriting them. Optional model mode extracts independent facts. Returns an array of strings; write_memory also performs decomposition before storing.",
+        description = "Preview memory fragments without storing anything. Text-only calls are unchanged: default sentence/list splitting or optional model extraction returns an array of strings. Explicit formation selects stored observations or validated chain revisions and uses a separately enabled model to propose bounded chain/principle candidates with exact citations, provenance and evidence gaps. Never stores, accepts, runs validation methods or falls back on provider failure. Structural citation checks are not proof of the conclusion.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -231,6 +387,10 @@ impl MemoryMcp {
         Parameters(input): Parameters<DecomposeMemoryInput>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Some(formation) = input.formation {
+            return cancellable_result(context, self.memory.form_knowledge(&input.text, formation))
+                .await;
+        }
         cancellable_result(context, self.memory.decompose_memory(&input.text)).await
     }
 }
@@ -250,7 +410,10 @@ impl ServerHandler for MemoryMcp {
             "Include context.scope for project writes; omit it for general writes. ",
             "Preserve source, conditions and uncertainty; use your stable agentId. Links must match the target scope. ",
             "Never store secrets or routine transcripts. Save nothing when nothing durable was learned. ",
-            "decompose_memory only previews facts. Claim persistence only after a successful write receipt. ",
+            "decompose_memory previews fragments or explicitly requested candidate knowledge; it never persists or accepts beliefs. ",
+            "For explicitly chosen knowledge workflows, form from inspected sources, validate before accepting, preserve counterevidence, and check requiresReview. ",
+            "Knowledge search includes principles, chains and independent observations; inspection, dependency review and export are read-only. ",
+            "Claim persistence only after a successful write receipt. ",
             "Respect current instructions and tool approvals; if the memory mode or intended server is unclear, ask. ",
             "When memory is unavailable, say so and continue with local evidence. ",
             "Use the installed mindleak-memory skill for detailed workflows. The calling agent performs synthesis."

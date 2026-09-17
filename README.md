@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/storage-PostgreSQL%20%2B%20pgvector-336791.svg" alt="PostgreSQL with pgvector">
 </p>
 
-**Shared agent memory. One MCP server. One PostgreSQL database.**
+**Give your agents a memory they can share.**
 
 [Try locally](#quickstart) | [Share with agents](docs/INTEGRATION.md#shared-http) | [Install](docs/INSTALL.md) | [Agent memory policy](#give-your-agent-a-memory-policy) | [Add a model](docs/MODELS.md)
 
@@ -22,17 +22,11 @@ Give your agents somewhere to remember preferences, decisions, and confirmed
 facts between sessions. Connect over MCP, save a memory, and recall it later
 from the same agent or another one. Keep your existing agent framework and model.
 
-**Models are recommended, not required.** Start with sentence/list fragments and
-keyword search, with no model calls. Add LM Studio, Ollama, or another
-OpenAI-compatible provider for richer fact extraction and semantic recall.
-
-**Every memory keeps its source.** MindLeak stores the exact original text and
-its searchable fragments together in one transaction, so you can inspect the
-source behind a recalled fact.
-See [how extraction works](docs/MODELS.md#what-decomposition-guarantees).
-
-For a native stdio binary, download [v0.5.0](https://github.com/monk-eee/MindLeak-Light/releases/tag/v0.5.0)
-and follow the [installation guide](docs/INSTALL.md).
+One MCP server, one PostgreSQL database. Start without a model: MindLeak preserves
+your source text, splits sentences and lists, and searches by keyword. Add
+[optional models](docs/MODELS.md) for richer extraction and semantic recall.
+Every memory keeps its exact source and complete fragment set together, so you
+can inspect the evidence behind a recalled claim.
 
 ## Quickstart
 
@@ -40,104 +34,68 @@ and follow the [installation guide](docs/INSTALL.md).
 Docker/stdio: no token to generate or copy, no secret-store setup, and no OAuth
 registration. No chat or embedding model is needed.
 
-The v0.5.0 native packages include the `local` launcher and `agent` instruction
-installer. The commands below explicitly select the v0.5.0 server image.
+The v0.6.0 native packages include the `local` launcher and `agent` instruction
+installer. New trials use the matching v0.6.0 server image by default.
 Existing containers are never upgraded implicitly.
 
-1. Install and start **Docker Desktop** with Linux containers. Install VS Code
-   and your agent extension. [Download and verify the v0.5.0 native package](docs/INSTALL.md#native-binary),
-   extract it, and open that folder in VS Code.
-2. With a native launcher that supports `local --help`, run one setup command
-   in that folder's VS Code terminal. If the executable is in the folder:
+1. Start **Docker Desktop**. [Download and verify the native package](docs/INSTALL.md#native-binary),
+   extract it, and open the folder in VS Code with your agent extension.
+2. Run setup in that folder's terminal:
 
    ```powershell
-   .\mindleak-light.exe local setup --image monkeemagic/mindleak-light:0.5.0
+  .\mindleak-light.exe local setup
    ```
 
-   On macOS/Linux, use `./mindleak-light local setup --image monkeemagic/mindleak-light:0.5.0`.
-   From this source checkout
-   with Rust installed, the equivalent single command is:
+  On macOS/Linux, use `./mindleak-light local setup`.
+   From a source checkout with Rust installed:
 
    ```sh
-   cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup --image monkeemagic/mindleak-light:0.5.0
+  cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup
    ```
 
 3. Run **MCP: List Servers** in VS Code's Command Palette. Select
    **mindleak-light-local**, then **Start Server**. Approve normal server trust
    if asked. Enable `write_memory`, `recall_memory`, and `decompose_memory` in
    chat's tool picker. No authentication dialog is part of this path.
-4. Follow [Try It](#try-it) for one explicit write and recall. Add the
-   [memory policy](#give-your-agent-a-memory-policy) for normal ongoing agent use.
+4. Add the [memory policy](#give-your-agent-a-memory-policy), then [try a write and recall](#try-it).
 
-Setup creates a network-isolated container and a persistent named volume only
-for an explicit new trial. It generates `.vscode/mcp.json` with the absolute
-launcher path and the selected container ID; no hand-edited connection string
-is needed. The repository's initial configuration is deliberately empty.
-
-Already have memories? Use `mindleak-light local configure --container NAME`
-instead of creating a new trial. This attaches the selected existing all-in-one
-store and preserves other server entries. It never removes containers or volumes.
-See the [local guide](docs/LOCAL.md) for stopped containers, Podman, database
-errors, container upgrades, and the optional host-only HTTP bridge.
+Setup creates a network-isolated trial with a persistent volume and generates
+the connection file. Already have a store? Use
+`mindleak-light local configure --container NAME` to connect to it.
+See [local setup and recovery](docs/LOCAL.md) for Podman, errors and upgrades.
 
 ## Connect Your Agent
 
-For VS Code, setup generates the local entry in
-[.vscode/mcp.json](.vscode/mcp.json). Keep the launcher in a stable location.
-After a window reload or container stop, use **MCP: List Servers ->
-mindleak-light-local -> Start Server** if it is stopped. The launcher restarts
-that existing container and reconnects to the same database; it does not create
-a replacement when something is missing.
+VS Code uses the generated [.vscode/mcp.json](.vscode/mcp.json). Keep the launcher
+in a stable location. After a reload, use **MCP: List Servers ->
+mindleak-light-local -> Start Server** if needed.
 
-For **Claude Code**, other MCP clients, or your own application, see
-[Connect Your Agent](docs/INTEGRATION.md). A [runnable JavaScript example](examples/agent-memory.mjs)
-uses the official MCP SDK and needs no agent model to verify storage and recall.
+For Claude Code, other clients or your own application, use the
+[connection guide](docs/INTEGRATION.md) or [JavaScript example](examples/agent-memory.mjs).
 
 ## Standalone Container
 
-The v0.5.0 standalone container bundles the MCP server, PostgreSQL, and pgvector.
-It is published as `monkeemagic/mindleak-light:0.5.0` on
-[Docker Hub: monkeemagic/mindleak-light](https://hub.docker.com/r/monkeemagic/mindleak-light).
-The quickstart selects this version with `--image`.
+The [Docker Hub image](https://hub.docker.com/r/monkeemagic/mindleak-light)
+includes MCP, PostgreSQL and pgvector. Use the versioned
+`monkeemagic/mindleak-light:0.6.0` image for an explicit deployment.
 
-Without an explicit `--image`, the v0.5.0 launcher retains its original pinned
-v0.4.0 default. Existing stores use the [explicit upgrade procedure](docs/INSTALL.md#upgrade-from-010-020-030-or-040).
-
-**Multiple trusted agents can use the same store. For shared or network HTTP,
-configure a private bearer token; use TLS for network access.** Do not publish
-or proxy the unauthenticated local bridge. The advanced
-[shared HTTP guide](docs/INTEGRATION.md#shared-http) covers token creation,
-storage, recovery, and rotation; [installation](docs/INSTALL.md#all-in-one-container)
-covers explicit container deployment, backups and upgrades. PostgreSQL and pgvector
-stay in one persistent volume. Do not delete that volume or run two PostgreSQL
-containers against it. No `latest` image is implied.
+Sharing over HTTP requires a private bearer token and TLS for network access.
+Follow [shared HTTP setup](docs/INTEGRATION.md#shared-http) and
+[backup and upgrade instructions](docs/INSTALL.md#all-in-one-container).
+Never expose the unauthenticated local bridge or delete the database volume.
 
 MindLeak does not provide OAuth client registration. Cancel unexpected registration dialogs.
 
 ## Give Your Agent a Memory Policy
 
-**Connecting MCP exposes tools; it does not automatically make an agent learn
-from its work.** The agent needs instructions about when to recall, what is worth
-retaining, and how to verify what it remembers. This is part of setup, not an
-optional model feature.
+Connecting MCP makes tools available; instructions tell the agent when to use them.
+[Install the companion skill and policy](docs/INSTALL.md#automatic-project-setup)
+with `mindleak-light agent setup`. Choose `--general` for shared memory across
+projects or `--scope repo:your-org/your-project` for one project.
 
-The [mindleak-memory companion skill](.agents/skills/mindleak-memory/SKILL.md)
-teaches shared recall, evidence inspection, safe writes, and corrections. Install
-the whole folder for each client using the [installation guide](docs/INSTALL.md#companion-agent-skill).
-The v0.5.0 native packages include skill v1.1.0 and its resources. It works with
-the advertised v0.4.0 or newer server contract; older native packages do not
-include the bundle or installer.
-
-The v0.5.0 executable can [install the skill and project policy together](docs/INSTALL.md#automatic-project-setup)
-with `mindleak-light agent setup`: choose `--general` for shared memory across
-projects, or `--scope repo:your-org/your-project` for project-filtered memory.
-The manual policy below remains available for older executables.
-
-Add the short [activation policy](.agents/skills/mindleak-memory/references/agent-policy.md)
-below to the always-on instructions your client actually loads, preserving its
-existing rules: `.github/copilot-instructions.md` for GitHub Copilot, `CLAUDE.md`
-for Claude Code, or `AGENTS.md` for Codex and other clients that support it.
-It belongs in agent instructions, not the MCP connection JSON.
+For manual setup, add this [activation policy](.agents/skills/mindleak-memory/references/agent-policy.md)
+to the instructions your client loads, preserving its existing rules. It belongs
+in agent instructions, not the MCP connection JSON.
 
 ```text
 Before nontrivial work, load the mindleak-memory skill when available and make
@@ -156,27 +114,10 @@ Respect tool approvals; if memory is unavailable, say so and continue locally.
 Save nothing when nothing durable was learned.
 ```
 
-Keep mandatory rules in version-controlled instructions; memory complements them,
-not overrides them. Choose general memory or one stable project scope, and give
-each agent its own truthful contribution identity. All cooperating clients need access to the same
-approved server; installing a skill alone does not connect or synchronize them.
-See the [workflow and verification checklist](docs/INTEGRATION.md#put-memory-into-the-agents-routine)
-for examples, stale-memory handling, and checking that the policy is loaded.
-When the server advertises `write_memory.requestId`, retain one UUID and the exact
-arguments per logical write before sending it; ambiguous outcomes can then use
-the [same-key retry protocol](docs/INTEGRATION.md#retry-safe-writes). Do not apply
-that protocol to older servers or generate a fresh key for each retry.
-
-Useful negatives are worth recalling too: an explicit unknown, prohibition, or
-unapproved status can correct a task's premise. When the server advertises
-`recall_memory.fragmentId`, use [source inspection](docs/INTEGRATION.md#inspect-original-sources)
-to audit the exact raw episode and page through omitted evidence. This inspection
-mode is available from v0.4.0; older packages do not support it.
-
-Version 0.4.0 also searches source/summary metadata and qualified identifiers.
-Use opt-in [document recall controls](docs/INTEGRATION.md#document-recall-controls)
-for all/any matching, query diagnostics, nearby same-episode fragments, and exact
-duplicate grouping that retains the provenance of every included occurrence.
+All agents must connect to the same approved server. Installing a skill alone
+does not share memory or grant tool permissions. Use the
+[verification checklist](docs/INTEGRATION.md#put-memory-into-the-agents-routine)
+to check that your agent actually follows the policy.
 
 ## Try It
 
@@ -192,96 +133,42 @@ chat with the server connected and ask:
 > Use recall_memory with query "LocalTrialBeacon", agentId "quickstart-demo",
 > and scope "quickstart-demo".
 
-You should get that fact with the saved memory's ID. In default keyword mode,
-use short matching terms, not a long question. To check persistence, stop the
-trial container in Docker Desktop, reload VS Code, select **MCP: List Servers ->
-mindleak-light-local -> Start Server**, and repeat the recall. The memory ID
-must be unchanged; no token entry or registration is needed. Normal tool
-approvals are separate from authentication.
-
-These explicit prompts test the connection, not the learning policy. After adding
-the policy, start a new chat and give the agent a normal project task without
-asking it to use memory. Look for a focused `recall_memory` call before substantial
-work. A genuinely reusable discovery should produce a verified `write_memory`
-call; a routine task with no new lesson should not force a write.
+The result should contain the saved memory's ID. Repeat after restarting the
+trial container to check persistence. Short matching terms work best with default
+keyword search. These prompts test the connection; a fresh ordinary task tests
+whether the agent follows its memory policy without being reminded.
 
 ## Test Cross-Agent Rediscovery
 
-Can a fresh agent use a previous investigation to fix a bug with less work?
-The [Validation Harness v1](docs/VALIDATION.md) compares memory-on and memory-off
-agents on identical disposable code, checks the actual fix, and records searches,
-tool calls, time, and available token usage. It also checks persistence, extraction,
-recall, poisoning, contradictions, corpus growth, and resumable multi-day retention.
-JSON reports and scale charts include failures and unmeasured results. A faster
-incorrect answer earns no savings; no 50-80% reduction is assumed or claimed.
+The v0.6.0 [knowledge formation workflow](docs/CHAINS.md) connects
+observations, validated chains and principles through MCP. It adds opt-in
+model-assisted candidate formation, explicit validation/revision, principles-first
+retrieval, dependency review and JSON/Markdown export. Ordinary calls and defaults
+remain unchanged. Formed candidates are not automatically accepted, and protocol
+tests are not a claim of measured learning gains.
+
+Does memory help a fresh agent solve a task? The [validation harness](docs/VALIDATION.md)
+compares memory-on and memory-off runs and checks the actual answer or fix.
+See [measured results](docs/BENCHMARK-RESULTS.md) before making quality or savings claims.
 
 ## Add Models When Ready
 
-| Setup | Decomposition | Recall |
-|---|---|---|
-| Quickstart, no models | Sentences and list items, wording preserved | Indexed keyword search |
-| Optional chat model | Model-assisted extraction; semantic fidelity needs evaluation | Keyword search still available |
-| Optional embedding model | Either decomposition mode | Semantic vector or hybrid keyword/vector search |
-
-Chat extraction and embeddings are independent options. Add embeddings for
-natural-language recall; enable chat extraction when sentence/list splitting is
-insufficient. Each adds inference time and needs a working provider.
-[Set up LM Studio or another provider](docs/MODELS.md).
-
-Existing memories stay stored when switching modes. Hybrid recall can include
-older unembedded memories through keyword search; vector-only recall cannot.
-Semantic search returns nearest neighbours by default, even for unrelated
-queries. An optional similarity threshold filters semantic candidates, but needs
-calibration on your data and does not filter hybrid's keyword matches.
-
-Hybrid recall and similarity thresholds are included in v0.2.0. Upgrade older
-packages before enabling them; changing settings does not upgrade an executable.
-
-In v0.3.0, optional
-`write_memory.requestId` provides retry-safe committed-result replay, and recall
-adds `rankingPriority` and `relationshipsTruncated` with shared context budgets.
-Overlapping identical recalls share query-embedding work while reading fresh
-database results. Upgrade v0.2.0 packages to use these changes; see the
-[current tool contract](docs/INTEGRATION.md#tool-contract).
-The [architecture diagrams](docs/ARCHITECTURE.md) show the complete write, recall,
-and lifecycle paths; the [review status](docs/REVIEW-STATUS.md) separates fixes,
-existing safeguards, deliberate boundaries, and open quality questions. Do not
-infer a release upgrade from new documentation alone.
-
-Exact pgvector search is not a demonstrated million-memory service. The current
-benchmarks establish behaviour on small diagnostic corpora, not large-corpus
-precision, load capacity, or end-to-end agent usefulness. See the
-[evaluation limits](docs/BENCHMARKS.md#interpretation-limits) before scaling.
+Add an embedding model for natural-language recall, a chat model for richer
+extraction, or an explicitly enabled formation model for knowledge candidates.
+These choices are independent. [Model setup](docs/MODELS.md) explains costs,
+provider requirements and how existing memories remain available.
 
 ## Facts, Context, and Retention
 
-For explicit dependencies and other domain predicates, the unreleased
-[domain relationship extension](docs/DOMAIN-RELATIONSHIPS.md) adds stable entity/edge
-identities, attributed provenance, indexed one-hop queries and a verified JSONL
-importer. These claims do not confirm or reinforce facts, and do not add recursive
-graph reasoning. Published v0.5.0 does not include this extension.
+Memories retain their original source. Explicit links record support, corrections
+and contradictions; archival is reversible. Recall never counts as confirmation
+and never deletes evidence. [Fact lifecycle](docs/LIFECYCLE.md) covers the controls.
 
-The fact lifecycle keeps facts attached to their original episodes and
-lets you link support, contradictions, and corrections explicitly. New facts are
-short-term; spaced usefulness or confirmation can consolidate them into long-term
-memory. Important preferences can be retained immediately. Recall never counts as
-confirmation, and decay reduces priority rather than deleting history.
+The v0.6.0 [domain extension](docs/DOMAIN-RELATIONSHIPS.md) adds identified
+entities and direct relationships with provenance, separate from fact lifecycle.
 
-**pgvector remains the semantic backend.** Promotion preserves each fact's identity,
-text, vector, and evidence links. The lifecycle also works with model-free keyword
-search. See [fact lifecycle](docs/LIFECYCLE.md) for examples and exact policies.
-These controls are included in v0.2.0; existing two-field writes remain valid.
-
-`supersedes` retires corrected facts from normal recall; `archives` quarantines
-facts reversibly and `restores` reactivates them. Old source records remain for
-audit and recovery. This is a memory lifecycle, not automatic garbage collection
-or truth adjudication. Importance influences activation and therefore ordering.
-
-**Shared memory is one trust domain.** No agent is authoritative merely because
-of its ID, tier, pin, or reported confirmation. Use explicit project scopes and
-source references, check disagreements, and archive suspect facts while reviewing
-them. Untrusted writers need a separate authenticated service/database boundary,
-not just a different `agentId`. See [trust and corrections](docs/LIFECYCLE.md#trust-and-disagreements).
+Shared memory is one trust domain. Agent IDs and scopes are filters, not access
+control. Separate untrusted users at the service/database boundary.
 
 ## Documentation
 
@@ -292,6 +179,8 @@ not just a different `agentId`. See [trust and corrections](docs/LIFECYCLE.md#tr
 | Teach an agent when to recall and what to retain | [Agent memory policy](#give-your-agent-a-memory-policy) |
 | Install the same memory workflow in another agent | [Companion skill](.agents/skills/mindleak-memory/SKILL.md), [client setup](docs/INSTALL.md#companion-agent-skill) |
 | Relate facts, retain preferences, or record corrections | [Fact lifecycle](docs/LIFECYCLE.md) |
+| Form, validate, revise or export chains and principles | [Knowledge workflow](docs/CHAINS.md) |
+| Back up and verify a recovered store | [Backup operations](docs/BACKUP.md), with platform acceptance limits |
 | Add LM Studio, Ollama, or hosted models | [Optional models](docs/MODELS.md) |
 | Measure recall quality and compare configurations | [Benchmark guide](docs/BENCHMARKS.md), [measured results and limits](docs/BENCHMARK-RESULTS.md) |
 | Build, test, or contribute | [Developer guide](DEVELOPERS.md) |

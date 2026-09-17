@@ -22,6 +22,87 @@ use uuid::Uuid;
 
 use super::*;
 
+#[test]
+fn chain_proposal_is_an_explicit_extension_of_legacy_write_input() {
+    let legacy = json!({"agentId":"test-agent", "text":"An observed result."});
+    assert!(serde_json::from_value::<WriteMemoryInput>(legacy.clone()).is_ok());
+    let mut proposal = legacy;
+    proposal["requestId"] = json!(Uuid::new_v4());
+    proposal["chain"] = json!({
+        "operation":"propose", "chainId":Uuid::new_v4(),
+        "document": {
+            "claim":"Selective retrieval can reduce input tokens for this task.",
+            "rationale":"The recorded comparison held answer correctness constant.",
+            "conclusion":"Use the measured retrieval strategy for this workload.",
+            "applicability":"The recorded task and model configuration only.",
+            "assumptions":["The source comparison used equivalent tasks."],
+            "evidence":[{"fragmentId":Uuid::new_v4(), "role":"supports", "reason":"Measured task outcome."}]
+        }
+    });
+    assert!(serde_json::from_value::<WriteMemoryInput>(proposal).is_ok());
+}
+
+#[test]
+fn chain_inspection_and_search_are_explicit_recall_modes() {
+    for input in [
+        json!({"query":"reviews", "limit":5}),
+        json!({"chain":{"operation":"inspect", "chainId":Uuid::new_v4()}, "limit":5}),
+        json!({"chain":{"operation":"search", "query":"reviews"}, "limit":5}),
+    ] {
+        assert!(serde_json::from_value::<RecallMemoryInput>(input).is_ok());
+    }
+}
+
+#[test]
+fn principles_are_typed_knowledge_with_explicit_chain_lineage() {
+    let input = json!({
+        "agentId":"test-agent", "text":"Candidate principle from two controlled chains.",
+        "requestId":Uuid::new_v4(),
+        "chain": {
+            "operation":"propose", "chainId":Uuid::new_v4(),
+            "document": {
+                "kind":"principle", "claim":"Selective retrieval helps matching tasks.",
+                "rationale":"Two validated comparisons support the restricted generalization.",
+                "conclusion":"Prefer the tested strategy under these conditions.",
+                "applicability":"Tasks equivalent to the referenced comparisons.",
+                "assumptions":[], "evidence":[],
+                "supportedBy":[
+                    {"chainId":Uuid::new_v4(),"revision":2,"reason":"First validated comparison."},
+                    {"chainId":Uuid::new_v4(),"revision":4,"reason":"Second validated comparison."}
+                ]
+            }
+        }
+    });
+    assert!(serde_json::from_value::<WriteMemoryInput>(input).is_ok());
+}
+
+#[test]
+fn formation_is_an_explicit_alternative_to_legacy_decomposition() {
+    assert!(
+        serde_json::from_value::<DecomposeMemoryInput>(json!({"text":"An observation."})).is_ok()
+    );
+    assert!(serde_json::from_value::<DecomposeMemoryInput>(json!({
+        "text":"What do these measured comparisons support?",
+        "formation":{"kind":"chain","fragmentIds":[Uuid::new_v4()],"scope":"synthetic:formation"}
+    }))
+    .is_ok());
+}
+
+#[test]
+fn knowledge_retrieval_review_and_export_are_explicit_read_modes() {
+    for operation in [
+        json!({"operation":"search","query":"controlled retrieval"}),
+        json!({"operation":"review"}),
+        json!({"operation":"dependents","chainId":Uuid::new_v4()}),
+        json!({"operation":"export","chainId":Uuid::new_v4(),"format":"markdown"}),
+    ] {
+        assert!(serde_json::from_value::<RecallMemoryInput>(
+            json!({"knowledge":operation,"limit":3})
+        )
+        .is_ok());
+    }
+}
+
 #[derive(Default)]
 struct Backend {
     started: CancellationToken,

@@ -26,6 +26,13 @@ changing module boundaries. This is not the sibling MindLeak coordination system
 
 - Only three tools: `write_memory`, `recall_memory`, `decompose_memory`.
 - Only three application tables: `memories`, `fragments`, `relationships`.
+- Knowledge formation is an explicit opt-in under [ADR-0022](adr.d/0022-opt-in-chains-of-memory.md).
+  Preserve ordinary memory calls and recall results. Never return chain source
+  fragments in default recall, use derived chains as observation evidence, or
+  interpret recorded acceptance/confidence as independent verification.
+  Principles pin validated chains; revisions preserve inherited counterevidence.
+  Formation previews never persist or accept beliefs. Recheck dependencies after
+  model work; keep unknown/missing evidence explicit in retrieval and export.
 - Every successful write stores the exact raw text and complete fragment set
   atomically, including validated vectors when embeddings are enabled. Provider
   or database failures must not report success.

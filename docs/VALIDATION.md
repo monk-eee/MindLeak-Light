@@ -81,6 +81,48 @@ off regardless of inherited production mode settings. `--min-similarity` and
 `--relevance-candidates` have the existing benchmark meanings. Do not tune a
 threshold on the reported test cases and then present them as unseen evaluation.
 
+## Check Chains and Principles
+
+Knowledge checks are explicit and require v0.6.0 advertising the new
+schemas. Existing ten-category runs and older-server behavior stay unchanged.
+
+```sh
+node examples/validation-harness.mjs --binary target/release/mindleak-light \
+   --category knowledge_workflow --retrieval keyword --formation off \
+   > target/knowledge-keyword.json
+```
+
+The fixed [knowledge fixture](../examples/fixtures/knowledge-v1.json) has six
+subjects, 18 literal/paraphrased/missing-detail queries and three repeated passes.
+Each run makes 108 paired ordinary/knowledge retrieval calls. It checks candidate
+exclusion, acceptance, changed support, dependent review, inherited counterevidence,
+revision/export/history, retirement and unchanged retry receipts.
+
+Reports keep latency and UTF-8 response size separate from quality. Top-level
+Recall@5 does not silently credit nested chains; `evidenceBundleRecall` separately
+checks exact supporting documents. Ordinary observations and derived knowledge
+have different target labels, so their recall percentages are not interchangeable.
+Repeated passes measure cache behavior, not additional independent examples.
+
+For real models, configure a separate `_test` database bound to your embedding
+model, then run:
+
+```sh
+node examples/validation-harness.mjs --binary target/release/mindleak-light \
+   --category knowledge_workflow --retrieval hybrid --formation openai \
+   > target/knowledge-models.json
+```
+
+Use the existing explicit `MINDLEAK_EMBED_*` and `MINDLEAK_LLM_*` settings.
+`--formation-reasoning-effort` is optional and recorded. Formation previews two
+chain and two principle cases; successes retain counts, hashes and timings,
+failures retain sanitized categories and elapsed time. Neither is automatically
+accepted or scored as independent semantic accuracy. Missing usage stays null.
+
+CI runs the model-free knowledge benchmark alongside existing regressions and
+retains the report. Real-provider results, including failures, belong in
+[benchmark results](BENCHMARK-RESULTS.md#knowledge-workflow-2026-09-17).
+
 ## Run Real Agents
 
 Use a model/provider with reliable OpenAI-compatible function calling and JSON-schema

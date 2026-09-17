@@ -9,6 +9,8 @@ pub struct Config {
     pub pool_size: usize,
     pub migrations: mindleak_storage_postgres::MigrationOptions,
     pub decomposition: Option<ModelConfig>,
+    pub formation: Option<ModelConfig>,
+    pub formation_reasoning_effort: Option<String>,
     pub embeddings: Option<EmbeddingConfig>,
     pub relevance: Option<ModelConfig>,
     pub relevance_candidates: usize,
@@ -79,6 +81,16 @@ impl Config {
             )?),
             _ => anyhow::bail!("MINDLEAK_DECOMPOSITION must be sentences or openai"),
         };
+        let formation = match setting("MINDLEAK_FORMATION", "off").as_str() {
+            "off" => None,
+            "openai" => Some(model_config(
+                "MINDLEAK_LLM_URL",
+                "MINDLEAK_MODEL",
+                "MINDLEAK_LLM_API_KEY",
+                "chat/completions",
+            )?),
+            _ => anyhow::bail!("MINDLEAK_FORMATION must be off or openai"),
+        };
         let retrieval = match setting("MINDLEAK_RETRIEVAL", "keyword").as_str() {
             "keyword" => RetrievalMode::Keyword,
             "vector" => RetrievalMode::Vector,
@@ -138,16 +150,19 @@ impl Config {
         } else {
             20
         };
-        let model_timeout_secs =
-            if decomposition.is_some() || embeddings.is_some() || relevance.is_some() {
-                positive(
-                    &setting("MINDLEAK_MODEL_TIMEOUT_SECS", "60"),
-                    "MINDLEAK_MODEL_TIMEOUT_SECS",
-                    300,
-                )? as u64
-            } else {
-                60
-            };
+        let model_timeout_secs = if decomposition.is_some()
+            || formation.is_some()
+            || embeddings.is_some()
+            || relevance.is_some()
+        {
+            positive(
+                &setting("MINDLEAK_MODEL_TIMEOUT_SECS", "60"),
+                "MINDLEAK_MODEL_TIMEOUT_SECS",
+                300,
+            )? as u64
+        } else {
+            60
+        };
         let reasoning_effort = |name: &str, enabled: bool| -> Result<Option<String>> {
             let value = enabled
                 .then(|| read(name))
@@ -163,6 +178,8 @@ impl Config {
         };
         let decomposition_reasoning_effort =
             reasoning_effort("MINDLEAK_LLM_REASONING_EFFORT", decomposition.is_some())?;
+        let formation_reasoning_effort =
+            reasoning_effort("MINDLEAK_LLM_REASONING_EFFORT", formation.is_some())?;
         let relevance_reasoning_effort =
             reasoning_effort("MINDLEAK_RELEVANCE_REASONING_EFFORT", relevance.is_some())?;
         Ok(Self {
@@ -193,6 +210,8 @@ impl Config {
                 )? as u64),
             },
             decomposition,
+            formation,
+            formation_reasoning_effort,
             embeddings,
             relevance,
             relevance_candidates,
@@ -237,12 +256,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn formation_requires_explicit_valid_model_configuration() {
+        for mode in ["openai", "automatic"] {
+            assert!(Config::load(|name| match name {
+                "MINDLEAK_DATABASE_URL" => Some("postgresql://localhost/memory".into()),
+                "MINDLEAK_FORMATION" => Some(mode.into()),
+                _ => None,
+            })
+            .is_err());
+        }
+        let config = Config::load(|name| match name {
+            "MINDLEAK_DATABASE_URL" => Some("postgresql://localhost/memory".into()),
+            "MINDLEAK_FORMATION" => Some("openai".into()),
+            "MINDLEAK_MODEL" => Some("test-former".into()),
+            "MINDLEAK_LLM_URL" => Some("http://127.0.0.1:1234/v1".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(config.decomposition.is_none() && config.embeddings.is_none());
+        assert_eq!(config.formation.unwrap().model, "test-former");
+    }
+
+    #[test]
     fn defaults_need_only_postgres_and_no_model_settings() {
         let config = Config::load(|name| {
             (name == "MINDLEAK_DATABASE_URL").then(|| "postgresql://localhost/memory".into())
         })
         .unwrap();
         assert!(config.decomposition.is_none());
+        assert!(config.formation.is_none());
         assert!(config.embeddings.is_none());
         assert_eq!(config.migrations.batch_size, 1024);
         assert_eq!(config.migrations.statement_timeout, Duration::from_secs(30));

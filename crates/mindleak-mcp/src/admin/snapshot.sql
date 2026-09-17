@@ -62,5 +62,14 @@ SELECT jsonb_build_object(
         'query', (SELECT term FROM unnest(tsvector_to_array(fragment.search_vector)) term
             ORDER BY length(term) DESC, term LIMIT 1))
         FROM public.fragments fragment JOIN public.memories memory ON memory.id = fragment.memory_id
-        WHERE fragment.state = 'active' ORDER BY fragment.id LIMIT 1)
+        WHERE fragment.state = 'active' AND to_jsonb(memory)->>'chain_id' IS NULL
+        ORDER BY fragment.id LIMIT 1),
+    'knowledgeCanary', (SELECT json_build_object(
+        'chainId', to_jsonb(memory)->>'chain_id',
+        'revision', (to_jsonb(memory)->>'chain_revision')::integer,
+        'scope', memory.context->>'scope',
+        'rawSha256', encode(sha256(convert_to(memory.raw_text, 'UTF8')), 'hex'),
+        'claimSha256', encode(sha256(convert_to(to_jsonb(memory)->'chain_snapshot'->'document'->>'claim', 'UTF8')), 'hex'))
+        FROM public.memories memory WHERE (to_jsonb(memory)->>'chain_current')::boolean
+        ORDER BY (to_jsonb(memory)->'chain_snapshot'->'document'->>'kind' = 'principle') DESC, memory.id LIMIT 1)
 );

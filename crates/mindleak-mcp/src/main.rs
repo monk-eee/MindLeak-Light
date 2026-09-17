@@ -162,6 +162,7 @@ async fn main() -> Result<()> {
     let store = if server_args.database_read_only {
         anyhow::ensure!(
             config.decomposition.is_none()
+                && config.formation.is_none()
                 && config.embeddings.is_none()
                 && config.relevance.is_none(),
             "read-only verification requires model-free settings"
@@ -226,12 +227,14 @@ async fn main() -> Result<()> {
             .with_reasoning_effort(config.relevance_reasoning_effort)?,
         );
     }
-    let server = MemoryMcp::new(MemoryService::new(
-        Arc::new(store.clone()),
-        decomposer,
-        embedder,
-        retriever,
-    ));
+    let mut memory = MemoryService::new(Arc::new(store.clone()), decomposer, embedder, retriever);
+    if let Some(model) = config.formation {
+        memory = memory.with_knowledge_former(Arc::new(
+            OpenAiDecomposer::new(model_client()?, model.endpoint, model.model, model.api_key)
+                .with_reasoning_effort(config.formation_reasoning_effort)?,
+        ));
+    }
+    let server = MemoryMcp::new(memory);
     if let Some(canaries) = canaries {
         canaries.verify(server.clone()).await?;
     }
@@ -349,6 +352,23 @@ mod cli_tests {
 mod agent_cli_tests {
     use super::Args;
     use clap::Parser;
+
+    #[test]
+    fn new_local_trials_use_the_launcher_release_by_default() {
+        let arguments = Args::try_parse_from(["mindleak-light", "local", "setup"]).unwrap();
+        let Some(super::Command::Local(crate::local::LocalCommand::Setup { image, .. })) =
+            arguments.command
+        else {
+            panic!("local setup was not parsed");
+        };
+        assert_eq!(
+            image,
+            format!(
+                "docker.io/monkeemagic/mindleak-light:{}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    }
 
     #[test]
     fn accepts_project_agent_setup_without_server_configuration() {

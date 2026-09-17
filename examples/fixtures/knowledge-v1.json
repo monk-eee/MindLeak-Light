@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "id": "knowledge-workflow-v1",
+  "status": "exposed-synthetic-diagnostic-not-independent-semantic-adjudication",
+  "cases": [
+    {
+      "id": "lumen-retries",
+      "subject": "Lumen",
+      "observations": ["Lumen alpha retry tests committed one payment for three requests sharing an idempotency key.", "Lumen beta retry tests replayed the original payment receipt after a lost response."],
+      "counterexample": "Lumen gamma retries with new idempotency keys committed duplicate payments.",
+      "claim": "Lumen idempotency keys prevent duplicate payments in the measured retry tests.",
+      "conclusion": "Lumen payment retries should reuse the original key and unchanged payload.",
+      "applicability": "Lumen alpha and beta payment requests with retained idempotency keys only.",
+      "assumption": "The request payload and idempotency-key scope remain unchanged.",
+      "keywords": "Lumen idempotency payments",
+      "paraphrase": "How should Lumen resend a payment after losing its reply without charging twice?",
+      "missing": "What is Lumen's approved retention period for payment retry keys?"
+    },
+    {
+      "id": "meridian-queries",
+      "subject": "Meridian",
+      "observations": ["Meridian alpha queries used fewer database reads after adding an indexed customer filter.", "Meridian beta queries preserved all matching customers when the indexed filter preceded the result limit."],
+      "counterexample": "Meridian gamma queries lost matching customers when the customer filter was applied after the result limit.",
+      "claim": "Meridian indexed customer filters preserve matching records before limiting in the measured queries.",
+      "conclusion": "Apply Meridian customer filters before the result limit.",
+      "applicability": "Meridian alpha and beta queries with the measured customer index only.",
+      "assumption": "The measured predicate and index definition remain unchanged.",
+      "keywords": "Meridian customer filter limit",
+      "paraphrase": "Where should Meridian restrict customers so a small result window does not hide valid matches?",
+      "missing": "What is Meridian's maximum supported customer count?"
+    },
+    {
+      "id": "nova-snapshots",
+      "subject": "Nova",
+      "observations": ["Nova alpha backups restored the same rows and schema from an exported PostgreSQL snapshot.", "Nova beta backup verification detected a missing relationship after comparing restored record fingerprints."],
+      "counterexample": "Nova gamma row counts matched despite altered restored relationship data.",
+      "claim": "Nova snapshot fingerprints detect restored data changes that equal row counts miss.",
+      "conclusion": "Verify Nova restored rows and schema fingerprints instead of relying only on counts.",
+      "applicability": "Nova alpha and beta PostgreSQL snapshot fixtures only.",
+      "assumption": "Capture and dump share one exported snapshot and deterministic record ordering.",
+      "keywords": "Nova restored fingerprints",
+      "paraphrase": "How can Nova tell whether a recovered database contains the original records rather than just the same number?",
+      "missing": "What is Nova's contractual recovery time objective?"
+    },
+    {
+      "id": "prism-cancellation",
+      "subject": "Prism",
+      "observations": ["Prism alpha cancellation tests dropped pending provider work before database storage began.", "Prism beta cancellation tests preserved the original receipt when the database commit had already completed."],
+      "counterexample": "Prism gamma cancellation after a sent commit could not prove that the write was rolled back.",
+      "claim": "Prism cancellation stops pending work but does not establish rollback after a sent commit.",
+      "conclusion": "Reconcile Prism uncertain writes with the original request key.",
+      "applicability": "Prism alpha and beta cancellation fixtures with retry-safe requests only.",
+      "assumption": "The client retains the original request arguments and key.",
+      "keywords": "Prism cancellation commit",
+      "paraphrase": "Can Prism assume a cancelled request never saved data when commit may already have been sent?",
+      "missing": "What is Prism's measured remote provider cancellation delay?"
+    },
+    {
+      "id": "helix-units",
+      "subject": "Helix",
+      "observations": ["Helix alpha session tests expired at the expected boundary after converting TTL seconds to milliseconds.", "Helix beta session tests preserved valid sessions before the same millisecond expiry boundary."],
+      "counterexample": "Helix gamma sessions expired early when TTL seconds were added directly to a millisecond timestamp.",
+      "claim": "Helix session expiry requires consistent millisecond units in the measured tests.",
+      "conclusion": "Convert Helix TTL seconds before adding them to millisecond timestamps.",
+      "applicability": "Helix alpha and beta session expiry fixtures only.",
+      "assumption": "The timestamp remains in milliseconds and the supplied TTL remains in seconds.",
+      "keywords": "Helix TTL milliseconds",
+      "paraphrase": "How should Helix calculate session expiry when the lifetime and clock use different units?",
+      "missing": "What is Helix's approved default session lifetime?"
+    },
+    {
+      "id": "cobalt-shared-memory",
+      "subject": "Cobalt",
+      "observations": ["Cobalt alpha agents retrieved another agent's scoped memory when no author filter was supplied.", "Cobalt beta agents excluded unrelated project memories by supplying the agreed project scope."],
+      "counterexample": "Cobalt gamma agents missed another contributor's lesson when they filtered recall to their own agent ID.",
+      "claim": "Cobalt shared recall needs a project scope without an unnecessary author filter in the measured handoffs.",
+      "conclusion": "Use the agreed Cobalt project scope and omit the author filter for shared lessons.",
+      "applicability": "Cobalt alpha and beta agents in the same trusted deployment only.",
+      "assumption": "Project scope and agent IDs are provenance filters rather than authorization boundaries.",
+      "keywords": "Cobalt shared project scope",
+      "paraphrase": "How can Cobalt find a colleague's project lesson without mixing in unrelated projects?",
+      "missing": "Which Cobalt agent has administrative authorization?"
+    }
+  ]
+}

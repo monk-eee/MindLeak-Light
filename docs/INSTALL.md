@@ -5,32 +5,32 @@ embedding model; [models are a recommended optional upgrade](MODELS.md).
 
 **Start here for a local trial:** the [VS Code local guide](LOCAL.md) uses a
 native launcher with Docker/stdio and no client credentials. Its `local` commands
-are included in v0.5.0 native archives, alongside the `agent` instruction
+are included in v0.6.0 native archives, alongside the `agent` instruction
 installer. Published v0.4.0 native archives do not include those commands.
 No published image or old executable is upgraded by new settings.
 
 | Package | Best For | You Supply |
 |---|---|---|
-| Local launcher | Trying memory in VS Code; sharing one store among trusted local clients | v0.5.0 native package and Docker Desktop; no manual token |
+| Local launcher | Trying memory in VS Code; sharing one store among trusted local clients | v0.6.0 native package and Docker Desktop; no manual token |
 | Native binary | Plugging into a desktop or coding agent over stdio | PostgreSQL with pgvector |
 | All-in-one container | One container to run and back up | Docker/Podman, a persistent volume, and an HTTP token |
 | Source Compose stack | Developing MindLeak itself | Git and Docker/Podman Compose |
 
-This guide targets **v0.5.0**: local onboarding, general/scoped agent setup,
-model-free keyword recall, optional pgvector or
-hybrid recall, contextual fact lifecycle, retry-safe writes, bounded corrective
-evidence, exact original-source inspection, and document recall controls.
+This guide targets **v0.6.0**: ordinary memory plus opt-in chains/principles,
+model-assisted formation, domain relationships, verified backups and bounded
+migrations. Existing memory calls and model-free defaults remain available.
 Models remain optional. Download versioned
 archives from [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
 or get the full all-in-one image from
 [Docker Hub](https://hub.docker.com/r/monkeemagic/mindleak-light), pinned as
-`monkeemagic/mindleak-light:0.5.0`. The
+`monkeemagic/mindleak-light:0.6.0`. The
 [publishing workflow](https://github.com/monk-eee/MindLeak-Light/actions/workflows/docker-hub.yml)
 records image verification. Older binaries do not gain features from new settings.
 
-The [administrative backup CLI](BACKUP.md) is an unreleased source feature with
-separate restic/PG prerequisites and platform acceptance gates. Published v0.4.0 and v0.5.0
-packages do not include it.
+The [administrative backup CLI](BACKUP.md) ships in v0.6.0 with separate restic/PG
+prerequisites and explicit platform acceptance limits. Published v0.4.0 and v0.5.0
+packages do not include it. Read those limits before scheduling unattended or
+remote backups.
 
 ## Native Binary
 
@@ -67,7 +67,7 @@ tables and waits for MCP requests; silence in a terminal is normal. See
 Each archive also includes the editable architecture board, four self-contained
 SVG previews, and the architecture guide.
 
-The v0.5.0 package includes credential-free `mcp.example.json` and
+The v0.6.0 package includes credential-free `mcp.example.json` and
 `mcp.vscode.example.json` plus the local guide. Prefer `local setup` or
 `local configure` to generate VS Code configuration with the absolute launcher
 path and immutable container ID rather than manually copying the name-based
@@ -85,9 +85,10 @@ The binary uses your configured database; it does not bundle PostgreSQL.
 ## Companion Agent Skill
 
 The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md), version
-1.1.0, is included in v0.5.0 native archives and embedded in the installer. The
+1.2.0, is included in v0.6.0 native archives and embedded in the installer. The
 already-published v0.4.0 archives do not include it. It works with v0.4.0 and
-newer servers; no model is required. Native archives include the complete
+newer servers for ordinary memory; knowledge workflows require v0.6.0 schemas.
+No model is required for ordinary use. Native archives include the complete
 `.agents/skills/mindleak-memory` folder. Container users install the skill
 on their agent's side, not inside the database container.
 
@@ -140,7 +141,7 @@ other projects as a side effect of this repository's setup.
 
 ### Automatic Project Setup
 
-`agent setup` and `agent check` are included in the v0.5.0 native binary, not
+`agent setup` and `agent check` are included in the v0.6.0 native binary, not
 the already-published v0.4.0 binary. Run them on the client machine,
 not inside the database container. The selected server can remain on v0.4.0.
 
@@ -268,7 +269,7 @@ HTTP port is exposed. A process supervisor manages startup and shutdown.
 Pin the version tag so upgrades are deliberate:
 
 ```sh
-docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.5.0
+docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.6.0
 ```
 
 That token is a public local-development example. For anything shared, use your
@@ -298,7 +299,7 @@ docker compose -f docker/compose.all-in-one.yml up --detach --wait
 ```
 
 This starts one container, not the two-service development stack. The file
-defaults to `monkeemagic/mindleak-light:0.5.0`. This release does not promote the
+defaults to `monkeemagic/mindleak-light:0.6.0`. This release does not promote the
 `latest` alias. Override `MINDLEAK_IMAGE` to pin a digest or another version.
 Podman may not expose embedded health metadata from published OCI images. The
 Compose template defines its own health check so `up --wait` still verifies
@@ -332,21 +333,22 @@ or small deployment, not a high-availability database service.
 
 ### Upgrade from 0.1.0, 0.2.0, 0.3.0, or 0.4.0
 
-For the **unreleased bounded-migration candidate**, follow the
-[maintenance, resumption, and canary procedure](MIGRATIONS.md). The published
-v0.4.0 behavior described below does not include those fixes; large restored
-databases can exceed its monolithic migration timeout.
+The same procedure also applies to **v0.5.0** stores. Follow the v0.6.0
+[maintenance, resumption and canary procedure](MIGRATIONS.md); older binaries
+do not include the bounded migration runner.
 
 Back up and test the restore first. Stop all old MCP processes, then replace the
-binary or container with 0.5.0 using the same database or volume. Startup applies
-the required migrations atomically under the existing database advisory lock.
+binary or container with 0.6.0 using the same database or volume. Startup applies
+schema phases and bounded resumable backfills under the migration advisory lock.
 Existing raw text, IDs, fragments, vectors, relationships, and embedding model
 metadata are preserved. Existing context, lifecycle states, tiers, pins,
 feedback history, and 0.3.0 keyed-write receipts are retained. Facts from 0.1.0
 acquire empty context and active, unconfirmed, short-term lifecycle defaults.
 Unkeyed memories stay unkeyed. No re-embedding or model download is required.
-An existing v0.4.0 database needs no new schema migration for v0.5.0. Keep its
-retrieval, decomposition, embedding model, dimensions, and credentials unchanged.
+Upgrading v0.4.0 or v0.5.0 adds domain and nullable knowledge metadata without
+converting old memories into derived records. Keep retrieval, decomposition,
+embedding model, dimensions and credentials unchanged. Knowledge requires explicit
+new input modes; optional formation remains disabled until configured.
 
 Upgrading from before v0.4.0 creates two relationship indexes, backfills a derived combined
 fragment/metadata search vector and recoverable fragment order, and builds a
@@ -368,7 +370,8 @@ original text; see the [tool contract](INTEGRATION.md#tool-contract).
 Keep the original embedding model and dimensions when enabling vector or hybrid
 recall. Avoid running mixed server versions during the upgrade: older servers
 do not support the new retry and response contracts, and 0.1.0 also ignores
-lifecycle visibility. Rollback means stopping 0.5.0, restoring the pre-upgrade
+lifecycle visibility. Pre-v0.6.0 servers also do not exclude derived knowledge
+from ordinary recall. Rollback means stopping 0.6.0, restoring the pre-upgrade
 backup to a separate database or volume, and pointing the previous binary at
 that restored copy. An in-place downgrade is not supported. Clients must check
 the server's advertised tool schema before using `requestId` or `fragmentId`.

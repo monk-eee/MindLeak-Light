@@ -1,5 +1,26 @@
 # Relevance Rejection Still Trades Away Useful Facts
 
+## Current Status
+
+**Open quality gap, not a missing API.** A fresh September 17 knowledge benchmark
+now covers chains/principles, exact lineage, challenge/revision, dependency review,
+export and optional real-model formation. The provider schema gap found by that
+run is fixed and regression-tested; the later four-preview GLM run completed.
+Full evidence and commands are in [current results](../docs/BENCHMARK-RESULTS.md#knowledge-workflow-2026-09-17).
+
+Unfiltered Nomic hybrid found the relevant principle/evidence bundle on all 12
+positive probes, but rejected 0/6 missing-detail queries. Keyword rejected 6/6
+and missed paraphrased positives. Formation took about 57 to 71 seconds per preview.
+Exact citations still do not establish reasoning quality. These measurements do
+not close the historical semantic rejection trade-off described below.
+
+To close the remaining gap: declare a recall/abstention and latency target, freeze
+a fresh independently reviewed holdout before tuning, and report per-query losses,
+counterevidence preservation and failed calls. Do not tune the exposed fixtures
+until a preferred percentage appears. Model confidence is not an acceptance gate.
+
+## Historical Evidence
+
 - Observed on 2026-09-16 in `engineering-recall-v2`: a Nomic cosine floor selected
   solely on calibration rejected 30/32 held-out negative queries, but verified
   Recall@5 fell from 92.86% unfiltered to 75.00% vector or 76.79% hybrid. The

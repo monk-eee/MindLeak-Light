@@ -543,6 +543,8 @@ export function benchmarkSettings(environment, options = {}) {
   }
   const relevance = options.relevance ?? "off";
   if (!["off", "openai"].includes(relevance)) throw new Error("Choose --relevance off|openai.");
+  const formation = options.formation ?? "off";
+  if (!["off", "openai"].includes(formation)) throw new Error("Choose --formation off|openai.");
   const relevanceCandidates = numericOption(options["relevance-candidates"], "--relevance-candidates", 1, 50) ?? 20;
   if (!Number.isInteger(relevanceCandidates)) throw new Error("Relevance candidate count must be an integer.");
   if (options["relevance-candidates"] !== undefined && relevance === "off") {
@@ -558,6 +560,10 @@ export function benchmarkSettings(environment, options = {}) {
   };
   const decompositionReasoningEffort = reasoningEffort("decomposition-reasoning-effort", decomposition === "openai");
   const relevanceReasoningEffort = reasoningEffort("relevance-reasoning-effort", relevance === "openai");
+  const formationReasoningEffort = reasoningEffort("formation-reasoning-effort", formation === "openai");
+  if (formationReasoningEffort !== null && decompositionReasoningEffort !== null && formationReasoningEffort !== decompositionReasoningEffort) {
+    throw new Error("Formation and decomposition share one provider reasoning setting; conflicting options are invalid.");
+  }
   const label = options.label ?? `${decomposition}-${retrieval}`;
   if (!/^[a-z0-9][a-z0-9_.-]{0,127}$/i.test(label)) {
     throw new Error("Benchmark label must be a short identifier.");
@@ -585,6 +591,8 @@ export function benchmarkSettings(environment, options = {}) {
   if (minSimilarity !== null) serverEnvironment.MINDLEAK_RECALL_MIN_SIMILARITY = String(minSimilarity);
   if (decompositionReasoningEffort !== null) serverEnvironment.MINDLEAK_LLM_REASONING_EFFORT = decompositionReasoningEffort;
   if (relevanceReasoningEffort !== null) serverEnvironment.MINDLEAK_RELEVANCE_REASONING_EFFORT = relevanceReasoningEffort;
+  if (formationReasoningEffort !== null) serverEnvironment.MINDLEAK_LLM_REASONING_EFFORT = formationReasoningEffort;
+  if (options.formation !== undefined) serverEnvironment.MINDLEAK_FORMATION = formation;
   for (const key of ["MINDLEAK_DATABASE_CA_FILE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]) {
     if (environment[key]) serverEnvironment[key] = environment[key];
   }
@@ -610,6 +618,8 @@ export function benchmarkSettings(environment, options = {}) {
   const decompositionModel = decomposition === "openai"
     ? provider("MINDLEAK_LLM_URL", "MINDLEAK_MODEL", "MINDLEAK_LLM_API_KEY")
     : null;
+  const formationModel = formation === "openai"
+    ? provider("MINDLEAK_LLM_URL", "MINDLEAK_MODEL", "MINDLEAK_LLM_API_KEY") : null;
   const relevanceModel = relevance === "openai"
     ? provider("MINDLEAK_RELEVANCE_URL", "MINDLEAK_RELEVANCE_MODEL", "MINDLEAK_RELEVANCE_API_KEY")
     : null;
@@ -636,8 +646,10 @@ export function benchmarkSettings(environment, options = {}) {
     maxResultBytes,
     serverEnvironment,
     configuration: { label, decomposition, retrieval, minSimilarity, decompositionModel, embeddingModel, embeddingDimensions,
-      relevance, relevanceModel, relevanceCandidates: relevanceModel ? relevanceCandidates : null, modelTimeoutSecs: timeout },
-    reasoning: { decomposition: decompositionReasoningEffort, relevance: relevanceReasoningEffort },
+      relevance, relevanceModel, relevanceCandidates: relevanceModel ? relevanceCandidates : null, modelTimeoutSecs: timeout,
+      ...(options.formation !== undefined ? { formation, formationModel } : {}) },
+    reasoning: { decomposition: decompositionReasoningEffort, relevance: relevanceReasoningEffort,
+      ...(options.formation !== undefined ? { formation: formationReasoningEffort } : {}) },
   };
 }
 
