@@ -22,9 +22,12 @@ before a supported release. Successful upload alone is not verified recovery.
   Losing the key makes the encrypted repository unrecoverable.
 
 Unix private directories need owner-only `0700` and secrets `0600`. Windows needs
-an owner-only ACL (SYSTEM/Administrators also permitted) with container/object
-inheritance on staging directories. Configure it for the intended unattended
-account. Permission inspection reads the owner and DACL through native Windows
+an ACL restricted to the current user, SYSTEM, or Administrators, with an owner
+from that same set and container/object inheritance on staging directories.
+Windows chooses a new object's owner from the creating process token, which can
+be Administrators for an elevated account; owners are not inherited from the
+parent. Configure access for the intended unattended account. Permission
+inspection reads the owner and DACL through native Windows
 security APIs; it does not start PowerShell or modify the ACL. Archive inputs,
 credentials, and configuration refuse hard links,
 reparse points, and symlinks. Executable checksum verification permits Cargo's

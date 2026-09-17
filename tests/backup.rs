@@ -135,11 +135,8 @@ async fn administrative_native_acl_checks_reject_shared_and_noninheritable_permi
     std::fs::create_dir(&child).unwrap();
     config["workDir"] = json!(child);
     std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
-    assert_eq!(
-        invoke(&arguments, &root).await.0,
-        0,
-        "child must inherit the private ACL"
-    );
+    let (code, report) = invoke(&arguments, &root).await;
+    assert_eq!(code, 0, "child must inherit the private ACL: {report}");
     config["workDir"] = json!(work);
     std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
     for mode in ["shared", "noninheritable"] {
@@ -160,6 +157,14 @@ async fn administrative_native_acl_checks_reject_shared_and_noninheritable_permi
         let (code, report) = invoke(&arguments, &root).await;
         assert_eq!(code, 2, "must reject {mode}: {report}");
         assert_eq!(report["error"]["code"], "owner_only_acl_required");
+        assert_eq!(
+            report["error"]["details"]["reason"],
+            if mode == "shared" {
+                "untrusted_access_identity"
+            } else {
+                "noninheritable_access"
+            }
+        );
     }
 }
 

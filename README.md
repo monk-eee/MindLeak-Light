@@ -25,7 +25,8 @@ from the same agent or another one. Keep your existing agent framework and model
 One MCP server, one PostgreSQL database. Start without a model: MindLeak preserves
 your source text, splits sentences and lists, and searches by keyword. Add
 [optional models](docs/MODELS.md) for richer extraction and semantic recall.
-Stored evidence is still something to verify, not a guarantee of truth.
+Every memory keeps its exact source and complete fragment set together, so you
+can inspect the evidence behind a recalled claim.
 
 ## Quickstart
 
@@ -34,23 +35,22 @@ Docker/stdio: no token to generate or copy, no secret-store setup, and no OAuth
 registration. No chat or embedding model is needed.
 
 The v0.5.0 native packages include the `local` launcher and `agent` instruction
-installer. The launcher uses a pinned v0.4.0 server by default; choose
-`--image monkeemagic/mindleak-light:0.5.0` for a new v0.5.0 trial.
-Existing stores are never upgraded implicitly.
+installer. The commands below explicitly select the v0.5.0 server image.
+Existing containers are never upgraded implicitly.
 
 1. Start **Docker Desktop**. [Download and verify the native package](docs/INSTALL.md#native-binary),
    extract it, and open the folder in VS Code with your agent extension.
 2. Run setup in that folder's terminal:
 
    ```powershell
-   .\mindleak-light.exe local setup
+   .\mindleak-light.exe local setup --image monkeemagic/mindleak-light:0.5.0
    ```
 
-   On macOS/Linux, use `./mindleak-light local setup`.
+   On macOS/Linux, use `./mindleak-light local setup --image monkeemagic/mindleak-light:0.5.0`.
    From a source checkout with Rust installed:
 
    ```sh
-   cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup
+   cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup --image monkeemagic/mindleak-light:0.5.0
    ```
 
 3. Run **MCP: List Servers** in VS Code's Command Palette. Select
