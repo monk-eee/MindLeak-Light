@@ -174,8 +174,13 @@ The migration adds metadata/edge columns, unique and directional indexes, and ma
 legacy relationship indexes partial. Existing fact links, feedback, raw text, vectors
 and receipts are preserved. Index creation/rebuild needs disk space and can block
 writes on the first upgrade; use a maintenance window and a tested backup for large
-stores. This checkout retains the existing transactional migration mechanism;
-background/online migration is separate work. Later startups skip completed DDL.
+stores. Domain migration 0009 runs as one transactional DDL phase after the
+[resumable document backfills](MIGRATIONS.md), under the same detached maintenance
+connection and advisory lock, before readiness. Its time limit is
+`MINDLEAK_MIGRATION_DDL_TIMEOUT_SECS`; failure rolls back that domain phase without
+discarding completed document batches. Its index builds are not checkpointed or
+concurrent, so an interrupted domain phase repeats. Later startups skip completed
+domain DDL. Stop all old servers and writers before the upgrade.
 
 ## Verified JSONL Importer
 

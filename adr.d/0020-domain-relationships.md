@@ -68,8 +68,11 @@ New indexes cost storage and import writes, but exclude unrelated row kinds and 
 not copy large provenance/text into adjacency keys. The first migration replaces the
 legacy composite primary key with an equivalent partial unique index and builds
 directional indexes; it can block writes and needs a maintenance window on large
-stores. Existing transactional migration remains; online/resumable migration is a
-separate ownership boundary. Semantic recall remains exact and is not claimed to
+stores. Domain migration 0009 is a single transactional phase registered with the
+[ADR-0019](0019-bounded-resumable-migrations.md) controller after its resumable
+document backfills, under the same maintenance lock and DDL timeout. An interrupted
+domain phase repeats without losing completed document checkpoints; domain index
+builds are not themselves checkpointed or concurrent. Semantic recall remains exact and is not claimed to
 scale to millions merely because adjacency is bounded.
 
 ## Verification

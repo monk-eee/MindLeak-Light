@@ -69,6 +69,245 @@ async fn isolated_database() -> (Client, Url, String) {
     (admin, url, cleanup)
 }
 
+#[tokio::test]
+async fn late_document_backfill_failure_preserves_committed_batches() {
+    interrupted_backfill("search_vector", MigrationInterruption::Error).await;
+}
+
+#[tokio::test]
+async fn late_order_backfill_failure_preserves_committed_batches() {
+    interrupted_backfill("fragment_index", MigrationInterruption::Error).await;
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum MigrationInterruption {
+    Error,
+    Timeout,
+    Cancel,
+    Terminate,
+    DropFuture,
+}
+
+#[tokio::test]
+async fn timed_out_backfill_preserves_committed_batches() {
+    interrupted_backfill("search_vector", MigrationInterruption::Timeout).await;
+}
+
+#[tokio::test]
+async fn cancelled_backfill_preserves_committed_batches() {
+    interrupted_backfill("fragment_index", MigrationInterruption::Cancel).await;
+}
+
+#[tokio::test]
+async fn terminated_backend_backfill_preserves_committed_batches() {
+    interrupted_backfill("search_vector", MigrationInterruption::Terminate).await;
+}
+
+#[tokio::test]
+async fn dropped_future_backfill_preserves_committed_batches() {
+    interrupted_backfill("fragment_index", MigrationInterruption::DropFuture).await;
+}
+
+async fn interrupted_backfill(column: &str, interruption: MigrationInterruption) {
+    let row_count: i64 = if interruption == MigrationInterruption::Timeout {
+        17
+    } else {
+        2049
+    };
+    let (admin, url, cleanup) = isolated_database().await;
+    let store = PostgresMemoryStore::connect(url.as_str(), None, 1, None)
+        .await
+        .unwrap();
+    drop(store);
+    let (database, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let failure = if interruption == MigrationInterruption::Error {
+        "RAISE EXCEPTION 'PRIVATE-SYNTHETIC-PAYLOAD credential=canary' USING ERRCODE = '57014';"
+    } else {
+        database
+            .batch_execute("SELECT pg_advisory_lock(6743148021)")
+            .await
+            .unwrap();
+        "PERFORM pg_advisory_xact_lock(6743148021);"
+    };
+    database
+        .batch_execute(&format!(
+            "INSERT INTO public.memories (id, agent_id, raw_text)
+         SELECT ('00000000-0000-0000-0000-' || lpad(number::text, 12, '0'))::uuid,
+                'migration-regression', 'Migration batch fixture.'
+         FROM generate_series(1, {row_count}) AS number;
+         INSERT INTO public.fragments (id, memory_id, text)
+         SELECT ('10000000-0000-0000-0000-' || lpad(number::text, 12, '0'))::uuid,
+                ('00000000-0000-0000-0000-' || lpad(number::text, 12, '0'))::uuid,
+                'Migration batch fixture.'
+         FROM generate_series(1, {row_count}) AS number;
+         ALTER TABLE public.fragments DROP COLUMN {column} CASCADE;
+         CREATE FUNCTION public.fail_late_backfill() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF NEW.memory_id = '00000000-0000-0000-0000-{row_count:012}'::uuid THEN
+                 {failure}
+             END IF;
+             RETURN NEW;
+         END $$;
+         CREATE TRIGGER fail_late_backfill BEFORE UPDATE ON public.fragments
+             FOR EACH ROW EXECUTE FUNCTION public.fail_late_backfill();"
+        ))
+        .await
+        .unwrap();
+    let mut options = mindleak_storage_postgres::MigrationOptions::default();
+    if interruption == MigrationInterruption::Timeout {
+        options.batch_size = 8;
+        options.statement_timeout = std::time::Duration::from_secs(1);
+    }
+    let migration_url = url.clone();
+    let pending = tokio::spawn(async move {
+        PostgresMemoryStore::connect_with_migration_options(
+            migration_url.as_str(),
+            None,
+            1,
+            None,
+            options,
+        )
+        .await
+    });
+    if matches!(
+        interruption,
+        MigrationInterruption::Cancel
+            | MigrationInterruption::Terminate
+            | MigrationInterruption::DropFuture
+    ) {
+        let backend: i32 = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(row) = database
+                    .query_opt(
+                        "SELECT pid FROM pg_stat_activity WHERE datname = current_database()
+                     AND application_name = 'mindleak-light-migration' AND wait_event = 'advisory'",
+                        &[],
+                    )
+                    .await
+                    .unwrap()
+                {
+                    break row.get(0);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        match interruption {
+            MigrationInterruption::Cancel => {
+                database
+                    .query_one("SELECT pg_cancel_backend($1)", &[&backend])
+                    .await
+                    .unwrap();
+            }
+            MigrationInterruption::Terminate => {
+                database
+                    .query_one("SELECT pg_terminate_backend($1)", &[&backend])
+                    .await
+                    .unwrap();
+            }
+            MigrationInterruption::DropFuture => pending.abort(),
+            _ => {}
+        }
+    }
+    let result = match pending.await {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => {
+            Err(anyhow::anyhow!("test dropped the migration future"))
+        }
+        Err(error) => panic!("migration task failed: {error}"),
+    };
+    if interruption != MigrationInterruption::Error {
+        database
+            .batch_execute("SELECT pg_advisory_unlock(6743148021)")
+            .await
+            .unwrap();
+    }
+    let prepared: bool = database
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_attribute
+                 WHERE attrelid = 'public.fragments'::regclass AND attname = $1
+                     AND NOT attisdropped)",
+            &[&column],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let completed: i64 = if prepared {
+        database
+            .query_one(
+                &format!("SELECT count(*) FROM public.fragments WHERE {column} IS NOT NULL"),
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0)
+    } else {
+        0
+    };
+    let failed = result.is_err();
+    let error_text = result
+        .as_ref()
+        .err()
+        .map(|error| format!("{error:#}"))
+        .unwrap_or_default();
+    drop(result);
+    let mut unchanged = false;
+    if completed > 0 {
+        database.batch_execute(&format!(
+            "CREATE TEMP TABLE completed_batches AS
+             SELECT id, xmin::text AS original_xmin FROM public.fragments WHERE {column} IS NOT NULL;
+             DROP TRIGGER fail_late_backfill ON public.fragments;"
+        )).await.unwrap();
+        let resumed = PostgresMemoryStore::connect(url.as_str(), None, 1, None)
+            .await
+            .unwrap();
+        unchanged = database.query_one(
+            "SELECT NOT EXISTS (SELECT 1 FROM public.fragments JOIN completed_batches USING (id)
+             WHERE fragments.xmin::text <> original_xmin)", &[]
+        ).await.unwrap().get(0);
+        drop(resumed);
+    }
+    admin.batch_execute(&cleanup).await.unwrap();
+    assert!(failed, "a failed migration must not return a ready store");
+    assert!(
+        completed > 0 && completed < row_count,
+        "completed batches must survive the late failure, got {completed}"
+    );
+    assert!(
+        unchanged,
+        "resuming must not rewrite completed {column} batches"
+    );
+    assert!(!error_text.contains("PRIVATE-SYNTHETIC-PAYLOAD"));
+    assert!(!error_text.contains("credential=canary"));
+    if matches!(
+        interruption,
+        MigrationInterruption::Error
+            | MigrationInterruption::Timeout
+            | MigrationInterruption::Cancel
+    ) {
+        for field in [
+            "migration_id=000",
+            "phase=backfill",
+            "elapsed_ms=",
+            "timeout_ms=",
+            "sqlstate=57014",
+        ] {
+            assert!(
+                error_text.contains(field),
+                "missing migration diagnostic field {field}"
+            );
+        }
+        assert!(
+            error_text.contains(&format!("completed_rows={}", row_count - 1)),
+            "timeout/cancellation must retain every earlier batch"
+        );
+    }
+}
+
 fn memory(agent_id: &str) -> PreparedMemory {
     PreparedMemory {
         id: Uuid::new_v4(),
@@ -959,6 +1198,118 @@ async fn reopening_current_schema_does_not_block_active_transactions() {
 }
 
 #[tokio::test]
+async fn interrupted_index_build_is_repaired_but_invalid_ready_schema_is_rejected() {
+    let (admin, url, cleanup) = isolated_database().await;
+    let store = PostgresMemoryStore::connect(url.as_str(), Some(("test-model", 2)), 1, None)
+        .await
+        .unwrap();
+    store.save(&memory("index-recovery")).await.unwrap();
+    drop(store);
+    let (database, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    database.batch_execute("CREATE TEMP TABLE original_rows AS SELECT id, xmin::text AS original_xmin FROM public.fragments;
+        DROP INDEX public.fragments_document_search_idx").await.unwrap();
+    assert!(database.batch_execute(
+        "CREATE UNIQUE INDEX CONCURRENTLY fragments_document_search_idx ON public.fragments(memory_id)"
+    ).await.is_err());
+    let invalid: bool = database.query_one(
+        "SELECT NOT indisvalid FROM pg_index WHERE indexrelid = 'public.fragments_document_search_idx'::regclass", &[]
+    ).await.unwrap().get(0);
+    let recovered = PostgresMemoryStore::connect(url.as_str(), None, 1, None).await;
+    let unchanged: bool = database
+        .query_one(
+            "SELECT NOT EXISTS (SELECT 1 FROM public.fragments JOIN original_rows USING(id)
+         WHERE fragments.xmin::text <> original_xmin)",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    database
+        .batch_execute("ALTER TABLE public.fragments DISABLE TRIGGER fragments_search_vector")
+        .await
+        .unwrap();
+    let disabled_trigger = PostgresMemoryStore::connect(url.as_str(), None, 1, None).await;
+    database
+        .batch_execute(
+            "ALTER TABLE public.fragments ENABLE TRIGGER fragments_search_vector;
+        DROP INDEX public.fragments_document_search_idx;
+        CREATE INDEX fragments_document_search_idx ON public.fragments(memory_id)",
+        )
+        .await
+        .unwrap();
+    let wrong_index = PostgresMemoryStore::connect(url.as_str(), None, 1, None).await;
+    admin.batch_execute(&cleanup).await.unwrap();
+    assert!(invalid && recovered.is_ok() && unchanged);
+    assert!(disabled_trigger.is_err() && wrong_index.is_err());
+}
+
+#[tokio::test]
+async fn document_backfill_uses_indexed_batch_reads_and_updates() {
+    let (admin, url, cleanup) = isolated_database().await;
+    let store = PostgresMemoryStore::connect(url.as_str(), None, 1, None)
+        .await
+        .unwrap();
+    drop(store);
+    let (mut database, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    database
+        .batch_execute(
+            "INSERT INTO public.memories(id, agent_id, raw_text)
+         SELECT ('00000000-0000-0000-0000-' || lpad(number::text,12,'0'))::uuid,
+             'batch-plan-fixture', 'Bounded query plan.' FROM generate_series(1,20000) AS number;
+         INSERT INTO public.fragments(id,memory_id,text) SELECT id,id,raw_text FROM public.memories;
+         ALTER TABLE public.fragments DROP COLUMN search_vector CASCADE;",
+        )
+        .await
+        .unwrap();
+    database
+        .batch_execute(include_str!(
+            "../crates/mindleak-storage-postgres/migrations/0007-document-search.sql"
+        ))
+        .await
+        .unwrap();
+    database
+        .batch_execute(
+            "CREATE INDEX fragments_migration_order_idx ON public.fragments(memory_id,id);
+        ANALYZE public.memories; ANALYZE public.fragments",
+        )
+        .await
+        .unwrap();
+    let transaction = database.transaction().await.unwrap();
+    let cursor = Uuid::parse_str("00000000-0000-0000-0000-000000010000").unwrap();
+    let plan = transaction
+        .query(
+            &format!(
+                "EXPLAIN (ANALYZE, VERBOSE) {}",
+                include_str!(
+                    "../crates/mindleak-storage-postgres/migrations/document-search-batch.sql"
+                )
+            ),
+            &[&Some(cursor), &Some(cursor), &1024_i64],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>();
+    transaction.rollback().await.unwrap();
+    admin.batch_execute(&cleanup).await.unwrap();
+    assert!(
+        !plan
+            .iter()
+            .any(|line| line.contains("Seq Scan on public.fragments")
+                || line.contains("Seq Scan on public.memories")),
+        "a bounded batch must not rescan application tables: {}",
+        plan.join("\n")
+    );
+}
+
+#[tokio::test]
 async fn schema_has_exactly_three_tables_and_locks_the_embedding_space() {
     let (store, client) = setup().await;
     store.health().await.unwrap();
@@ -1449,6 +1800,149 @@ async fn model_free_upgrade_preserves_legacy_vectors_and_model_binding() {
         assert_eq!(recalled[0].text, fragment.text);
     }
     admin.batch_execute(&cleanup).await.unwrap();
+}
+
+#[tokio::test]
+async fn batched_upgrade_matches_original_vectors_order_and_preserves_all_source_data() {
+    let (admin, url, cleanup) = isolated_database().await;
+    let (database, connection) = tokio_postgres::connect(url.as_str(), NoTls).await.unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    database
+        .batch_execute(&format!(
+            include_str!("../crates/mindleak-storage-postgres/schema.sql"),
+            dimensions = 2,
+        ))
+        .await
+        .unwrap();
+    for migration in [
+        include_str!("../crates/mindleak-storage-postgres/migrations/0002-optional-embeddings.sql"),
+        include_str!("../crates/mindleak-storage-postgres/migrations/0003-fact-lifecycle.sql"),
+        include_str!("../crates/mindleak-storage-postgres/migrations/0006-keyword-identifiers.sql"),
+    ] {
+        database.batch_execute(migration).await.unwrap();
+    }
+    let fixtures = [
+        (
+            "  Heading:\n\tFirst step.\nSecond step.  ",
+            vec!["Second step.", "Heading:", "First step."],
+        ),
+        (
+            "Repeated fact. Repeated fact.",
+            vec!["Repeated fact.", "Repeated fact."],
+        ),
+        (
+            "Literal statement. Original paragraph.",
+            vec!["Literal statement.", "Nonliteral extraction."],
+        ),
+        (
+            "System.Reflection.TargetInvocationException with v1.2 and dev@example.com.",
+            vec!["System.Reflection.TargetInvocationException with v1.2 and dev@example.com."],
+        ),
+        (
+            "caf\u{e9}\t\u{2003}na\u{ef}ve\n\u{6771}\u{4eac}",
+            vec!["caf\u{e9}", "na\u{ef}ve", "\u{6771}\u{4eac}"],
+        ),
+    ];
+    for (raw_text, fragments) in fixtures {
+        let memory_id = Uuid::new_v4();
+        let context = serde_json::json!({
+            "scope": "migration-parity", "sessionId": "original-session",
+            "source": "https://example.com/wiki/AuthFlow/config-file.md?release=v1.2",
+            "summary": "Heading step \"quoted phrase\" System.Type retries disabled " .repeat(100),
+        })
+        .to_string();
+        database
+            .execute(
+                "INSERT INTO public.memories(id, agent_id, raw_text, context, created_at)
+             VALUES ($1, 'migration-parity', $2, $3::text::jsonb, '2026-01-01T00:00:00Z')",
+                &[&memory_id, &raw_text, &context],
+            )
+            .await
+            .unwrap();
+        for (position, text) in fragments.into_iter().enumerate() {
+            database
+                .execute(
+                    "INSERT INTO public.fragments(id, memory_id, text, embedding, importance,
+                 tier, state, evidence, pinned, useful_sessions, confirmed_sessions,
+                 reinforced_at, first_evidence_at)
+                 VALUES ($1, $2, $3, CASE WHEN $4 THEN '[1,0]'::vector ELSE NULL END, 0.75,
+                 'long_term', 'archived', 'disputed', true, 7, 3,
+                 '2026-01-02T01:02:03Z', '2026-01-01T01:02:03Z')",
+                    &[&Uuid::new_v4(), &memory_id, &text, &(position % 2 == 0)],
+                )
+                .await
+                .unwrap();
+        }
+    }
+    database.batch_execute(
+        "INSERT INTO public.memories(id, agent_id, raw_text)
+         VALUES ('ffffffff-0000-0000-0000-000000000001', 'migration-parity',
+            (SELECT string_agg('Step ' || number || '.', ' ' ORDER BY number) FROM generate_series(1,65) AS number));
+         INSERT INTO public.fragments(id, memory_id, text)
+         SELECT ('ffffffff-0000-0000-0001-' || lpad(number::text,12,'0'))::uuid,
+             'ffffffff-0000-0000-0000-000000000001', 'Step ' || number || '.'
+         FROM generate_series(1,65) AS number;
+         INSERT INTO public.relationships(source_fragment, target_fragment, relationship_type, evidence_session)
+         SELECT first.id, second.id, 'confirms', 'preserved-session'
+         FROM (SELECT id FROM public.fragments ORDER BY id LIMIT 1) AS first
+         CROSS JOIN (SELECT id FROM public.fragments ORDER BY id LIMIT 1 OFFSET 1) AS second;
+         COMMENT ON TABLE public.fragments IS '{\"model\":\"test-model\",\"dimensions\":2}';
+         CREATE TEMP TABLE original_memories AS SELECT id, to_jsonb(memories) AS record FROM public.memories;
+         CREATE TEMP TABLE original_fragments AS SELECT id, to_jsonb(fragments) AS record FROM public.fragments;
+         CREATE TEMP TABLE original_relationships AS SELECT to_jsonb(relationships) AS record FROM public.relationships;
+         CREATE TEMP TABLE original_vectors AS
+         SELECT fragments.id, setweight(public.mindleak_keyword_vector(fragments.text), 'C') ||
+             setweight(public.mindleak_keyword_vector(COALESCE(context->>'source','') || ' ' ||
+             COALESCE(context->>'summary','')) || to_tsvector('pg_catalog.english',
+             regexp_replace(COALESCE(context->>'source',''), '[[:punct:]]+', ' ', 'g')), 'D') AS vector
+         FROM public.fragments JOIN public.memories ON memories.id = memory_id;
+         CREATE TEMP TABLE original_order AS
+         WITH positions AS (
+             SELECT fragments.id, fragments.memory_id,
+                 strpos(regexp_replace(memories.raw_text, '[[:space:]]+', ' ', 'g'), fragments.text) AS source_position
+             FROM public.fragments JOIN public.memories ON memories.id = fragments.memory_id
+         ), known AS (
+             SELECT memory_id FROM positions GROUP BY memory_id
+             HAVING min(source_position) > 0 AND count(*) <= 64 AND count(DISTINCT source_position) = count(*)
+         ) SELECT positions.id,
+             (row_number() OVER (PARTITION BY memory_id ORDER BY source_position) - 1)::integer AS fragment_index
+         FROM positions JOIN known USING (memory_id);"
+    ).await.unwrap();
+    let store = PostgresMemoryStore::connect(url.as_str(), Some(("test-model", 2)), 1, None)
+        .await
+        .unwrap();
+    let mismatches: i64 = database.query_one(
+        "SELECT
+         (SELECT count(*) FROM public.memories JOIN original_memories USING (id)
+            WHERE to_jsonb(memories) - 'request_id' - 'request_payload' - 'write_result' - 'domain_entity' <> record
+               OR domain_entity IS NOT NULL) +
+         (SELECT count(*) FROM public.fragments JOIN original_fragments USING (id)
+          WHERE to_jsonb(fragments) - 'search_vector' - 'fragment_index' <> record) +
+            (SELECT count(*) FROM ((SELECT to_jsonb(relationships) - ARRAY['edge_memory_id', 'source_entity',
+                'target_entity', 'domain_namespace', 'domain_id', 'predicate', 'provenance'] FROM public.relationships)
+          EXCEPT (SELECT record FROM original_relationships)) AS changes) +
+            (SELECT count(*) FROM public.relationships WHERE num_nonnulls(edge_memory_id, source_entity,
+                target_entity, domain_namespace, domain_id, predicate, provenance) <> 0) +
+         (SELECT count(*) FROM public.fragments JOIN original_vectors USING (id) WHERE search_vector <> vector) +
+         (SELECT count(*) FROM public.fragments LEFT JOIN original_order USING (id)
+          WHERE fragments.fragment_index IS DISTINCT FROM original_order.fragment_index)", &[]
+    ).await.unwrap().get(0);
+    let counts = database.query_one(
+        "SELECT (SELECT count(*) FROM public.memories), (SELECT count(*) FROM public.fragments),
+         (SELECT count(*) FROM public.relationships), obj_description('public.fragments'::regclass, 'pg_class')", &[]
+    ).await.unwrap();
+    drop(store);
+    admin.batch_execute(&cleanup).await.unwrap();
+    assert_eq!(mismatches, 0);
+    assert_eq!(counts.get::<_, i64>(0), 6);
+    assert_eq!(counts.get::<_, i64>(1), 76);
+    assert_eq!(counts.get::<_, i64>(2), 1);
+    assert_eq!(
+        counts.get::<_, String>(3),
+        "{\"model\":\"test-model\",\"dimensions\":2}"
+    );
 }
 
 #[tokio::test]

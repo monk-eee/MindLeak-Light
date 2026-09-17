@@ -119,27 +119,26 @@ impl MemoryStore for PostgresMemoryStore {
             .filter(|domain| matches!(domain, DomainWrite::Entity { .. }))
             .map(serde_json::to_string)
             .transpose()?;
+        let conflict = if entity.is_some() {
+            "ON CONFLICT DO NOTHING"
+        } else {
+            "ON CONFLICT (agent_id, request_id) WHERE request_id IS NOT NULL DO NOTHING"
+        };
         let inserted = transaction
             .execute(
-                "INSERT INTO public.memories (id, agent_id, raw_text, context, request_id, request_payload, write_result, domain_entity) \
-                 VALUES ($1, $2, $3, $4::text::jsonb, $5, $6::text::jsonb, $7::text::jsonb, $8::text::jsonb) \
-                 ON CONFLICT (agent_id, request_id) WHERE request_id IS NOT NULL DO NOTHING",
+                &format!("INSERT INTO public.memories (id, agent_id, raw_text, context, request_id, request_payload, write_result, domain_entity) \
+                 VALUES ($1, $2, $3, $4::text::jsonb, $5, $6::text::jsonb, $7::text::jsonb, $8::text::jsonb) {conflict}"),
                 &[&memory.id, &memory.agent_id, &memory.raw_text, &serde_json::to_string(&memory.context)?,
                   &request_id, &payload, &receipt, &entity],
             )
             .await
-            .map_err(|error| {
-                if error.as_db_error().and_then(|error| error.constraint()) == Some("memories_domain_entity_identity_idx") {
-                    anyhow::Error::new(InvalidInput("entity identity already exists; resume with the original agentId, requestId and exact payload".into()))
-                } else {
-                    anyhow::Error::new(error).context("store raw memory")
-                }
-            })?;
+            .context("store raw memory")?;
         if inserted == 0 {
             let row = transaction
-                .query_one(WRITE_REPLAY_SQL, &[&memory.agent_id, &request_id, &payload])
+                .query_opt(WRITE_REPLAY_SQL, &[&memory.agent_id, &request_id, &payload])
                 .await
-                .context("read concurrently committed write")?;
+                .context("read concurrently committed write")?
+                .ok_or_else(|| InvalidInput("entity identity or memory ID already exists; resume with the original agentId, requestId and exact payload".into()))?;
             let result = write_receipt(row)?;
             transaction
                 .commit()

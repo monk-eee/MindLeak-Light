@@ -59,6 +59,14 @@ async fn concurrent_domain_identity_retries_share_one_committed_episode() {
             receipt = Some(result);
         }
     }
+    let mut different_key = original.clone();
+    different_key.id = Uuid::new_v4();
+    different_key.request.as_mut().unwrap().request_id = Uuid::new_v4();
+    assert!(store
+        .save(&different_key)
+        .await
+        .unwrap_err()
+        .is::<InvalidInput>());
     assert_eq!(
         database
             .query_one(
