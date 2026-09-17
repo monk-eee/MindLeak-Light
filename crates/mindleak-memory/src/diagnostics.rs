@@ -115,6 +115,9 @@ pub struct LearningCapabilities {
     pub model_preview_required: bool,
     pub acceptance: &'static str,
     pub recall_changes_knowledge: bool,
+    pub checkpoint_mode: &'static str,
+    pub checkpoint_triggers: Vec<&'static str>,
+    pub capture_format: &'static str,
 }
 
 #[derive(Debug, Serialize)]

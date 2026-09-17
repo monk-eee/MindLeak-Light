@@ -394,6 +394,12 @@ Capability discovery separates agent-authored chains from optional model preview
 and the actual retrieval strategy. The existing full search is still the default.
 Agents can author chains directly with v0.6.0; no formation model is required.
 
+The unreleased companion skill also supplies [evidence checkpoints](CHAINS.md#evidence-checkpoints)
+and `captureCalls.project`/`.general` templates. They use existing ordinary writes
+with a real source and short retrieval cues, so no new write API is required.
+The agent decides when verified evidence warrants a capture; the server does not
+observe task completion or save lessons automatically.
+
 | Tool | Arguments | Successful Result |
 |---|---|---|
 | `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (v0.3.0+) | `memoryId` and `fragments` with IDs, text, and tier after commit |

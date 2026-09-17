@@ -59,3 +59,28 @@ Formation, later verified reuse, and comparative improvement are separate claims
 More notes, agreement, accepted records, or revisions alone do not demonstrate
 learning benefit. A confidence estimate requires its actual method; omit invented
 precision. An observation is evidence of an experience, not automatically knowledge.
+
+## Evidence Checkpoints
+
+At a verified fix, verified failure, changed assumption, or before handoff,
+review what would save the next agent from rediscovery. Notice candidate lessons
+during the task, keep them in task state, and verify them before persistence.
+A failed approach is useful evidence when its actual failure and conditions are
+known; an untested explanation is not. The checkpoint is a decision, not a write
+quota or an extra call when nothing was learned.
+
+Reuse already inspected memory for the equivalent-evidence check. Search once
+only if needed, keeping the chosen scope. Use `captureCalls.project` or
+`captureCalls.general` for a new observation with conditions, observed outcome,
+reusable next action and actual verification/source. Put short, real retrieval
+cues in `context.summary`; keep the full qualified lesson in `text`. If it changes
+an existing observation or chain, use its explicit correction/challenge/revision
+operation instead of writing an unlinked replacement.
+
+Retain the request key and arguments until the receipt is confirmed. Check a
+successful new capture once using the intended retrieval cues and the same scope;
+do not repeat writes merely because a query misses. Only observed usefulness or
+new corroboration warrants feedback. Skip persistence for duplicate or unverified
+material. Agents choose these actions within existing approvals; there is no
+server monitor, automatic hook, autonomous acceptance or storage side effect from
+capability discovery. This complements, rather than replaces, the activation block.

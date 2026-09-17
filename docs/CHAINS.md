@@ -37,6 +37,31 @@ More stored notes, agreement or revisions alone does not establish learning.
 The compact/capability/diagnostic additions below are **unreleased work targeting
 v0.7.0**, not features of the published v0.6.0 binaries. Discover the actual schema.
 
+### Evidence Checkpoints
+
+The companion skill's capture workflow aims to prevent useful discoveries being
+lost between solving a problem and ending a session. Notice candidate lessons
+while working, verify them, then decide at a verified fix, failure, changed
+assumption or handoff whether there is new evidence worth keeping. A checkpoint
+can end with no write; it is not a quota.
+
+Reuse equivalent evidence already inspected in the task. The
+[capture recipes](../.agents/skills/mindleak-memory/references/tool-recipes.json)
+use ordinary `write_memory`: qualified conditions, outcome, next action and actual
+verification in `text`; the real reference in `context.source`; short topic/error
+or identifier cues in `context.summary`. This makes a later search possible using
+words the next agent knows, not a private run ID. Choose the configured project or
+general mode, keep a retry key, and verify a new capture is findable once. A miss
+does not justify a duplicate write. Use explicit correction/challenge/revision
+operations when updating an existing belief.
+
+Capability metadata exposes `learning.checkpointMode: agent_guided`,
+`checkpointTriggers` and `captureFormat`; the MCP handshake supplies the same
+guidance. No hook, monitor, model call or write runs automatically. Capture recipes
+use the existing v0.4.0+ contract; the updated skill and capability metadata are
+unreleased. Fresh-client tests prove storage, retrieval and retry behavior, not
+that an agent will follow the guidance or that more captures improve task results.
+
 ## Compatibility
 
 - There are still exactly three MCP tools and three application tables.
@@ -243,6 +268,14 @@ if the new chain is accepted. Update the pinned revision explicitly and validate
 the revised principle again. Challenges can still be recorded against stale
 principles; invalid support cannot be used to accept them.
 
+The unreleased fixes check counterexamples in both the pinned revisions and the
+current heads of prior supports, including challenges recorded after pinning.
+Old and new supporting heads are locked in a stable order during revision. A
+missing prior head fails safely instead of implying no later counterevidence.
+Inspect a changed support's current head as well as its pinned revision before
+revising; the pinned document does not contain later challenges. Directly retained
+counterexamples must be included in the new acceptance's explicit review.
+
 `state` (`candidate`, `accepted`, `retired`) and `review` (`unreviewed`,
 `reviewed`, `challenged`) are independent. An accepted chain can become
 challenged. Revising it returns it to candidate status. Older revisions are
@@ -268,6 +301,7 @@ or model work and no search filters or limit:
 ```
 
 `learning` reports agent-authored chains/principles and explicit validation.
+Its checkpoint fields guide capture decisions; they are not automated triggers.
 `formation` describes the optional preview provider, not whether an agent can
 author a chain. `decomposition` is separate again. `retrieval` reports the actual
 keyword/vector/hybrid strategy, supported `matchModes`, query diagnostics,
@@ -306,8 +340,11 @@ history; inspect ordinary `fragmentId` references for exact observations. Compac
 responses are capped at **32 KiB of serialized UTF-8 JSON**, including requested
 diagnostics. Overflow fails: lower `limit` or inspect individual records. Conditions
 and counterevidence are never shortened or silently dropped to meet the cap.
-Existing internal hydration bounds still apply; compact is a response projection,
-not a different relevance filter or a promise of less database/provider work.
+The compact limit is applied after projection; an unused full response does not
+impose its 512 KiB cap. Search hydration does not read raw source or revision
+history that only inspection returns. Selected-result and evidence-expansion
+bounds, snapshot checks and relevance filters remain unchanged. Full search and
+explicit inspection retain their existing budgets.
 
 ### Explicit Search Controls
 

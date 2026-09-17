@@ -260,6 +260,231 @@ async fn principle_revisions_cannot_drop_inherited_counterevidence() {
 }
 
 #[tokio::test]
+async fn principle_revisions_retain_counterevidence_added_after_support_was_pinned() {
+    let (store, mut database) = setup().await;
+    let observation = memory(&format!("principle-late-counters-{}", Uuid::new_v4()));
+    store.save(&observation).await.unwrap();
+    let counter = ChainEvidence {
+        fragment_id: observation.fragments[0].id,
+        role: ChainEvidenceRole::Counterexample,
+        reason: "The procedure failed after its supporting revision was pinned.".into(),
+    };
+    let validation = ChainValidation {
+        method: "Review controlled observations".into(),
+        result: "Supported within the recorded conditions".into(),
+        source: "synthetic:late-counter-validation".into(),
+        counter_evidence_reviewed: vec![],
+    };
+    let mut sources = Vec::new();
+    let mut supports = Vec::new();
+    for index in 0..3 {
+        let mut proposed = propose(&observation);
+        let ChainCommand::Propose { document, .. } = &mut proposed.request.chain else {
+            unreachable!()
+        };
+        document.claim.push_str(&format!(" comparison {index}"));
+        let chain_id = store.save_chain(&proposed).await.unwrap().chain_id;
+        store
+            .save_chain(&action(
+                &proposed,
+                ChainCommand::Accept {
+                    chain_id,
+                    expected_revision: 1,
+                    validation: validation.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        supports.push(mindleak_memory::ChainSupport {
+            chain_id,
+            revision: 2,
+            reason: "A validated comparison.".into(),
+        });
+        sources.push(proposed);
+    }
+    let mut principle = propose(&observation);
+    let ChainCommand::Propose { document, .. } = &mut principle.request.chain else {
+        unreachable!()
+    };
+    document.kind = mindleak_memory::KnowledgeKind::Principle;
+    document.evidence.clear();
+    document.supported_by = supports[..2].to_vec();
+    let mut replacement = document.clone();
+    replacement.supported_by = supports[1..].to_vec();
+    let chain_id = store.save_chain(&principle).await.unwrap().chain_id;
+    store
+        .save_chain(&action(
+            &principle,
+            ChainCommand::Accept {
+                chain_id,
+                expected_revision: 1,
+                validation: validation.clone(),
+            },
+        ))
+        .await
+        .unwrap();
+    store
+        .save_chain(&action(
+            &sources[0],
+            ChainCommand::Challenge {
+                chain_id: supports[0].chain_id,
+                expected_revision: 2,
+                evidence: vec![counter.clone()],
+            },
+        ))
+        .await
+        .unwrap();
+    let filter = ChainFilter {
+        agent_id: Some(observation.agent_id),
+        ..Default::default()
+    };
+    let stale = store
+        .inspect_chain(chain_id, None, None, &filter, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stale.requires_review);
+    let rejected = action(
+        &principle,
+        ChainCommand::Revise {
+            chain_id,
+            expected_revision: 2,
+            document: replacement.clone(),
+        },
+    );
+    let error = store.save_chain(&rejected).await.expect_err(
+        "replacing a challenged support must retain counterevidence added after the pinned revision",
+    );
+    assert!(error.is::<mindleak_memory::InvalidInput>());
+    assert!(store
+        .lookup_chain_write(&rejected.request)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        store
+            .inspect_chain(chain_id, None, None, &filter, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .chain
+            .revision,
+        2
+    );
+    replacement.evidence.push(counter.clone());
+    let raced = action(
+        &principle,
+        ChainCommand::Revise {
+            chain_id,
+            expected_revision: 2,
+            document: replacement.clone(),
+        },
+    );
+    let transaction = database.transaction().await.unwrap();
+    transaction
+        .query_one(
+            "SELECT id FROM public.memories WHERE chain_id=$1 AND chain_current FOR UPDATE",
+            &[&supports[0].chain_id],
+        )
+        .await
+        .unwrap();
+    let pending = store.save_chain(&raced);
+    tokio::pin!(pending);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut pending => panic!("revision did not wait for prior support: {result:?}"),
+                row = transaction.query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))",
+                    &[],
+                ) => if row.unwrap().get::<_, bool>(0) { break; },
+            }
+        }
+    }).await.expect("revision must lock the prior supporting head");
+    transaction
+        .execute(
+            "UPDATE public.memories SET chain_current=false WHERE chain_id=$1 AND chain_current",
+            &[&supports[0].chain_id],
+        )
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    let error = pending
+        .await
+        .expect_err("a missing prior head must not be treated as no counterevidence");
+    assert!(error.is::<mindleak_memory::InvalidInput>());
+    assert!(store
+        .lookup_chain_write(&raced.request)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        store
+            .inspect_chain(chain_id, None, None, &filter, 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .chain
+            .revision,
+        2
+    );
+    database
+        .execute(
+            "UPDATE public.memories SET chain_current=true WHERE chain_id=$1 AND chain_revision=3",
+            &[&supports[0].chain_id],
+        )
+        .await
+        .unwrap();
+    let revised = store
+        .save_chain(&action(
+            &principle,
+            ChainCommand::Revise {
+                chain_id,
+                expected_revision: 2,
+                document: replacement,
+            },
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revised.revision, 3);
+    assert!(
+        store
+            .save_chain(&action(
+                &principle,
+                ChainCommand::Accept {
+                    chain_id,
+                    expected_revision: 3,
+                    validation: validation.clone(),
+                }
+            ))
+            .await
+            .is_err(),
+        "acceptance must review the retained counterexample"
+    );
+    let mut reviewed = validation;
+    reviewed.counter_evidence_reviewed.push(counter.fragment_id);
+    store
+        .save_chain(&action(
+            &principle,
+            ChainCommand::Accept {
+                chain_id,
+                expected_revision: 3,
+                validation: reviewed,
+            },
+        ))
+        .await
+        .unwrap();
+    let accepted = store
+        .inspect_chain(chain_id, None, None, &filter, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!accepted.requires_review);
+    assert_eq!(accepted.evidence[0].reference, counter);
+}
+
+#[tokio::test]
 async fn knowledge_search_uses_pgvector_and_preserves_hybrid_branch_scores() {
     let (store, _) = setup().await;
     let observation = memory(&format!("knowledge-semantic-{}", Uuid::new_v4()));

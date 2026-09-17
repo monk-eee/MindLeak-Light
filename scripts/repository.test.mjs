@@ -634,6 +634,17 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
     knowledge: {operation: "search", query: "$QUERY", view: "compact"}, scope: "$SCOPE", limit: 5,
   });
   for (const recipe of Object.values(recipes.learningCalls)) assert.equal(recipe.name, "recall_memory");
+  assert.deepEqual(Object.keys(recipes.captureCalls).sort(), ["general", "project"]);
+  for (const [mode, recipe] of Object.entries(recipes.captureCalls)) {
+    assert.equal(recipe.name, "write_memory");
+    assert.deepEqual(recipe.arguments, {
+      agentId: "$AGENT_ID", requestId: "$REQUEST_ID", text: "$FACT_TEXT",
+      context: {...(mode === "project" ? {scope: "$SCOPE"} : {}), sessionId: "$SESSION_ID", source: "$SOURCE", summary: "$RETRIEVAL_CUES"},
+    });
+  }
+  for (const term of ["Evidence Checkpoints", "before handoff", "captureCalls.project", "retrieval cues", "No quota"]) {
+    assert.ok(skill.includes(term), `missing checkpoint boundary: ${term}`);
+  }
   assert.ok(skill.includes("General recall searches across all scopes"));
   assert.ok(skill.includes("Two unscoped facts may be linked"));
   for (const recipe of Object.values(recipes.generalCalls)) {

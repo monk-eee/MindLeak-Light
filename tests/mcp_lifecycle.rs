@@ -1,7 +1,11 @@
 use super::*;
 use std::collections::HashMap;
 
-fn recipe(recipes: &Value, name: &str, bindings: &HashMap<&str, Value>) -> CallToolRequestParams {
+pub(super) fn recipe(
+    recipes: &Value,
+    name: &str,
+    bindings: &HashMap<&str, Value>,
+) -> CallToolRequestParams {
     fn substitute(value: &Value, bindings: &HashMap<&str, Value>) -> Value {
         match value {
             Value::String(text) if text.starts_with('$') => bindings
