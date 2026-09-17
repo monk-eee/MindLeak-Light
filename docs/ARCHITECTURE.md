@@ -1,6 +1,6 @@
 # Architecture
 
-This describes v0.4.0, including bounded evidence, original-source inspection, and document recall:
+This describes v0.5.0, including local access and agent instruction setup alongside bounded evidence, original-source inspection, and document recall:
 contextual fact lifecycle, hybrid recall, shared query
 embeddings, provider safeguards, retry-safe writes, modular storage, response
 budgets, and ranking diagnostics.
@@ -9,7 +9,7 @@ are described below but are not yet diagrammed. Both are included in v0.4.0;
 older packages do not gain these features from updated documentation.
 See [installation](INSTALL.md) for packages and upgrade requirements.
 
-The unreleased `agent setup`/`agent check` CLI installs the bundled workflow on
+The v0.5.0 `agent setup`/`agent check` CLI installs the bundled workflow on
 the client side. It never adds MCP tools or application tables. Project files
 record the selected connection, explicit general/scoped mode, and optional scope;
 an opt-in SDK probe reports tool
@@ -29,7 +29,7 @@ previews include their fonts and scene data, so they can also be opened in
 
 ## Local and Shared Access
 
-Unreleased after v0.4.0, the native executable also provides `local setup`,
+From v0.5.0, the native executable also provides `local setup`,
 `configure`, `connect`, `status`, and an explicit native macOS/Windows loopback
 HTTP bridge. These are CLI operations, not additional MCP tools. The existing
 three tools, storage abstractions and three-table schema are unchanged. The

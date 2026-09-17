@@ -128,7 +128,7 @@ Record both `local status` and the client's advertised server version. The
 published-image local checks used v0.4.0, image reference
 `docker.io/monkeemagic/mindleak-light@sha256:b0686294b22c31ea0b6bef64cb139947b04edc27fb2e196923fa5e1f554e381c`,
 ARM64 image ID `8c0b4b8ca0e002d65dff29f332187410c54e365777852a12cb4c57cd03e593b7`.
-The native launcher is new source, not a republished v0.4.0 artifact. Preserve
+The native launcher ships in v0.5.0, not the older v0.4.0 artifacts. Preserve
 only safe metadata and results; do not retain raw headers, memory text or client
 secret storage in CI artifacts.
 
@@ -153,7 +153,7 @@ checks, not model-behaviour or native Copilot/Claude/Codex activation evidence;
 record those separately using the [acceptance checklist](docs/INTEGRATION.md#verify-the-agent-behaviour).
 Never turn an unrun client combination into a compatibility claim.
 
-The unreleased [project installer](docs/INSTALL.md#automatic-project-setup) lives
+The v0.5.0 [project installer](docs/INSTALL.md#automatic-project-setup) lives
 in [agent_setup.rs](crates/mindleak-mcp/src/agent_setup.rs); its
 [connection probe](crates/mindleak-mcp/src/agent_setup/probe.rs) uses the official
 SDK rather than hand-written MCP requests. Both run before server environment

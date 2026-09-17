@@ -117,7 +117,7 @@
 - Shared HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.
-- The unreleased credential-free launcher requires a local Docker/Podman engine
+- The v0.5.0 credential-free launcher requires a local Docker/Podman engine
   and the intended existing all-in-one database. It does not discover arbitrary
   PostgreSQL layouts or silently recreate missing stores. Container replacement
   requires explicit reconfiguration of the pinned container ID.

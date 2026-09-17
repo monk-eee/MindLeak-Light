@@ -1174,7 +1174,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mindleak-decomposition"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-embeddings"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-mcp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-memory"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-provider"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -1266,7 +1266,7 @@ dependencies = [
 
 [[package]]
 name = "mindleak-storage-postgres"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
