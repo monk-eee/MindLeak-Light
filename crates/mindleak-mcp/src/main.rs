@@ -1,9 +1,11 @@
 mod config;
+mod local;
+mod local_http;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use mindleak_decomposition::{OpenAiDecomposer, SentenceDecomposer};
 use mindleak_embeddings::{OpenAiEmbedder, OpenAiRelevanceRetriever};
 use mindleak_mcp::{http_router, MemoryMcp};
@@ -27,14 +29,35 @@ enum Transport {
     about = "Shared, decomposed agent memory over MCP"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     #[arg(long, value_enum, env = "MINDLEAK_TRANSPORT", default_value = "stdio")]
     transport: Transport,
     #[arg(long, env = "MINDLEAK_LISTEN", default_value = "127.0.0.1:8088")]
     listen: SocketAddr,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    #[command(
+        subcommand,
+        about = "Credential-free local Docker access and diagnostics"
+    )]
+    Local(local::LocalCommand),
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "local")
+    {
+        let args = Args::parse();
+        let Some(Command::Local(command)) = args.command else {
+            unreachable!()
+        };
+        return local::run(command).await;
+    }
     match dotenvy::dotenv() {
         Ok(_) => {}
         Err(error) if error.not_found() => {}

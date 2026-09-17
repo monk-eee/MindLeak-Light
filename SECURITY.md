@@ -6,10 +6,33 @@ MindLeak Light stores potentially sensitive raw memories, fragments, and vectors
 All agents on a deployment share access. `agentId` is an attribution/filter field,
 not authentication or tenant isolation. A vector is not an anonymized memory.
 
-Stdio relies on the launching operating-system account. HTTP requires a bearer
+Stdio relies on the launching operating-system account. Ordinary HTTP requires a bearer
 token on every route, including health. It rejects browser Origin headers, limits
 request bodies to 256 KiB, and does not enable CORS. Tokens are compared using a
 constant-time primitive. This is not OAuth or a per-agent authorization system.
+
+The unreleased local launcher offers credential-free Docker/stdio, validates
+local engine endpoints and pins the selected container ID in generated VS Code
+configuration. New trials publish no ports and use `--network none`. Their
+internal HTTP worker remains token-protected with an automatically generated
+token that clients do not need. Existing shared server settings are not weakened
+or replaced by local configuration.
+
+An explicit `--allow-unauthenticated-loopback` exception is available only in the
+native macOS/Windows `local http` bridge. It rejects non-loopback listeners,
+nonlocal peers, mismatched Host, browser Origin, and forwarding headers. Linux
+builds, including shipped containers, refuse this mode before binding. Docker
+host port mappings therefore cannot publish an unauthenticated container
+listener through this option. Do not proxy or tunnel the native bridge. Local
+users and administrators are inside its trust boundary; this is not protection
+against a privileged operator deliberately exposing a local service.
+
+MindLeak does not provide OAuth client registration. Cancel unexpected registration dialogs.
+
+The fixed 401 recovery body and bearer challenge do not prevent client OAuth
+fallback. Use [scoped cached-input recovery](docs/INTEGRATION.md#recover-a-rejected-or-cached-token),
+not authentication removal, for shared HTTP. Never put credentials, full
+container environments, or memory content into support diagnostics.
 
 ## Deployment
 

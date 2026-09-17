@@ -5,7 +5,7 @@ use axum::{
     extract::{Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -62,13 +62,9 @@ pub fn http_router(
         )))
 }
 
-async fn authorize(
-    State(token): State<Arc<str>>,
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
+async fn authorize(State(token): State<Arc<str>>, request: Request, next: Next) -> Response {
     if request.headers().contains_key(header::ORIGIN) {
-        return Err(StatusCode::FORBIDDEN);
+        return StatusCode::FORBIDDEN.into_response();
     }
     let supplied = request
         .headers()
@@ -77,7 +73,12 @@ async fn authorize(
         .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or_default();
     if !bool::from(supplied.as_bytes().ct_eq(token.as_bytes())) {
-        return Err(StatusCode::UNAUTHORIZED);
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer realm=\"mindleak-light\""),
+             (header::CACHE_CONTROL, "no-store")],
+            "HTTP credentials are missing or rejected. Use the current configured bearer token, or use the local stdio launcher. MindLeak does not provide OAuth client registration. Cancel unexpected registration dialogs.",
+        ).into_response();
     }
-    Ok(next.run(request).await)
+    next.run(request).await
 }

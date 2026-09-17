@@ -1,11 +1,3 @@
 {
-  "servers": {
-    "mindleak-light": {
-      "type": "http",
-      "url": "http://127.0.0.1:8088/mcp",
-      "headers": {
-        "Authorization": "Bearer mindleak-light-development-token-not-for-production"
-      }
-    }
-  }
+  "servers": {}
 }
