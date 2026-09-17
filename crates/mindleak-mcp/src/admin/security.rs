@@ -20,7 +20,10 @@ pub(super) fn hash(bytes: &[u8]) -> String {
 }
 
 pub(super) fn hash_file(path: &Path) -> AdminResult<String> {
-    let mut file = open_file(path)?;
+    hash_opened_file(open_file(path)?)
+}
+
+fn hash_opened_file(mut file: File) -> AdminResult<String> {
     let mut hash = Sha256::new();
     let mut buffer = [0; 65536];
     loop {
@@ -35,7 +38,15 @@ pub(super) fn hash_file(path: &Path) -> AdminResult<String> {
     Ok(hex(&hash.finalize()))
 }
 
+pub(super) fn hash_executable(path: &Path) -> AdminResult<String> {
+    hash_opened_file(open_regular_file(path, true)?)
+}
+
 pub(super) fn open_file(path: &Path) -> AdminResult<File> {
+    open_regular_file(path, false)
+}
+
+fn open_regular_file(path: &Path, allow_hard_links: bool) -> AdminResult<File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -60,7 +71,7 @@ pub(super) fn open_file(path: &Path) -> AdminResult<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() != 1 {
+        if !allow_hard_links && metadata.nlink() != 1 {
             return Err(failure("inventory", "linked_file_refused", 3));
         }
     }
@@ -74,7 +85,7 @@ pub(super) fn open_file(path: &Path) -> AdminResult<File> {
         if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
             return Err(failure("inventory", "file_identity_unavailable", 3));
         }
-        if information.nNumberOfLinks != 1
+        if !allow_hard_links && information.nNumberOfLinks != 1
             || information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         {
             return Err(failure("inventory", "linked_file_refused", 3));
@@ -132,12 +143,14 @@ pub(super) async fn private(path: &Path, cancel: &CancellationToken) -> AdminRes
 }
 
 pub(super) fn directory(path: &Path) -> AdminResult<()> {
-    let mut builder = std::fs::DirBuilder::new();
+    let builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = builder;
         builder.mode(0o700);
-    }
+        builder
+    };
     builder
         .create(path)
         .map_err(|_| failure("staging", "owned_directory_creation_failed", 3))
@@ -274,6 +287,23 @@ pub(super) async fn reference(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executable_fingerprints_allow_cargo_hard_links_without_allowing_asset_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("engine");
+        let cargo_alias = directory.path().join("cargo-engine");
+        std::fs::write(&executable, b"engine-fixture").unwrap();
+        std::fs::hard_link(&executable, &cargo_alias).unwrap();
+        assert_eq!(
+            hash_executable(&cargo_alias).unwrap(),
+            hash(b"engine-fixture")
+        );
+        assert_eq!(
+            hash_file(&cargo_alias).err().unwrap().code,
+            "linked_file_refused"
+        );
+    }
 
     #[test]
     fn inventory_refuses_hard_linked_files() {

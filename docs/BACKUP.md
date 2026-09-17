@@ -24,8 +24,10 @@ before a supported release. Successful upload alone is not verified recovery.
 Unix private directories need owner-only `0700` and secrets `0600`. Windows needs
 an owner-only ACL (SYSTEM/Administrators also permitted) with container/object
 inheritance on staging directories. Configure it for the intended unattended
-account. Hard links, reparse points, and symlink inputs are refused. Configuration
-contains references, never actual passwords, SAS tokens, or webhook credentials.
+account. Archive inputs, credentials, and configuration refuse hard links,
+reparse points, and symlinks. Executable checksum verification permits Cargo's
+hard-linked engine artifacts without permitting links in archived inputs.
+Configuration contains references, never passwords, SAS tokens, or webhook credentials.
 
 ## Configuration
 

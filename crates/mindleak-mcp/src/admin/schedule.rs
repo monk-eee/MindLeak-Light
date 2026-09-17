@@ -237,7 +237,8 @@ pub(super) async fn inspect(
     }
     let unchanged = security::hash_file(&registry.config_path).ok().as_deref()
         == Some(&registry.config_sha256)
-        && security::hash_file(&registry.binary).ok().as_deref() == Some(&registry.binary_sha256);
+        && security::hash_executable(&registry.binary).ok().as_deref()
+            == Some(&registry.binary_sha256);
     let installed = registry.platform == std::env::consts::OS
         && unchanged
         && jobs.len() == 2
@@ -449,7 +450,7 @@ pub(super) async fn install(
         config_path: config_path.clone(),
         config_sha256: security::hash_file(&config_path)?,
         binary: binary.clone(),
-        binary_sha256: security::hash_file(&binary)?,
+        binary_sha256: security::hash_executable(&binary)?,
         jobs: Vec::new(),
     };
     for target in ["all"] {

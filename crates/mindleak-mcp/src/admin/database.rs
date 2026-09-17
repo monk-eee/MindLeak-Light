@@ -313,7 +313,7 @@ impl Database {
             }
             hash
         } else {
-            security::hash_file(&database.engine_path()?)?
+            security::hash_executable(&database.engine_path()?)?
         };
         Ok(database)
     }
