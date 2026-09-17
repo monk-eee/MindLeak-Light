@@ -57,6 +57,9 @@ export function packageBinary(root, target, version) {
       "assets/mindleak_logo.png", "assets/mindleak_128x128.png",
       "assets/architecture.excalidraw", "assets/architecture-overview.svg",
       "assets/architecture-write.svg", "assets/architecture-recall.svg", "assets/architecture-lifecycle.svg",
+      ".agents/skills/mindleak-memory/SKILL.md",
+      ".agents/skills/mindleak-memory/references/agent-policy.md",
+      ".agents/skills/mindleak-memory/references/tool-recipes.json",
     ]) {
       const destination = join(staging, name);
       mkdirSync(dirname(destination), { recursive: true });

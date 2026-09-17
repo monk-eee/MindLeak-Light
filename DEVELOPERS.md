@@ -89,6 +89,27 @@ The JavaScript integration example is optional and isolated from the server:
 test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 `npm --prefix examples run memory`. It writes one sample memory per run.
 
+### Companion Skill
+
+The canonical agent workflow lives in
+[the skill bundle](.agents/skills/mindleak-memory/SKILL.md), with one
+[activation policy](.agents/skills/mindleak-memory/references/agent-policy.md)
+and versioned [tool recipes](.agents/skills/mindleak-memory/references/tool-recipes.json).
+The agent guide, Copilot instructions, and Claude entry point route to those
+files; README and integration snippets are checked against the policy. Keep
+`metadata.version` and `skillVersion` aligned when behaviour changes, and update
+recipes with the actual advertised MCP contract. No runtime inference or new
+tool permissions are part of installing this bundle.
+
+The repository suite checks discovery metadata, self-contained references,
+instruction routing, and byte-for-byte native package inclusion. The database
+MCP suite runs the shipped recipes across fresh client processes with separate
+writer IDs, shared scope, source inspection, correction, history, and failure
+checks. Use a disposable `_test` database for it. These are protocol-contract
+checks, not model-behaviour or native Copilot/Claude/Codex activation evidence;
+record those separately using the [acceptance checklist](docs/INTEGRATION.md#verify-the-agent-behaviour).
+Never turn an unrun client combination into a compatibility claim.
+
 ### Released-Baseline Gate
 
 The required PostgreSQL CI job also runs
