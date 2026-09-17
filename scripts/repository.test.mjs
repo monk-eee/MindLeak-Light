@@ -215,6 +215,11 @@ test("required CI includes release comparisons and a fresh-volume restore with r
   assert.match(integration, /name: Compare with the pinned released baseline\n\s+timeout-minutes: 12/);
   assert.match(integration, /MINDLEAK_BASELINE_DATABASE_URL:/);
   assert.match(integration, /if: always\(\)[\s\S]*actions\/upload-artifact/);
+  const output = "${{ runner.temp }}/mindleak-regression-${{ github.run_id }}-${{ github.run_attempt }}";
+  assert.ok(integration.includes(`REGRESSION_OUTPUT: ${output}`),
+    "release comparison output must be outside the restored Cargo target cache");
+  assert.ok(integration.includes('--output "$REGRESSION_OUTPUT"'));
+  assert.ok(integration.includes(`path: ${output}/`), "upload the same per-run evidence directory");
   const container = workflow.slice(workflow.indexOf("  all-in-one:"));
   assert.match(container, /regression-baseline\.json/);
   assert.match(container, /shell: bash[\s\S]*container-smoke\.mjs --restore/);
