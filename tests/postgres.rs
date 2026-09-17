@@ -108,6 +108,11 @@ async fn dropped_future_backfill_preserves_committed_batches() {
 }
 
 async fn interrupted_backfill(column: &str, interruption: MigrationInterruption) {
+    let row_count: i64 = if interruption == MigrationInterruption::Timeout {
+        17
+    } else {
+        2049
+    };
     let (admin, url, cleanup) = isolated_database().await;
     let store = PostgresMemoryStore::connect(url.as_str(), None, 1, None)
         .await
@@ -131,16 +136,16 @@ async fn interrupted_backfill(column: &str, interruption: MigrationInterruption)
             "INSERT INTO public.memories (id, agent_id, raw_text)
          SELECT ('00000000-0000-0000-0000-' || lpad(number::text, 12, '0'))::uuid,
                 'migration-regression', 'Migration batch fixture.'
-         FROM generate_series(1, 2049) AS number;
+         FROM generate_series(1, {row_count}) AS number;
          INSERT INTO public.fragments (id, memory_id, text)
          SELECT ('10000000-0000-0000-0000-' || lpad(number::text, 12, '0'))::uuid,
                 ('00000000-0000-0000-0000-' || lpad(number::text, 12, '0'))::uuid,
                 'Migration batch fixture.'
-         FROM generate_series(1, 2049) AS number;
+         FROM generate_series(1, {row_count}) AS number;
          ALTER TABLE public.fragments DROP COLUMN {column} CASCADE;
          CREATE FUNCTION public.fail_late_backfill() RETURNS trigger LANGUAGE plpgsql AS $$
          BEGIN
-             IF NEW.memory_id = '00000000-0000-0000-0000-000000002049'::uuid THEN
+             IF NEW.memory_id = '00000000-0000-0000-0000-{row_count:012}'::uuid THEN
                  {failure}
              END IF;
              RETURN NEW;
@@ -152,6 +157,7 @@ async fn interrupted_backfill(column: &str, interruption: MigrationInterruption)
         .unwrap();
     let mut options = mindleak_storage_postgres::MigrationOptions::default();
     if interruption == MigrationInterruption::Timeout {
+        options.batch_size = 8;
         options.statement_timeout = std::time::Duration::from_secs(1);
     }
     let migration_url = url.clone();
@@ -165,7 +171,12 @@ async fn interrupted_backfill(column: &str, interruption: MigrationInterruption)
         )
         .await
     });
-    if interruption != MigrationInterruption::Error {
+    if matches!(
+        interruption,
+        MigrationInterruption::Cancel
+            | MigrationInterruption::Terminate
+            | MigrationInterruption::DropFuture
+    ) {
         let backend: i32 = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 if let Some(row) = database
@@ -262,7 +273,7 @@ async fn interrupted_backfill(column: &str, interruption: MigrationInterruption)
     admin.batch_execute(&cleanup).await.unwrap();
     assert!(failed, "a failed migration must not return a ready store");
     assert!(
-        completed > 0 && completed < 2049,
+        completed > 0 && completed < row_count,
         "completed batches must survive the late failure, got {completed}"
     );
     assert!(
@@ -280,7 +291,6 @@ async fn interrupted_backfill(column: &str, interruption: MigrationInterruption)
         for field in [
             "migration_id=000",
             "phase=backfill",
-            "completed_rows=2048",
             "elapsed_ms=",
             "timeout_ms=",
             "sqlstate=57014",
@@ -290,6 +300,10 @@ async fn interrupted_backfill(column: &str, interruption: MigrationInterruption)
                 "missing migration diagnostic field {field}"
             );
         }
+        assert!(
+            error_text.contains(&format!("completed_rows={}", row_count - 1)),
+            "timeout/cancellation must retain every earlier batch"
+        );
     }
 }
 
