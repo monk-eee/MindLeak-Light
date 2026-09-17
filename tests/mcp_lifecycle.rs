@@ -207,7 +207,7 @@ async fn companion_recipes_support_fresh_client_handoff_and_correction() {
         "../.agents/skills/mindleak-memory/references/tool-recipes.json"
     ))
     .unwrap();
-    assert_eq!(recipes["skillVersion"], "1.2.0");
+    assert_eq!(recipes["skillVersion"], "1.2.1");
     let scope = format!("companion-{}", Uuid::new_v4());
     let writer = format!("companion-writer-{}", Uuid::new_v4());
     let mut bindings = HashMap::from([

@@ -84,9 +84,10 @@ The binary uses your configured database; it does not bundle PostgreSQL.
 
 ## Companion Agent Skill
 
-The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md), version
-1.2.0, is included in v0.6.0 native archives and embedded in the installer. The
-already-published v0.4.0 archives do not include it. It works with v0.4.0 and
+The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md) in this
+source revision is version 1.2.1 and is embedded when building the installer.
+Published v0.6.0 native archives contain version 1.2.0; they are unchanged.
+The already-published v0.4.0 archives do not include it. It works with v0.4.0 and
 newer servers for ordinary memory; knowledge workflows require v0.6.0 schemas.
 No model is required for ordinary use. Native archives include the complete
 `.agents/skills/mindleak-memory` folder. Container users install the skill

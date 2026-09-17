@@ -214,6 +214,12 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
         "verified reusable",
         "Never store secrets",
         "approvals",
+        "principles provide reusable procedures",
+        "At task start",
+        "Repeated runs alone",
+        "Memory use is optional",
+        "active retrieval mode",
+        "one focused refinement",
     ] {
         assert!(
             instructions.contains(phrase),

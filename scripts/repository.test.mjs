@@ -585,7 +585,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   assert.match(frontmatter, /^name: mindleak-memory$/m);
   const description = JSON.parse(/^description: (".*")$/m.exec(frontmatter)?.[1] ?? "null");
   assert.ok(typeof description === "string" && description.length <= 1024 && description.includes("agents"));
-  assert.match(frontmatter, /version: "1\.2\.0"/);
+  assert.match(frontmatter, /version: "1\.2\.1"/);
   assert.doesNotMatch(frontmatter, /^(?:allowed-tools|hooks|context|agent|model):/m);
   assert.doesNotMatch(skill, /^!`|^```!/m);
   assert.ok(skill.split("\n").length < 250, "keep the on-demand workflow compact");
@@ -597,7 +597,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   }
   const recipes = JSON.parse(readFileSync(join(directory, "references/tool-recipes.json"), "utf8"));
   assert.equal(recipes.schemaVersion, 1);
-  assert.equal(recipes.skillVersion, "1.2.0");
+  assert.equal(recipes.skillVersion, "1.2.1");
   for (const term of ["formation", "principle", "requiresReview", "counterEvidenceReviewed", "supportedBy"]) assert.ok(skill.includes(term));
   assert.equal(recipes.minimumServerVersion, "0.4.0");
   assert.ok(skill.includes("General recall searches across all scopes"));
@@ -624,6 +624,27 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
       assert.equal(recipe.arguments.agentId, undefined, "shared examples must not hide other agents");
     }
   }
+});
+
+test("memory activation closes the capture and reuse loop without requiring note quotas", () => {
+  const directory = fileURLToPath(new URL("../.agents/skills/mindleak-memory/", import.meta.url));
+  const policy = readFileSync(join(directory, "references/agent-policy.md"), "utf8");
+  const skill = readFileSync(join(directory, "SKILL.md"), "utf8");
+  for (const phrase of ["memory checkpoint", "verified result, failure, exception, or decision", "what is new", "no new learning", "After applying a lesson"]) {
+    assert.ok(policy.includes(phrase), `missing memory activation trigger: ${phrase}`);
+  }
+  for (const phrase of ["Progressive Retrieval", "Checkpoint Outcomes", "applicability", "revision", "original requestId", "no note quota"]) {
+    assert.ok(skill.includes(phrase), `missing concrete memory practice: ${phrase}`);
+  }
+  for (const phrase of ["observations", "chains", "principles", "Before implementation", "explicitly enabled knowledge workflow", "Repeated runs alone"]) {
+    assert.ok(policy.includes(phrase), `missing task-start knowledge orientation: ${phrase}`);
+  }
+  for (const phrase of ["Memory use is optional", "active retrieval mode", "one focused refinement"]) {
+    assert.ok(policy.includes(phrase), `missing measured recall guidance: ${phrase}`);
+  }
+  assert.ok(policy.includes("explicitly chosen general mode"));
+  assert.ok(policy.includes("Recall alone is not confirmation"));
+  assert.ok(policy.includes("Respect tool approvals"));
 });
 
 test("agent instructions and onboarding use the same companion activation policy", () => {
