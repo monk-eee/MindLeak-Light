@@ -1,3 +1,4 @@
+mod chains;
 mod connection;
 mod documents;
 mod domain;

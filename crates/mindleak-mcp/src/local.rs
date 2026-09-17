@@ -13,7 +13,10 @@ use serde_json::{json, Value};
 use tokio::process::Command;
 use uuid::Uuid;
 
-const DEFAULT_IMAGE: &str = "docker.io/monkeemagic/mindleak-light@sha256:b0686294b22c31ea0b6bef64cb139947b04edc27fb2e196923fa5e1f554e381c";
+const DEFAULT_IMAGE: &str = concat!(
+    "docker.io/monkeemagic/mindleak-light:",
+    env!("CARGO_PKG_VERSION")
+);
 const DATABASE_PATH: &str = "/var/lib/postgresql/data";
 const BINARY: &str = "/usr/local/bin/mindleak-light";
 

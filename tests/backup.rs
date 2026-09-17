@@ -357,6 +357,128 @@ async fn administrative_status_reports_older_unresolved_operations_and_alert_fai
     );
 }
 
+async fn seed_backup_knowledge(
+    store: &mindleak_storage_postgres::PostgresMemoryStore,
+    episode: &mindleak_memory::PreparedMemory,
+) {
+    use mindleak_memory::{
+        ChainCommand, ChainDocument, ChainEvidence, ChainEvidenceRole, ChainSupport,
+        ChainValidation, ChainWriteRequest, KnowledgeKind, MemoryStore, PreparedChain,
+    };
+    let identifiers: Vec<_> = episode
+        .fragments
+        .iter()
+        .map(|fragment| fragment.id)
+        .collect();
+    let mut fragment_sequence = 1_u128;
+    let mut prepare_chain = |chain: ChainCommand| {
+        let mut memory = episode.clone();
+        memory.id = Uuid::new_v4();
+        memory.request = None;
+        memory.relationships.clear();
+        memory.context.session_id = Some("backup-knowledge-fixture".into());
+        for fragment in &mut memory.fragments {
+            fragment.id = Uuid::from_u128(fragment_sequence);
+            fragment_sequence += 1;
+        }
+        PreparedChain {
+            embedding: Some(vec![0.6, 0.8]),
+            request: ChainWriteRequest {
+                request_id: Uuid::new_v4(),
+                agent_id: memory.agent_id.clone(),
+                text: memory.raw_text.clone(),
+                context: memory.context.clone(),
+                chain,
+            },
+            memory,
+        }
+    };
+    let validation = |counter_evidence_reviewed| ChainValidation {
+        method: "Check recorded fixture".into(),
+        result: "Accepted within the fixture only".into(),
+        source: "synthetic:backup-knowledge".into(),
+        counter_evidence_reviewed,
+    };
+    let mut supports = Vec::new();
+    for (index, fragment_id) in identifiers.iter().enumerate() {
+        let chain_id = Uuid::new_v4();
+        let mut evidence = vec![ChainEvidence {
+            fragment_id: *fragment_id,
+            role: ChainEvidenceRole::Supports,
+            reason: "Recorded observation".into(),
+        }];
+        if index == 1 {
+            evidence.push(ChainEvidence {
+                fragment_id: identifiers[0],
+                role: ChainEvidenceRole::Counterexample,
+                reason: "An explicit qualification".into(),
+            });
+        }
+        let document = ChainDocument {
+            formation: None,
+            kind: KnowledgeKind::Chain,
+            claim: format!("Backup chain comparison {index}"),
+            rationale: "The fixture supports a restricted conclusion".into(),
+            conclusion: "Preserve recorded evidence".into(),
+            applicability: "Synthetic backup fixture only".into(),
+            assumptions: vec!["Source identifiers remain stable".into()],
+            evidence,
+            supported_by: vec![],
+            reported_confidence: None,
+        };
+        store
+            .save_chain(&prepare_chain(ChainCommand::Propose { chain_id, document }))
+            .await
+            .unwrap();
+        store
+            .save_chain(&prepare_chain(ChainCommand::Accept {
+                chain_id,
+                expected_revision: 1,
+                validation: validation(if index == 1 {
+                    vec![identifiers[0]]
+                } else {
+                    vec![]
+                }),
+            }))
+            .await
+            .unwrap();
+        supports.push(ChainSupport {
+            chain_id,
+            revision: 2,
+            reason: "Validated fixture comparison".into(),
+        });
+    }
+    let principle_id = Uuid::new_v4();
+    store
+        .save_chain(&prepare_chain(ChainCommand::Propose {
+            chain_id: principle_id,
+            document: ChainDocument {
+                formation: None,
+                kind: KnowledgeKind::Principle,
+                claim: "Backups preserve knowledge provenance".into(),
+                rationale:
+                    "Two validated chains retain their shared source and explicit qualification"
+                        .into(),
+                conclusion: "Verify source and knowledge after restoration".into(),
+                applicability: "Synthetic backup fixture only".into(),
+                assumptions: vec![],
+                evidence: vec![],
+                supported_by: supports,
+                reported_confidence: None,
+            },
+        }))
+        .await
+        .unwrap();
+    store
+        .save_chain(&prepare_chain(ChainCommand::Accept {
+            chain_id: principle_id,
+            expected_revision: 1,
+            validation: validation(vec![]),
+        }))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires restic 0.19, PostgreSQL 16, and MINDLEAK_BACKUP_TEST_CONTAINER"]
 async fn encrypted_backup_roundtrip_preserves_source_and_owned_cleanup() {
@@ -433,6 +555,7 @@ async fn encrypted_backup_roundtrip_preserves_source_and_owned_cleanup() {
         domain: None,
     });
     let receipt = store.save(&episode).await.unwrap();
+    seed_backup_knowledge(&store, &episode).await;
     let read_only = PostgresMemoryStore::connect_read_only(source_url.as_str(), 2, None)
         .await
         .unwrap();
@@ -622,6 +745,7 @@ async fn encrypted_backup_roundtrip_preserves_source_and_owned_cleanup() {
         assert_eq!(result["result"]["restoreVerified"], true);
         assert_eq!(result["result"]["schemaUnchanged"], true);
         assert_eq!(result["result"]["canaries"]["keywordRecall"], true);
+        assert_eq!(result["result"]["canaries"]["knowledgeInspection"], true);
         assert_eq!(result["result"]["canaries"]["negativeControl"], true);
         assert_eq!(result["result"]["assetsVerified"], 2);
         let verification_id =

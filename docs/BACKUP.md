@@ -1,9 +1,10 @@
 # Administrative Backups
 
-**Unreleased development interface.** Published v0.4.0 and v0.5.0 binaries do not contain
+**v0.6.0 development interface.** Published v0.4.0 and v0.5.0 binaries do not contain
 these commands. Local PG/restic behavior has executable regression coverage;
 [platform acceptance](../gaps.d/backup-platform-acceptance.md) must be completed
-before a supported release. Successful upload alone is not verified recovery.
+before claiming those deployments are supported. Shipping the CLI does not close
+unattended scheduler or remote-provider acceptance. Upload alone is not verified recovery.
 
 ## Prerequisites
 
@@ -152,6 +153,28 @@ keeps the verified database/assets and removes plaintext dump/tar staging. It do
 not switch clients or remove the working database. Compatibility requires PG16
 and the **same engine checksum**, not merely a version. Unknown/cross-architecture
 engine combinations fail closed.
+
+### Knowledge and Schema Changes
+
+Backups include all columns in `memories`, `fragments` and `relationships`, not
+a fixed list of old fields. Chain/principle snapshots, document vectors, pinned
+support revisions, counterevidence and retry receipts therefore travel with the
+database. Schema fingerprints include columns, constraints, indexes and triggers.
+
+Restore verification uses separate ordinary-source and knowledge canaries.
+Derived fragments are excluded from ordinary source inspection. Model settings,
+including formation, are forced off; verification never migrates or modifies the
+restored database. It compares fingerprints before and after MCP readback.
+
+Before an upgrade, keep a verified backup and its matching engine. Restore that
+backup into a new database for rollback. Do not run a pre-knowledge server on a
+database containing chains. A verified old backup is a recovery point, not
+permission to perform an in-place downgrade.
+
+The encrypted roundtrip regression includes accepted chains, a principle,
+inherited counterevidence and non-null document vectors. It verifies exact
+data/schema preservation and knowledge readback after restoration. This local
+check does not close the separate Windows scheduler or Azure acceptance gates.
 
 Retention is the union of last/daily/weekly/monthly buckets, not an exact count.
 Apply requires the latest matching backup/restore receipt, two validated complete

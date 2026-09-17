@@ -3,8 +3,8 @@ use std::{collections::HashSet, sync::Arc};
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{
-    validate_text, MemoryRetriever, RecallDiagnostics, RecallFilter, RecallMatch,
-    MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES, MAX_RECALL_LIMIT,
+    validate_text, ChainFilter, ChainMatch, MemoryRetriever, RecallDiagnostics, RecallFilter,
+    RecallMatch, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES, MAX_RECALL_LIMIT,
 };
 use mindleak_provider::read_json_response;
 use reqwest::{Client, Url};
@@ -77,6 +77,78 @@ impl OpenAiRelevanceRetriever {
 
 #[async_trait]
 impl MemoryRetriever for OpenAiRelevanceRetriever {
+    fn chain_strategy(&self) -> &'static str {
+        self.candidates.chain_strategy()
+    }
+    async fn recall_chains(
+        &self,
+        query: &str,
+        filter: &ChainFilter,
+        limit: usize,
+    ) -> Result<Vec<ChainMatch>> {
+        validate_text(query, "query", MAX_MEMORY_BYTES)?;
+        ensure!(
+            (1..=mindleak_memory::MAX_CHAIN_RESULTS).contains(&limit),
+            "invalid knowledge recall limit"
+        );
+        let candidate_limit = self
+            .candidate_limit
+            .max(limit)
+            .min(mindleak_memory::MAX_CHAIN_RESULTS);
+        let candidates = self
+            .candidates
+            .recall_chains(query, filter, candidate_limit)
+            .await?;
+        ensure!(
+            candidates.len() <= candidate_limit,
+            "too many knowledge relevance candidates"
+        );
+        if candidates.is_empty() {
+            return Ok(candidates);
+        }
+        let mut identifiers = HashSet::new();
+        let mut texts = Vec::new();
+        for candidate in &candidates {
+            candidate.chain.snapshot.document.validate()?;
+            candidate.chain.context.validate()?;
+            ensure!(
+                candidate.score.is_finite() && identifiers.insert(candidate.chain.chain_id),
+                "invalid or duplicate knowledge relevance candidate"
+            );
+            ensure!(
+                filter
+                    .agent_id
+                    .as_ref()
+                    .is_none_or(|agent| candidate.chain.agent_id == *agent)
+                    && filter.scope.as_ref().is_none_or(|scope| candidate
+                        .chain
+                        .context
+                        .scope
+                        .as_ref()
+                        == Some(scope))
+                    && filter
+                        .kind
+                        .is_none_or(|kind| kind == candidate.chain.snapshot.document.kind),
+                "knowledge candidate is outside the requested filters"
+            );
+            texts.push(serde_json::to_string(&candidate.chain.snapshot.document)?);
+        }
+        let input = json!({"query":query,"candidates":candidates.iter().zip(&texts).enumerate().map(|(index, (candidate, text))|
+            json!({"index":index,"text":text,"context":candidate.chain.context})).collect::<Vec<_>>() }).to_string();
+        ensure!(
+            input.len() <= 128 * 1024,
+            "knowledge relevance input exceeds 128 KiB; reduce relevance candidates"
+        );
+        let texts: Vec<_> = texts.iter().map(String::as_str).collect();
+        let selected = self.select(input, &texts).await?;
+        Ok(candidates
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| selected.contains(&index).then_some(candidate))
+            .take(limit)
+            .collect())
+    }
+
     async fn query_diagnostics(
         &self,
         query: &str,
@@ -136,6 +208,22 @@ impl MemoryRetriever for OpenAiRelevanceRetriever {
             input.len() <= MAX_MEMORY_BYTES,
             "relevance input exceeds the 32768-byte text budget"
         );
+        let texts: Vec<_> = candidates
+            .iter()
+            .map(|candidate| candidate.text.as_str())
+            .collect();
+        let selected = self.select(input, &texts).await?;
+        Ok(candidates
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| selected.contains(&index).then_some(candidate))
+            .take(limit)
+            .collect())
+    }
+}
+
+impl OpenAiRelevanceRetriever {
+    async fn select(&self, input: String, texts: &[&str]) -> Result<HashSet<usize>> {
         let mut body = json!({
             "model": self.model,
             "stream": false,
@@ -150,11 +238,11 @@ impl MemoryRetriever for OpenAiRelevanceRetriever {
                         "properties": {
                             "requested_detail": {"type": "string", "minLength": 1, "maxLength": 512},
                             "relevant": {
-                                "type": "array", "maxItems": candidates.len(),
+                                "type": "array", "maxItems": texts.len(),
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "index": {"type": "integer", "minimum": 0, "maximum": candidates.len() - 1},
+                                        "index": {"type": "integer", "minimum": 0, "maximum": texts.len() - 1},
                                         "evidence": {"type": "string", "minLength": 1, "maxLength": MAX_FRAGMENT_BYTES}
                                     },
                                     "required": ["index", "evidence"], "additionalProperties": false
@@ -212,22 +300,18 @@ impl MemoryRetriever for OpenAiRelevanceRetriever {
         let mut selected = HashSet::new();
         for evidence in selection.relevant {
             ensure!(
-                evidence.index < candidates.len(),
+                evidence.index < texts.len(),
                 "relevance index is out of range"
             );
             ensure!(selected.insert(evidence.index), "duplicate relevance index");
             ensure!(
                 !evidence.evidence.trim().is_empty()
-                    && candidates[evidence.index].text.contains(&evidence.evidence),
+                    && evidence.evidence.len() <= MAX_FRAGMENT_BYTES
+                    && texts[evidence.index].contains(&evidence.evidence),
                 "relevance evidence is not an exact candidate quotation"
             );
         }
-        Ok(candidates
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, candidate)| selected.contains(&index).then_some(candidate))
-            .take(limit)
-            .collect())
+        Ok(selected)
     }
 }
 
@@ -283,6 +367,23 @@ mod tests {
 
     #[async_trait]
     impl MemoryRetriever for Candidates {
+        async fn recall_chains(
+            &self,
+            _query: &str,
+            _filter: &ChainFilter,
+            _limit: usize,
+        ) -> Result<Vec<ChainMatch>> {
+            ensure!(!self.fail, "candidate retrieval failed");
+            self.rows.iter().map(|row| Ok(ChainMatch {
+                chain:serde_json::from_value(json!({"chainId":row.fragment_id,"memoryId":row.memory_id,"agentId":row.agent_id,
+                    "context":row.context,"createdAt":0,"revision":2,"operation":"accept","current":true,
+                    "snapshot":{"state":"accepted","review":"reviewed","validation":null,"document":{
+                        "claim":row.text,"rationale":"Recorded comparison.","conclusion":row.text,"applicability":"Elara only.",
+                        "evidence":[{"fragmentId":row.fragment_id,"role":"supports","reason":"Recorded observation."}]}}
+                }))?, score:row.score, vector_score:Some(row.score), keyword_score:None, requires_review:false,
+            })).collect()
+        }
+
         async fn recall(
             &self,
             query: &str,
@@ -338,6 +439,36 @@ mod tests {
         ResponseTemplate::new(200).set_body_json(json!({"choices": [{
             "finish_reason": finish_reason, "message": {"content": content}
         }]}))
+    }
+
+    #[tokio::test]
+    async fn knowledge_relevance_preserves_scores_and_does_not_bypass_provider_failures() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(completion(r#"{"requested_detail":"service port","relevant":[{"index":1,"evidence":"port 8301"}]}"#, "stop")).expect(1).mount(&server).await;
+        let original = candidates();
+        let selector = retriever(&server, original.clone(), false);
+        let filter = ChainFilter {
+            agent_id: Some("test-agent".into()),
+            ..Default::default()
+        };
+        let results = selector
+            .recall_chains("Which port does Elara use?", &filter, 1)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].chain.chain_id, original[1].fragment_id);
+        assert_eq!(results[0].score, original[1].score);
+        assert_eq!(results[0].vector_score, Some(original[1].score));
+        server.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert!(selector
+            .recall_chains("Which port does Elara use?", &filter, 1)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

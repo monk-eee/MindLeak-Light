@@ -12,8 +12,9 @@ import { answerSchemaFor, categories, codingFixture, digest, evaluateAnswer, eva
 import { longitudinalBinding, runLongitudinal } from "./validation-longitudinal.mjs";
 import { writeDemoReplay } from "./demo-replay.mjs";
 import { openCopilotProvider, createCopilotAgent } from "./copilot-agent.mjs";
+import { knowledgeFixtureIdentity, runKnowledgeValidation } from "./validation-knowledge.mjs";
 
-const optionalCategories = ["three_agent_demo"];
+const optionalCategories = ["three_agent_demo", "knowledge_workflow"];
 const threeAgentPlan = {
   id: "three_agent_demo", version: 1, fixture: "rediscovery_demo",
   title: "Session expiry investigation",
@@ -365,6 +366,9 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
         case "three_agent_demo":
           results[category] = await threeAgentTask();
           break;
+        case "knowledge_workflow":
+          results[category] = await runKnowledgeValidation(driver, { onProgress });
+          break;
         case "atomic_extraction": {
           const preview = await driver.call("decompose_memory", { text: scenario.text });
           const score = scoreDecomposition(scenario, preview.data.results);
@@ -495,7 +499,8 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
     scenarioManifest: { id: plan.id, sha256: digest(plan), seed: plan.seed, selected, sizes: plan.sizes,
       answerContractsSha256: digest(["simple_recall", "agent_handoff", "poisoning_resistance", "contradiction_handling", "context_compression", "coding_workflow", "rediscovery_demo", "multi_day_learning"].map(category => answerSchemaFor(category))),
       handoffContractsSha256: digest(["coding_workflow", "rediscovery_demo"].map(kind => handoffSchema(kind))),
-      codingFixtureSha256: Object.fromEntries(["coding_workflow", "rediscovery_demo"].map(kind => [kind, digest(codingFixture(kind))])) },
+      codingFixtureSha256: Object.fromEntries(["coding_workflow", "rediscovery_demo"].map(kind => [kind, digest(codingFixture(kind))])),
+      ...(selected.includes("knowledge_workflow") ? { knowledgeFixture: knowledgeFixtureIdentity } : {}) },
     server: driver.server, binarySha256: driver.binarySha256, realMcpProcess: driver.realProcess,
     agent: agent?.configuration ?? null, codeContainer: code ? { engine: code.engine, imageId: code.image } : null,
     runtime: { node: process.version, platform: process.platform, architecture: process.arch, availableParallelism: availableParallelism() },
@@ -538,12 +543,15 @@ async function main() {
     "longitudinal-state": { type: "string" }, day: { type: "string" },
     "chart-dir": { type: "string" }, "replay-dir": { type: "string" },
     decomposition: { type: "string" }, retrieval: { type: "string" }, relevance: { type: "string" },
+    formation: { type: "string" }, "formation-reasoning-effort": { type: "string" },
+    "decomposition-reasoning-effort": { type: "string" }, "relevance-reasoning-effort": { type: "string" },
     "min-similarity": { type: "string" }, "relevance-candidates": { type: "string" },
   } });
   if (values.help) {
     console.log(JSON.stringify({ name: "MindLeak Validation Harness v1", commands: {
       plan: "node examples/validation-harness.mjs --plan",
       modelFree: "MINDLEAK_TEST_DATABASE_URL=..._test node examples/validation-harness.mjs --binary target/debug/mindleak-light",
+      knowledge: "--category knowledge_workflow --formation off|openai (requires v0.6.0 schemas; formation reports model output separately)",
       agents: "Set MINDLEAK_VALIDATION_AGENT_URL and MINDLEAK_VALIDATION_AGENT_MODEL, then add --agent --code-engine podman",
       threeAgents: "--category three_agent_demo --agent --agent-provider copilot --agent-model gpt-6-astra --code-engine podman --replay-dir NEW_DIRECTORY",
       longitudinal: "--longitudinal-state PRIVATE_PATH --day 1|2|30 (requires actual elapsed time; retains synthetic memory between invocations)",
@@ -559,6 +567,7 @@ async function main() {
   const providerKind = values["agent-provider"] ?? "openai";
   if (!["openai", "copilot"].includes(providerKind)) throw new Error("invalid_agent_provider");
   if (values["replay-dir"] && (!selected.includes("three_agent_demo") || values.day !== undefined)) throw new Error("replay_requires_three_agent_demo");
+  if (values.formation !== undefined && !selected.includes("knowledge_workflow")) throw new Error("formation_requires_knowledge_workflow");
   if (values.plan) {
     console.log(JSON.stringify({ ...plan, ...(selected.includes("three_agent_demo") ? { threeAgentDemo: threeAgentPlan } : {}) }, null, 2));
     return;
@@ -583,6 +592,7 @@ async function main() {
   const sources = ["validation-harness.mjs", "validation-scenarios.mjs", "validation-runtime.mjs", "validation-agent.mjs", "validation-longitudinal.mjs", "benchmark-recall.mjs"];
   if (providerKind === "copilot") sources.push("copilot-agent.mjs");
   if (selected.includes("three_agent_demo")) sources.push("demo-replay.mjs", "demo-view.mjs", "demo-view.html");
+  if (selected.includes("knowledge_workflow")) sources.push("validation-knowledge.mjs", "fixtures/knowledge-v1.json");
   const sourceHashes = async () => Object.fromEntries(await Promise.all(sources.map(async path => [path, digest(await readFile(new URL(path, import.meta.url)))])));
   const harnessSources = await sourceHashes();
   const replayDirectory = values["replay-dir"] ? resolve(values["replay-dir"]) : null;
@@ -607,6 +617,7 @@ async function main() {
       : await runValidation({ driver, plan, agent, code, trials, selected,
         onProgress: event => console.error(JSON.stringify(event)) });
     report.configuration = settings.configuration;
+    report.reasoning = settings.reasoning;
   } finally { try { if (driver) await driver.close(); } finally { if (provider) await provider.close(); } }
   report.harnessSources = harnessSources;
   report.sourceFilesUnchangedDuringRun = digest(harnessSources) === digest(await sourceHashes());

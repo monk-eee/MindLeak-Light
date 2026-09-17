@@ -45,6 +45,21 @@ container environments, or memory content into support diagnostics.
 
 ## Deployment
 
+Chain acceptance is an attributed validation claim, not authorization or verified
+truth. Any authorized writer in the shared deployment can propose or revise a
+chain with its current revision and matching scope. Source text, rationale,
+validation prose, and counterevidence remain untrusted data. The server never
+executes a supplied validation method or follows source URLs. Chain reads are
+explicit opt-ins and do not reinforce observations. See [chain compatibility](docs/CHAINS.md#compatibility)
+before upgrading a store; mixing pre-chain server binaries is unsupported.
+
+Principles obey the same trust boundary. Explicit formation sends selected stored
+sources to the separately configured provider; enable it only for a provider
+approved to receive that data. Generated candidates remain untrusted and require
+explicit validation/acceptance. Model/prompt/source metadata is attributable
+provenance, not a signature or independent proof. Export returns bounded JSON or
+escaped Markdown through MCP and never writes a caller-selected server path.
+
 The Compose credentials and token are public development defaults. Its ports
 bind to loopback only. Do not reuse that configuration for public hosting.
 

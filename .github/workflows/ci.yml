@@ -88,6 +88,21 @@ jobs:
           node-version: 22
       - run: npm ci --prefix examples --ignore-scripts
       - run: cargo build --release --locked -p mindleak-mcp --bin mindleak-light
+      - name: Benchmark knowledge workflow and source preservation
+        timeout-minutes: 5
+        env:
+          KNOWLEDGE_REPORT: ${{ runner.temp }}/knowledge-workflow-${{ github.run_id }}-${{ github.run_attempt }}.json
+        run: |
+          node examples/validation-harness.mjs --binary target/release/mindleak-light --category knowledge_workflow --retrieval keyword --formation off > "$KNOWLEDGE_REPORT"
+          node --input-type=module -e 'import assert from "node:assert/strict"; import {readFileSync} from "node:fs"; const report=JSON.parse(readFileSync(process.argv[1],"utf8")); const result=report.categories.knowledge_workflow; assert.equal(report.status,"completed"); assert.equal(result.queryCount,108); assert.ok(result.checks.length>=60 && result.checks.every(check=>check.passed));' "$KNOWLEDGE_REPORT"
+      - name: Preserve knowledge benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: knowledge-workflow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/knowledge-workflow-${{ github.run_id }}-${{ github.run_attempt }}.json
+          retention-days: 30
+          if-no-files-found: warn
       - name: Verify domain imports through real MCP
         timeout-minutes: 3
         env:

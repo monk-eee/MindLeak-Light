@@ -43,7 +43,7 @@ impl PostgresMemoryStore {
                 fragments.text, {} \
                 FROM public.fragments AS fragments \
                 JOIN public.memories AS memories ON memories.id = fragments.memory_id \
-                WHERE fragments.id = $1 \
+                WHERE fragments.id = $1 AND memories.chain_id IS NULL \
                   AND ($2::text IS NULL OR memories.agent_id = $2) \
                   AND ($3::text IS NULL OR memories.context->>'scope' = $3) \
                   AND ($4::text IS NULL OR fragments.tier = $4) \

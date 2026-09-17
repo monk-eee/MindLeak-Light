@@ -1,3 +1,4 @@
+mod formation;
 mod sentence;
 
 pub use sentence::SentenceDecomposer;
@@ -67,13 +68,47 @@ impl OpenAiDecomposer {
         self.reasoning_effort = effort;
         Ok(self)
     }
+
+    async fn complete(&self, mut body: serde_json::Value, purpose: &str) -> Result<String> {
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        let mut request = self.client.post(self.endpoint.clone()).json(&body);
+        if !self.api_key.is_empty() {
+            request = request.bearer_auth(&self.api_key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .with_context(|| format!("{purpose} model request failed"))?
+            .error_for_status()
+            .map_err(reqwest::Error::without_url)
+            .with_context(|| format!("{purpose} model returned an HTTP error"))?;
+        let response: ChatResponse = read_json_response(response)
+            .await
+            .with_context(|| format!("{purpose} model returned an invalid response"))?;
+        let choice = response
+            .choices
+            .into_iter()
+            .next()
+            .context("chat response has no choices")?;
+        ensure!(
+            choice.finish_reason.as_deref() == Some("stop"),
+            "{purpose} did not finish normally; refusing partial output"
+        );
+        choice
+            .message
+            .content
+            .context("chat response has no text content")
+    }
 }
 
 #[async_trait]
 impl MemoryDecomposer for OpenAiDecomposer {
     async fn decompose(&self, text: &str) -> Result<Vec<String>> {
         validate_text(text, "text", MAX_MEMORY_BYTES)?;
-        let mut body = json!({
+        let body = json!({
             "model": self.model,
             "stream": false,
             "temperature": 0,
@@ -103,39 +138,7 @@ impl MemoryDecomposer for OpenAiDecomposer {
                 {"role": "user", "content": text}
             ]
         });
-        if let Some(effort) = &self.reasoning_effort {
-            body["reasoning_effort"] = json!(effort);
-        }
-        let mut request = self.client.post(self.endpoint.clone()).json(&body);
-        if !self.api_key.is_empty() {
-            request = request.bearer_auth(&self.api_key);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(reqwest::Error::without_url)
-            .context("decomposition model request failed")?
-            .error_for_status()
-            .map_err(reqwest::Error::without_url)
-            .context("decomposition model returned an HTTP error")?;
-        let response: ChatResponse = read_json_response(response)
-            .await
-            .context("decomposition model returned an invalid response")?;
-        let choice = response
-            .choices
-            .first()
-            .context("chat response has no choices")?;
-        ensure!(
-            choice.finish_reason.as_deref() == Some("stop"),
-            "decomposition did not finish normally; refusing partial facts"
-        );
-        parse_fragments(
-            choice
-                .message
-                .content
-                .as_deref()
-                .context("chat response has no text content")?,
-        )
+        parse_fragments(&self.complete(body, "decomposition").await?)
     }
 }
 
@@ -170,11 +173,48 @@ fn parse_fragments(content: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mindleak_memory::{FormationContext, KnowledgeFormer, KnowledgeKind};
     use mindleak_memory::{MAX_FRAGMENTS, MAX_FRAGMENT_BYTES};
     use wiremock::{
         matchers::{body_partial_json, header, method, path},
         Mock, MockServer, ResponseTemplate,
     };
+
+    #[tokio::test]
+    async fn formation_requests_candidates_and_rejects_incomplete_provider_results() {
+        let server = MockServer::start().await;
+        let provider = OpenAiDecomposer::new(
+            Client::new(),
+            Url::parse(&server.uri()).unwrap(),
+            "test-former".into(),
+            String::new(),
+        );
+        let sources = FormationContext {
+            kind: KnowledgeKind::Chain,
+            question: "Identify the evidence gaps.".into(),
+            observations: vec![],
+            chains: vec![],
+        };
+        Mock::given(method("POST")).and(body_partial_json(json!({
+            "model":"test-former", "stream":false,
+            "response_format":{"type":"json_schema","json_schema":{"name":"knowledge_candidates","strict":true}}
+        }))).respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices":[{"finish_reason":"stop","message":{"content":"{\"documents\":[],\"citations\":[],\"gaps\":[\"No controlled observation was supplied.\"]}"}}]
+        }))).expect(1).mount(&server).await;
+        let proposal = provider.form(&sources).await.unwrap();
+        assert!(proposal.documents.is_empty());
+        assert_eq!(proposal.gaps.len(), 1);
+        server.reset().await;
+        for response in [ResponseTemplate::new(503), ResponseTemplate::new(200).set_body_json(json!({
+            "choices":[{"finish_reason":"length","message":{"content":"{\"documents\":[],\"citations\":[],\"gaps\":[\"Partial\"]}"}}]
+        })), ResponseTemplate::new(200).set_body_json(json!({
+            "choices":[{"finish_reason":"stop","message":{"content":"{\"documents\":[],\"citations\":[{\"fragmentId\":\"00000000-0000-0000-0000-000000000001\",\"quote\":\"invented source\"}],\"gaps\":[\"Missing\"]}"}}]
+        }))] {
+            Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+            assert!(provider.form(&sources).await.is_err());
+            server.reset().await;
+        }
+    }
 
     #[tokio::test]
     async fn sends_structured_extraction_to_the_configured_model() {

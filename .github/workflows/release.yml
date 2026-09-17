@@ -81,6 +81,7 @@ jobs:
           node-version: 22
       - uses: actions/download-artifact@v8
         with:
+          pattern: mindleak-light-*
           path: dist
           merge-multiple: true
       - run: node scripts/release.mjs --notes "$RELEASE_TAG" > RELEASE_NOTES.md
@@ -91,5 +92,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: true
           body_path: RELEASE_NOTES.md
-          files: dist/*
+          files: |
+            dist/mindleak-light-*.tar.gz
+            dist/mindleak-light-*.tar.gz.sha256
           fail_on_unmatched_files: true

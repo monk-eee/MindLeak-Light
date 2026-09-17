@@ -5,6 +5,40 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-17
+
+### Added
+- [Knowledge formation](docs/CHAINS.md): opt-in observations, validated chains
+  and principles, with challenges, revisions, dependency review and JSON/Markdown
+  export. Ordinary memory calls and the three-tool/three-table design remain.
+- Optional model-assisted candidate previews with checked source citations,
+  evidence gaps and model provenance. Saving and accepting remain explicit;
+  no automatic truth claim, source deletion or provider fallback is added.
+- Principles-first keyword/vector/hybrid retrieval with independent observations,
+  preserved branch scores, pinned support and inherited counterevidence.
+- [Domain relationships](docs/DOMAIN-RELATIONSHIPS.md): identified entities and
+  directed edges, bounded queries and a verified, resumable JSONL importer.
+  Domain predicates never act as fact-lifecycle feedback.
+- [Administrative backups](docs/BACKUP.md): encrypted restic/PostgreSQL capture,
+  source assets, verified recovery, retention and status. Scheduler/Azure adapters
+  remain subject to the documented platform and remote-recovery acceptance gates.
+- A six-subject knowledge benchmark in CI, plus recorded real-model results and
+  failures. These diagnostics do not establish semantic accuracy or learning gains.
+
+### Changed
+- Simplify the README and architecture around setup, source preservation and
+  verified use. Update guides, examples and bundled skill v1.2.0 for v0.6.0.
+- New local trials default to the launcher's versioned server image. Existing
+  containers stay pinned; upgrades and `--image` overrides remain explicit.
+
+### Fixed
+- [Bounded migrations](docs/MIGRATIONS.md) retain completed batches and checkpoints,
+  recover interrupted indexes, and verify schema/canaries before readiness.
+- Backup verification distinguishes ordinary sources from derived knowledge and
+  preserves all new schema fields, vectors, lineage and retry receipts.
+- Constrain formation schemas to the requested kind and selected evidence IDs.
+- Publish only native archives and checksums, not unrelated CI report artifacts.
+
 ## [0.5.0] - 2026-09-17
 
 ### Added

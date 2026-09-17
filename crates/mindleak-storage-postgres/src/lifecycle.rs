@@ -67,7 +67,7 @@ impl PostgresMemoryStore {
         let rows = transaction.query(
             &format!("SELECT fragments.id, {LIFECYCLE_COLUMNS} \
                 FROM public.fragments AS fragments JOIN public.memories AS memories ON memories.id = fragments.memory_id \
-                WHERE fragments.id = ANY($1) ORDER BY fragments.id FOR UPDATE OF fragments"),
+                WHERE fragments.id = ANY($1) AND memories.chain_id IS NULL ORDER BY fragments.id FOR UPDATE OF fragments"),
             &[&targets],
         ).await?;
         if rows.len() != targets.len() {
@@ -209,7 +209,7 @@ impl PostgresMemoryStore {
                 FROM unnest($1::uuid[], $2::double precision[]) AS candidates(fragment_id, score) \
                 JOIN public.fragments AS fragments ON fragments.id = candidates.fragment_id \
                 JOIN public.memories AS memories ON memories.id = fragments.memory_id \
-                WHERE ($3::text IS NULL OR memories.agent_id = $3) \
+                WHERE memories.chain_id IS NULL AND ($3::text IS NULL OR memories.agent_id = $3) \
                   AND ($4::text IS NULL OR memories.context->>'scope' = $4) \
                   AND ($5::text IS NULL OR fragments.tier = $5) \
                   AND ($6::boolean OR fragments.state = 'active')"),

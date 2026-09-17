@@ -1,13 +1,14 @@
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{
-    validate_embeddings, validate_text, DomainInspection, DomainQuery, DomainWrite,
-    FragmentInspection, InvalidInput, MemoryStore, MemoryTier, PreparedMemory, RecallFilter,
-    RelationshipCursor, WriteMemoryResult, WriteRequest, MAX_FRAGMENTS, MAX_FRAGMENT_BYTES,
-    MAX_MEMORY_BYTES,
+    validate_embeddings, validate_text, ChainFilter, ChainInspection, ChainMatch,
+    ChainWriteRequest, ChainWriteResult, DomainInspection, DomainQuery, DomainWrite,
+    FragmentInspection, InvalidInput, KnowledgeMatch, KnowledgeReviewPage, MemoryStore, MemoryTier,
+    PreparedChain, PreparedMemory, RecallFilter, RelationshipCursor, WriteMemoryResult,
+    WriteRequest, MAX_FRAGMENTS, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES,
 };
 use pgvector::Vector;
-use tokio_postgres::Row;
+use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
 
 use crate::PostgresMemoryStore;
@@ -21,6 +22,61 @@ impl MemoryStore for PostgresMemoryStore {
         limit: usize,
     ) -> Result<Option<DomainInspection>> {
         self.inspect_domain_in_snapshot(query, filter, limit).await
+    }
+
+    async fn hydrate_knowledge(
+        &self,
+        selected: &[ChainMatch],
+        filter: &ChainFilter,
+    ) -> Result<Vec<KnowledgeMatch>> {
+        self.hydrate_chain_matches(selected, filter).await
+    }
+
+    async fn review_knowledge(
+        &self,
+        target: Option<Uuid>,
+        filter: &ChainFilter,
+        after: Option<Uuid>,
+        limit: usize,
+    ) -> Result<KnowledgeReviewPage> {
+        self.knowledge_review_page(target, filter, after, limit)
+            .await
+    }
+
+    async fn lookup_chain_write(
+        &self,
+        request: &ChainWriteRequest,
+    ) -> Result<Option<ChainWriteResult>> {
+        self.pool
+            .get()
+            .await?
+            .query_opt(
+                WRITE_REPLAY_SQL,
+                &[
+                    &request.agent_id,
+                    &request.request_id,
+                    &serde_json::to_string(request)?,
+                ],
+            )
+            .await?
+            .map(write_receipt)
+            .transpose()
+    }
+
+    async fn save_chain(&self, chain: &PreparedChain) -> Result<ChainWriteResult> {
+        self.store_chain(chain).await
+    }
+
+    async fn inspect_chain(
+        &self,
+        chain_id: Uuid,
+        revision: Option<u32>,
+        after_revision: Option<u32>,
+        filter: &ChainFilter,
+        limit: usize,
+    ) -> Result<Option<ChainInspection>> {
+        self.read_chain(chain_id, revision, after_revision, filter, limit)
+            .await
     }
 
     async fn inspect_fragment(
@@ -54,46 +110,7 @@ impl MemoryStore for PostgresMemoryStore {
     }
 
     async fn save(&self, memory: &PreparedMemory) -> Result<WriteMemoryResult> {
-        validate_text(&memory.agent_id, "agentId", 256)?;
-        validate_text(&memory.raw_text, "text", MAX_MEMORY_BYTES)?;
-        memory.context.validate()?;
-        if let Some(request) = &memory.request {
-            ensure!(
-                request.agent_id == memory.agent_id
-                    && request.text == memory.raw_text
-                    && request.context == memory.context,
-                "write request does not match prepared memory"
-            );
-            if let Some(domain) = &request.domain {
-                domain.validate()?;
-                ensure!(
-                    request.facts.is_empty() && memory.relationships.is_empty(),
-                    "domain writes cannot apply fact lifecycle operations"
-                );
-            }
-        }
-        ensure!(
-            (1..=MAX_FRAGMENTS).contains(&memory.fragments.len()),
-            "invalid fragment count"
-        );
-        for fragment in &memory.fragments {
-            validate_text(&fragment.text, "fragment", MAX_FRAGMENT_BYTES)?;
-            match (&self.space, &fragment.embedding) {
-                (Some(space), Some(vector)) => {
-                    validate_embeddings(std::slice::from_ref(vector), 1, space.dimensions)?;
-                }
-                (None, None) => {}
-                _ => anyhow::bail!("fragment embeddings do not match the configured storage mode"),
-            }
-            ensure!(
-                (0.0..=1.0).contains(&fragment.importance),
-                "invalid fragment importance"
-            );
-            ensure!(
-                !fragment.pinned || fragment.tier == MemoryTier::LongTerm,
-                "pinned facts must be long-term"
-            );
-        }
+        self.validate_memory(memory)?;
         let mut connection = self
             .pool
             .get()
@@ -146,6 +163,67 @@ impl MemoryStore for PostgresMemoryStore {
                 .context("finish committed write replay")?;
             return Ok(result);
         }
+        self.persist_fragments(&transaction, memory).await?;
+        self.apply_relationships(&transaction, memory).await?;
+        self.store_domain_edge(&transaction, memory).await?;
+        transaction
+            .commit()
+            .await
+            .context("commit complete memory")?;
+        Ok(result)
+    }
+}
+
+impl PostgresMemoryStore {
+    pub(super) fn validate_memory(&self, memory: &PreparedMemory) -> Result<()> {
+        validate_text(&memory.agent_id, "agentId", 256)?;
+        validate_text(&memory.raw_text, "text", MAX_MEMORY_BYTES)?;
+        memory.context.validate()?;
+        if let Some(request) = &memory.request {
+            ensure!(
+                request.agent_id == memory.agent_id
+                    && request.text == memory.raw_text
+                    && request.context == memory.context,
+                "write request does not match prepared memory"
+            );
+            if let Some(domain) = &request.domain {
+                domain.validate()?;
+                ensure!(
+                    request.facts.is_empty() && memory.relationships.is_empty(),
+                    "domain writes cannot apply fact lifecycle operations"
+                );
+            }
+        }
+        ensure!(
+            (1..=MAX_FRAGMENTS).contains(&memory.fragments.len()),
+            "invalid fragment count"
+        );
+        for fragment in &memory.fragments {
+            validate_text(&fragment.text, "fragment", MAX_FRAGMENT_BYTES)?;
+            match (&self.space, &fragment.embedding) {
+                (Some(space), Some(vector)) => {
+                    validate_embeddings(std::slice::from_ref(vector), 1, space.dimensions)?
+                }
+                (None, None) => {}
+                _ => anyhow::bail!("fragment embeddings do not match the configured storage mode"),
+            }
+            ensure!(
+                (0.0..=1.0).contains(&fragment.importance),
+                "invalid fragment importance"
+            );
+            ensure!(
+                !fragment.pinned || fragment.tier == MemoryTier::LongTerm,
+                "pinned facts must be long-term"
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) async fn persist_fragments(
+        &self,
+        transaction: &Transaction<'_>,
+        memory: &PreparedMemory,
+    ) -> Result<()> {
         let statement = transaction
             .prepare(
                      "INSERT INTO public.fragments (id, memory_id, text, embedding, importance, tier, pinned, fragment_index) \
@@ -170,21 +248,15 @@ impl MemoryStore for PostgresMemoryStore {
                 .await
                 .context("store memory fragment")?;
         }
-        self.apply_relationships(&transaction, memory).await?;
-        self.store_domain_edge(&transaction, memory).await?;
-        transaction
-            .commit()
-            .await
-            .context("commit complete memory")?;
-        Ok(result)
+        Ok(())
     }
 }
 
-const WRITE_REPLAY_SQL: &str =
+pub(super) const WRITE_REPLAY_SQL: &str =
     "SELECT request_payload = $3::text::jsonb AS matches, write_result::text AS write_result \
     FROM public.memories WHERE agent_id = $1 AND request_id = $2";
 
-fn write_receipt(row: Row) -> Result<WriteMemoryResult> {
+pub(super) fn write_receipt<T: serde::de::DeserializeOwned>(row: Row) -> Result<T> {
     if !row.try_get::<_, bool>("matches")? {
         return Err(InvalidInput("requestId was already used for a different write".into()).into());
     }

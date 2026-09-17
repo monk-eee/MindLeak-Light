@@ -33,3 +33,4 @@ record when the design changes instead of silently rewriting their rationale.
 | [0019](0019-bounded-resumable-migrations.md) | Bounded Resumable Migrations | Accepted |
 | [0020](0020-domain-relationships.md) | Indexed Domain Relationships and Verified Imports | Accepted |
 | [0021](0021-encrypted-administrative-backups.md) | Encrypted Administrative Backups | Proposed |
+| [0022](0022-opt-in-chains-of-memory.md) | Opt-In Knowledge Formation | Accepted |

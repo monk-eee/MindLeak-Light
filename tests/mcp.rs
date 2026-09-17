@@ -30,6 +30,7 @@ use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
 };
 
+mod mcp_chains;
 mod mcp_lifecycle;
 
 const FACTS: [&str; 3] = [

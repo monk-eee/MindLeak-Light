@@ -6,8 +6,9 @@ use std::{
 use anyhow::{ensure, Context, Result};
 use async_trait::async_trait;
 use mindleak_memory::{
-    validate_embeddings, validate_text, InvalidInput, KeywordMatchMode, MemoryRetriever,
-    RecallDiagnostics, RecallFilter, RecallMatch, TextEmbedder, MAX_MEMORY_BYTES, MAX_RECALL_LIMIT,
+    validate_embeddings, validate_text, ChainFilter, ChainMatch, InvalidInput, KeywordMatchMode,
+    MemoryRetriever, RecallDiagnostics, RecallFilter, RecallMatch, TextEmbedder, MAX_MEMORY_BYTES,
+    MAX_RECALL_LIMIT,
 };
 use tokio::sync::OnceCell;
 
@@ -106,6 +107,33 @@ impl VectorMemoryRetriever {
 
 #[async_trait]
 impl MemoryRetriever for VectorMemoryRetriever {
+    fn chain_strategy(&self) -> &'static str {
+        "vector"
+    }
+    async fn recall_chains(
+        &self,
+        query: &str,
+        filter: &ChainFilter,
+        limit: usize,
+    ) -> Result<Vec<ChainMatch>> {
+        validate_text(query, "query", MAX_MEMORY_BYTES)?;
+        let space = self
+            .store
+            .space
+            .as_ref()
+            .context("knowledge vector search requires configured embeddings")?;
+        let vector = self.query_embedding(query, space.dimensions).await?;
+        self.store
+            .search_knowledge(
+                query,
+                filter,
+                limit,
+                Some(vector),
+                self.min_similarity,
+                false,
+            )
+            .await
+    }
     async fn recall(
         &self,
         query: &str,
@@ -159,6 +187,35 @@ impl HybridMemoryRetriever {
 
 #[async_trait]
 impl MemoryRetriever for HybridMemoryRetriever {
+    fn chain_strategy(&self) -> &'static str {
+        "hybrid"
+    }
+    async fn recall_chains(
+        &self,
+        query: &str,
+        filter: &ChainFilter,
+        limit: usize,
+    ) -> Result<Vec<ChainMatch>> {
+        validate_text(query, "query", MAX_MEMORY_BYTES)?;
+        let space = self
+            .vector
+            .store
+            .space
+            .as_ref()
+            .context("knowledge vector search requires configured embeddings")?;
+        let vector = self.vector.query_embedding(query, space.dimensions).await?;
+        self.vector
+            .store
+            .search_knowledge(
+                query,
+                filter,
+                limit,
+                Some(vector),
+                self.vector.min_similarity,
+                true,
+            )
+            .await
+    }
     async fn recall(
         &self,
         query: &str,
@@ -231,6 +288,14 @@ impl KeywordMemoryRetriever {
 
 #[async_trait]
 impl MemoryRetriever for KeywordMemoryRetriever {
+    async fn recall_chains(
+        &self,
+        query: &str,
+        filter: &ChainFilter,
+        limit: usize,
+    ) -> Result<Vec<ChainMatch>> {
+        self.store.search_chains(query, filter, limit).await
+    }
     async fn recall(
         &self,
         query: &str,

@@ -4,6 +4,8 @@ import { answerSchemaFor, categories, codingFixture, digest, evaluateAnswer, gen
 import { agentTools, containerConfiguration, createCodingWorkspace, renderScaleCharts, scopedMemory, openMemoryDriver } from "./validation-runtime.mjs";
 import { agentSettings, createAgent, publicExecution, runAgentSession } from "./validation-agent.mjs";
 import { runValidation } from "./validation-harness.mjs";
+import { benchmarkSettings } from "./benchmark-recall.mjs";
+import { knowledgeFailure, scoreKnowledgeResponse } from "./validation-knowledge.mjs";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -594,6 +596,53 @@ test("Lab 2 applied learning requires prior guide exposure, exact steps and orig
   await invoke(valid, "apply_guide", detail);
   assert.equal(writes, 1);
   assert.equal(valid.application.steps, 2);
+});
+
+test("knowledge evaluation is explicit and refuses missing server capabilities before writes", async () => {
+  let writes = 0;
+  const driver = { realProcess: true, configuration: { retrieval: "keyword" }, capabilities: {},
+    async call() { writes += 1; throw new Error("must_not_write"); } };
+  const report = await runValidation({ driver, selected: ["knowledge_workflow"], plan: generateScenarios({ sizes: [3] }) });
+  assert.equal(report.categories.knowledge_workflow.status, "error");
+  assert.equal(report.categories.knowledge_workflow.reason, "knowledge_schema_required");
+  assert.equal(writes, 0);
+  assert.ok(!categories.includes("knowledge_workflow"), "old default runs must not silently require new knowledge schemas");
+});
+
+test("knowledge benchmark formation is independently enabled and recorded without exposing credentials", () => {
+  const environment = { MINDLEAK_TEST_DATABASE_URL: "postgresql://localhost/knowledge_test",
+    MINDLEAK_LLM_URL: "http://127.0.0.1:11434/v1", MINDLEAK_MODEL: "test-former", MINDLEAK_LLM_API_KEY: "private-synthetic-key" };
+  const settings = benchmarkSettings(environment, { formation: "openai", "formation-reasoning-effort": "none" });
+  assert.equal(settings.serverEnvironment.MINDLEAK_FORMATION, "openai");
+  assert.equal(settings.serverEnvironment.MINDLEAK_DECOMPOSITION, "sentences");
+  assert.equal(settings.configuration.formationModel, "test-former");
+  assert.equal(settings.serverEnvironment.MINDLEAK_LLM_REASONING_EFFORT, "none");
+  assert.ok(!JSON.stringify(settings.configuration).includes("private-synthetic-key"));
+  assert.throws(() => benchmarkSettings(environment, { formation: "automatic" }));
+  assert.throws(() => benchmarkSettings({ MINDLEAK_TEST_DATABASE_URL: environment.MINDLEAK_TEST_DATABASE_URL }, { formation: "openai" }));
+  assert.equal(benchmarkSettings(environment).configuration.formation, undefined, "old benchmark configuration identity remains unchanged");
+});
+
+test("knowledge evaluation credits only checked lineage and retains safe failed timing", () => {
+  const childId = randomUUID();
+  const principleId = randomUUID();
+  const document = { kind: "chain", claim: "Measured claim", conclusion: "Only this workload", applicability: "A controlled workload", assumptions: [], evidence: [], supportedBy: [] };
+  const principle = { ...document, kind: "principle", supportedBy: [{ chainId: childId, revision: 2, reason: "Measured support" }] };
+  const known = new Map([[childId, { id: "child", document }], [principleId, { id: "principle", document: principle }]]);
+  const data = { kind: "knowledge", principles: [{ chain: { chainId: principleId, snapshot: { state: "accepted", document: principle } },
+    requiresReview: false, score: 0.9, evidenceDetailsTruncated: false,
+    supportingChains: [{ reference: { chainId: childId, revision: 2 }, document, state: "accepted", requiresReview: false }] }], chains: [], observations: [] };
+  const measured = scoreKnowledgeResponse(data, known, ["principle", "child"]);
+  assert.equal(measured.recallAtK, 0.5, "top-level recall must not silently credit nested records");
+  assert.equal(measured.evidenceBundleRecall, 1);
+  data.principles[0].supportingChains[0].document = { ...document, conclusion: "Applies everywhere" };
+  assert.throws(() => scoreKnowledgeResponse(data, known, ["principle", "child"]));
+  const error = Object.assign(new Error("private-provider-text"), { code: "provider_request_failed", elapsedMs: 120001 });
+  const failure = knowledgeFailure(error);
+  assert.equal(failure.reason, "provider_request_failed");
+  assert.equal(failure.elapsedMs, 120001);
+  assert.ok(!JSON.stringify(failure).includes("private-provider-text"));
+  assert.equal(knowledgeFailure(new Error("anything")).reason, "formation_failed_not_abstention");
 });
 
 test("validation precision distinguishes returned evidence from empty and duplicate slots", () => {

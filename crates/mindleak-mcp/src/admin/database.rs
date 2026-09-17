@@ -51,6 +51,18 @@ pub(super) struct Fingerprint {
     pub embedding_binding: Option<String>,
     pub database_bytes: u64,
     pub canary: Option<Canary>,
+    #[serde(default)]
+    pub knowledge_canary: Option<KnowledgeCanary>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct KnowledgeCanary {
+    pub chain_id: Uuid,
+    pub revision: u32,
+    pub scope: Option<String>,
+    pub raw_sha256: String,
+    pub claim_sha256: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -548,7 +560,7 @@ impl Database {
     ) -> AdminResult<Value> {
         use rmcp::{model::CallToolRequestParams, transport::TokioChildProcess, ServiceExt};
         let mut invocation = if self.engine.inside_container {
-            Invocation::new(&self.config.tools.container).args(["exec", "-i", "-w", "/", "-e", "MINDLEAK_DECOMPOSITION=sentences", "-e", "MINDLEAK_RETRIEVAL=keyword", "-e", "MINDLEAK_RELEVANCE=off", "-e",
+            Invocation::new(&self.config.tools.container).args(["exec", "-i", "-w", "/", "-e", "MINDLEAK_DECOMPOSITION=sentences", "-e", "MINDLEAK_RETRIEVAL=keyword", "-e", "MINDLEAK_RELEVANCE=off", "-e", "MINDLEAK_FORMATION=off", "-e",
                 &format!("MINDLEAK_DATABASE_URL=host=/var/run/postgresql user={} dbname={} sslmode=disable", self.user, self.name), self.container.as_deref().unwrap(), "/usr/local/bin/mindleak-light", "--transport", "stdio", "--database-read-only"])
         } else {
             Invocation::new(self.engine_path()?).args([
@@ -606,6 +618,7 @@ impl Database {
                 ("MINDLEAK_DECOMPOSITION", "sentences"),
                 ("MINDLEAK_RETRIEVAL", "keyword"),
                 ("MINDLEAK_RELEVANCE", "off"),
+                ("MINDLEAK_FORMATION", "off"),
             ] {
                 invocation.env.insert(key.into(), value.into());
             }
@@ -723,8 +736,40 @@ impl Database {
                     return Err(failure("verify", "empty_recall_mismatch", 5));
                 }
             }
+            if let Some(canary) = &metadata.knowledge_canary {
+                let arguments = json!({"chain":{"operation":"inspect","chainId":canary.chain_id,"revision":canary.revision},
+                    "scope":canary.scope,"includeInactive":true,"limit":1});
+                let result = client
+                    .call_tool(
+                        CallToolRequestParams::new("recall_memory")
+                            .with_arguments(arguments.as_object().unwrap().clone()),
+                    )
+                    .await
+                    .map_err(|_| failure("verify", "knowledge_inspection_failed", 5))?;
+                let value = result
+                    .structured_content
+                    .ok_or_else(|| failure("verify", "knowledge_inspection_missing", 5))?;
+                if result.is_error == Some(true)
+                    || value["chain"]["chainId"] != canary.chain_id.to_string()
+                    || value["chain"]["revision"] != canary.revision
+                    || value["chain"]["context"]["scope"] != json!(canary.scope)
+                    || value["rawText"]
+                        .as_str()
+                        .map(|text| security::hash(text.as_bytes()))
+                        .as_deref()
+                        != Some(&canary.raw_sha256)
+                    || value["chain"]["snapshot"]["document"]["claim"]
+                        .as_str()
+                        .map(|text| security::hash(text.as_bytes()))
+                        .as_deref()
+                        != Some(&canary.claim_sha256)
+                {
+                    return Err(failure("verify", "knowledge_inspection_mismatch", 5));
+                }
+            }
             Ok(
-                json!({"capabilities":true,"sourceInspection":metadata.canary.is_some(),"keywordRecall":metadata.canary.is_some(),"negativeControl":true,"modelsEnabled":false,"databaseReadOnly":true}),
+                json!({"capabilities":true,"sourceInspection":metadata.canary.is_some(),"keywordRecall":metadata.canary.is_some(),
+                "knowledgeInspection":metadata.knowledge_canary.is_some(),"negativeControl":true,"modelsEnabled":false,"databaseReadOnly":true}),
             )
         };
         let result = tokio::select! { _ = cancel.cancelled() => Err(failure("verify", "cancelled", 130)), result = tokio::time::timeout(Duration::from_secs(60), checks) => result.unwrap_or_else(|_| Err(failure("verify", "mcp_verification_timeout", 5))) };
@@ -762,6 +807,7 @@ impl Snapshot {
                 embedding_binding: None,
                 database_bytes: 0,
                 canary: None,
+                knowledge_canary: None,
             },
         }
     }
@@ -816,13 +862,16 @@ impl Snapshot {
         self.fingerprint.database_settings = value["settings"].clone();
         self.fingerprint.canary = serde_json::from_value(value["canary"].clone())
             .map_err(|_| failure("snapshot", "invalid_canary_metadata", 3))?;
+        self.fingerprint.knowledge_canary =
+            serde_json::from_value(value["knowledgeCanary"].clone())
+                .map_err(|_| failure("snapshot", "invalid_knowledge_canary_metadata", 3))?;
         let mut hash = Sha256::new();
         for (table, order) in [
             ("memories", "id"),
             ("fragments", "id"),
             (
                 "relationships",
-                "source_fragment,target_fragment,relationship_type",
+                "source_fragment,target_fragment,relationship_type,to_jsonb(records)",
             ),
         ] {
             let marker = format!("ML_END_{}", Uuid::new_v4().simple());

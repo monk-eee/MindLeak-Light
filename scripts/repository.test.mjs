@@ -500,9 +500,30 @@ test("quickstart documentation and editor config agree on a model-free setup", (
   assert.equal(defaults.MINDLEAK_DECOMPOSITION, "sentences");
   assert.equal(defaults.MINDLEAK_RETRIEVAL, "keyword");
   assert.equal(defaults.MINDLEAK_RELEVANCE, "off");
+  assert.equal(defaults.MINDLEAK_FORMATION, "off");
+  for (const file of ["docker-compose.yml", "docker/compose.all-in-one.yml"]) {
+    assert.ok(readFileSync(join(root, file), "utf8").includes("MINDLEAK_FORMATION: ${MINDLEAK_FORMATION:-off}"));
+  }
   assert.equal(defaults.MINDLEAK_MODEL, undefined);
   assert.equal(defaults.MINDLEAK_EMBED_MODEL, undefined);
   assert.equal(defaults.MINDLEAK_RELEVANCE_MODEL, undefined);
+});
+
+test("CI retains explicit knowledge benchmark evidence alongside legacy comparisons", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.ok(workflow.includes("--category knowledge_workflow"));
+  assert.ok(workflow.includes("--formation off"));
+  assert.ok(workflow.includes("knowledge-workflow-${{ github.run_id }}"));
+  assert.ok(workflow.includes("scripts/regression-check.mjs"));
+});
+
+test("native releases publish only binary packages and checksum artifacts", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const publish = workflow.slice(workflow.indexOf("  publish:\n"));
+  assert.ok(publish.includes("pattern: mindleak-light-*"));
+  assert.ok(publish.includes("dist/mindleak-light-*.tar.gz\n"));
+  assert.ok(publish.includes("dist/mindleak-light-*.tar.gz.sha256"));
+  assert.ok(!publish.includes("files: dist/*"));
 });
 
 test("README leads with credential-free local setup and separates shared HTTP", () => {
@@ -564,7 +585,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   assert.match(frontmatter, /^name: mindleak-memory$/m);
   const description = JSON.parse(/^description: (".*")$/m.exec(frontmatter)?.[1] ?? "null");
   assert.ok(typeof description === "string" && description.length <= 1024 && description.includes("agents"));
-  assert.match(frontmatter, /version: "1\.1\.0"/);
+  assert.match(frontmatter, /version: "1\.2\.0"/);
   assert.doesNotMatch(frontmatter, /^(?:allowed-tools|hooks|context|agent|model):/m);
   assert.doesNotMatch(skill, /^!`|^```!/m);
   assert.ok(skill.split("\n").length < 250, "keep the on-demand workflow compact");
@@ -576,7 +597,8 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   }
   const recipes = JSON.parse(readFileSync(join(directory, "references/tool-recipes.json"), "utf8"));
   assert.equal(recipes.schemaVersion, 1);
-  assert.equal(recipes.skillVersion, "1.1.0");
+  assert.equal(recipes.skillVersion, "1.2.0");
+  for (const term of ["formation", "principle", "requiresReview", "counterEvidenceReviewed", "supportedBy"]) assert.ok(skill.includes(term));
   assert.equal(recipes.minimumServerVersion, "0.4.0");
   assert.ok(skill.includes("General recall searches across all scopes"));
   assert.ok(skill.includes("Two unscoped facts may be linked"));
@@ -788,7 +810,7 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md", "BACKUP.md", "DOMAIN-RELATIONSHIPS.md", "MIGRATIONS.md"];
+  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md", "BACKUP.md", "DOMAIN-RELATIONSHIPS.md", "MIGRATIONS.md", "CHAINS.md"];
   for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }

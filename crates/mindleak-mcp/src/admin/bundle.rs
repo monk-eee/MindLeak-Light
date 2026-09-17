@@ -325,6 +325,7 @@ mod tests {
                 embedding_binding: None,
                 database_bytes: 0,
                 canary: None,
+                knowledge_canary: None,
             },
             dump_sha256: security::hash(b"dump-fixture"),
             files: ["first", "second"]

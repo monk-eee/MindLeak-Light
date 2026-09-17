@@ -512,6 +512,31 @@ pub(super) async fn initialize(
         options,
     )
     .await?;
+    ddl(
+        client,
+        "0010",
+        "prepare",
+        &format!(
+            "BEGIN; {} COMMIT;",
+            include_str!("../migrations/0010-chains-of-memory.sql")
+        ),
+        options,
+    )
+    .await?;
+    let knowledge = phase_progress(client, "0010", "verify", options.statement_timeout).await?;
+    knowledge.timeout(client).await?;
+    let verified: bool = client.query_one(
+        "SELECT (SELECT count(*)=9 FROM pg_attribute WHERE attrelid='public.memories'::regclass AND NOT attisdropped \
+            AND attname IN ('chain_id','chain_revision','chain_current','chain_snapshot','chain_operation','chain_previous_id','chain_claim_key','chain_search','chain_embedding')) \
+        AND (SELECT count(*)=5 AND bool_and(indisvalid AND indisready) FROM pg_index JOIN pg_class ON pg_class.oid=indexrelid \
+            WHERE indrelid='public.memories'::regclass AND relname IN ('memories_chain_revision_idx','memories_chain_head_idx','memories_chain_claim_idx','memories_chain_search_idx','memories_chain_dependencies_idx'))",
+        &[],
+    ).await.map_err(|error| knowledge.error(error))?.get(0);
+    ensure!(
+        verified,
+        "migration_id=0010 phase=verify: knowledge schema or indexes are incomplete"
+    );
+    knowledge.report();
     let progress = phase_progress(client, "0008", "verify", options.statement_timeout).await?;
     progress.timeout(client).await?;
     let verified: bool = client
