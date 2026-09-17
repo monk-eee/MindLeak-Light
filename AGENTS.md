@@ -1,5 +1,21 @@
 # MindLeak Light: Agent Guide
 
+## Agent Memory
+
+For nontrivial work with an approved MindLeak connection, read the
+[activation policy](.agents/skills/mindleak-memory/references/agent-policy.md)
+and use the [mindleak-memory skill](.agents/skills/mindleak-memory/SKILL.md).
+This repository's shared project scope is `repo:monk-eee/MindLeak-Light` unless
+the user specifies another. Use your actual stable contributor `agentId` for
+writes; omit the agent filter for scoped shared recall. Tests use separate,
+disposable scopes and databases, never this working-memory scope.
+
+The skill guides evidence reuse and selective writes; it grants no permissions
+and does not make stored claims authoritative. If the connection is unavailable,
+report that and continue with local evidence. Do not start services, install
+credentials, write fixture facts, or change global client settings just to make
+memory available. Repository invariants and user instructions still apply.
+
 ## Scope
 
 One Rust workspace, one MCP executable, one PostgreSQL database. Read
@@ -60,6 +76,10 @@ Use Conventional Commits, explicit staging, and never `--no-verify`.
 - Record fixable outstanding defects in `gaps.d/`; record deliberate boundaries
   in [known limitations](docs/KNOWN-LIMITATIONS.md). Do not claim unverified work.
 - Keep setup, tool contracts, and deployment docs current with code changes.
+- Keep the companion skill and its tested recipes consistent with the MCP
+  contract. Edit its canonical activation policy first; update the matching
+  README/integration snippets together. Never add client-specific permission
+  grants, hardcoded MCP prefixes, or automatic service startup to the skill.
 - Keep the README focused on a human's first successful write and recall.
   Put optional model setup and contributor internals in the linked guides.
 

@@ -3,7 +3,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use mindleak_decomposition::OpenAiDecomposer;
@@ -237,6 +237,7 @@ async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
         receipts.push(written.structured_content.unwrap());
     }
     let mut request = json!({"agentId": agent_id, "scope": scope, "query": "restart", "limit": 10, "contextLimit": 1});
+    let recalls_started = Instant::now();
     let original = client
         .call_tool(call("recall_memory", request.clone()))
         .await
@@ -280,8 +281,6 @@ async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
             "context",
             "lifecycle",
             "score",
-            "activation",
-            "rankingPriority",
             "relationships",
             "relationshipCount",
             "relationshipCountExact",
@@ -291,6 +290,29 @@ async fn duplicate_groups_preserve_each_returned_source_and_lifecycle() {
         ] {
             assert_eq!(source[field], original[field], "provenance field: {field}");
         }
+        let activation = source["activation"].as_f64().unwrap();
+        let original_activation = original["activation"].as_f64().unwrap();
+        let half_life_seconds = if source["lifecycle"]["tier"] == "long_term" {
+            90.0 * 86_400.0
+        } else {
+            7.0 * 86_400.0
+        };
+        let elapsed_seconds_with_rounding = recalls_started.elapsed().as_secs_f64() + 1.0;
+        let minimum_activation =
+            original_activation * (-elapsed_seconds_with_rounding / half_life_seconds).exp2();
+        assert!(
+            (minimum_activation..=original_activation).contains(&activation),
+            "activation must preserve its source and decay only by elapsed recall time"
+        );
+        if source["lifecycle"]["pinned"] == true {
+            assert_eq!(activation, original_activation);
+        }
+        let score = source["score"].as_f64().unwrap();
+        let expected_priority = score - score.abs() * 0.25 * (1.0 - activation);
+        assert!(
+            (source["rankingPriority"].as_f64().unwrap() - expected_priority).abs() < 1e-12,
+            "ranking priority must use this snapshot's activation and original score"
+        );
         assert_eq!(source["lifecycle"]["confirmedSessions"], 0);
     }
     for search_control in [

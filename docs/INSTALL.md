@@ -77,6 +77,61 @@ For shared HTTP instead, set `MINDLEAK_DATABASE_URL` and `MINDLEAK_HTTP_TOKEN`,
 then run `mindleak-light --transport http --listen 127.0.0.1:8088`.
 The binary uses your configured database; it does not bundle PostgreSQL.
 
+## Companion Agent Skill
+
+The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md) is a
+new source/distribution addition, not included in the already-published v0.4.0
+archives or image. It works with the current 0.4.0 server; no model or server
+upgrade is needed. Future native archives built from this source include the
+same `.agents/skills/mindleak-memory` folder. Container users install the skill
+on their agent's side, not inside the database container.
+
+Obtain the entire folder, including `references`, from one reviewed source
+revision or a release that lists the companion. Retain its revision and
+`metadata.version`; do not assemble resources from different versions. The MCP
+connection and the skill are separate: first configure the approved server and
+tool access in each client, then install the bundle and activation policy.
+
+| Client | Project Skill Directory | Always-On Project Instructions |
+|---|---|---|
+| GitHub Copilot in VS Code | `.agents/skills/mindleak-memory/` (also supports `.github/skills/` and `.claude/skills/`) | `.github/copilot-instructions.md` |
+| Codex CLI or IDE | `.agents/skills/mindleak-memory/` | `AGENTS.md` |
+| Claude Code | `.claude/skills/mindleak-memory/` | `CLAUDE.md` |
+| Other MCP agents | The client's documented skill or reference location | Its persistent instruction context |
+
+These paths describe client conventions, not a tested guarantee for every
+version, cloud runner, or desktop client. Claude Code is not the same product
+as every Claude Desktop integration. An MCP-capable client need not support
+skills. The recipe tests do not prove native skill discovery in these clients.
+Official references: [VS Code](https://code.visualstudio.com/docs/agent-customization/agent-skills),
+[Claude Code](https://code.claude.com/docs/en/skills), and
+[Codex](https://developers.openai.com/codex/skills).
+
+Install the entire `mindleak-memory` directory in the appropriate project path,
+preserving existing customizations. For shared projects, keep `.agents` as the
+canonical source and use a reviewed copy or a supported local symlink for a
+client that needs another location. Avoid multiple divergent skills with the
+same name. This repository's [Claude entry point](../CLAUDE.md) explicitly reads
+the canonical file when working in this source repository. When installing just
+the companion bundle elsewhere, reference the installed SKILL.md from that
+project's own instructions; native menu discovery still depends on its supported path.
+
+Add the short [activation block](../.agents/skills/mindleak-memory/references/agent-policy.md)
+to the always-on instructions the client actually loads. Preserve existing
+rules, define a stable shared project scope, and give each contributor a truthful
+stable `agentId`. Reopen the client session after installing new skill locations.
+Check the skill listing; invoke `mindleak-memory` explicitly for the first check
+using the client's picker (`/mindleak-memory` in VS Code or Claude Code,
+`/skills` or `$mindleak-memory` in Codex). If native discovery is unsupported,
+explicitly provide the canonical workflow as task context and test that path.
+
+The bundle has no tool allowlist, injected shell commands, auto-approval rules,
+credentials, or hardcoded endpoint. It does not synchronize identities, install
+MCP, or enforce a lookup on every task. Follow the
+[fresh-session acceptance checklist](INTEGRATION.md#verify-the-agent-behaviour)
+before claiming a client works automatically. Do not edit global profiles or
+other projects as a side effect of this repository's setup.
+
 ## All-in-One Container
 
 For a local trial, [let the launcher manage setup](LOCAL.md). The commands below
