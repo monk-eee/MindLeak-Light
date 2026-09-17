@@ -34,3 +34,4 @@ record when the design changes instead of silently rewriting their rationale.
 | [0020](0020-domain-relationships.md) | Indexed Domain Relationships and Verified Imports | Accepted |
 | [0021](0021-encrypted-administrative-backups.md) | Encrypted Administrative Backups | Proposed |
 | [0022](0022-opt-in-chains-of-memory.md) | Opt-In Knowledge Formation | Accepted |
+| [0023](0023-agent-learning-context.md) | Agent Learning Context and Observable Retrieval | Accepted |

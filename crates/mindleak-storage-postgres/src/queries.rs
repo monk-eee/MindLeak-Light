@@ -7,11 +7,15 @@ use tokio_postgres::Row;
 
 use crate::{lifecycle, PostgresMemoryStore};
 
-const KEYWORD_QUERY: &str = "CASE $2::text \
-    WHEN 'all' THEN plainto_tsquery('english', $1) \
+pub(super) fn keyword_query_sql(query: &str, mode: &str) -> String {
+    format!(
+        "CASE {mode}::text \
+    WHEN 'all' THEN plainto_tsquery('english', {query}) \
     WHEN 'any' THEN (SELECT COALESCE(string_agg(quote_literal(term), ' | '), '')::tsquery \
-        FROM unnest(tsvector_to_array(to_tsvector('english', $1))) AS terms(term)) \
-    ELSE websearch_to_tsquery('english', $1) END";
+        FROM unnest(tsvector_to_array(to_tsvector('english', {query}))) AS terms(term)) \
+    ELSE websearch_to_tsquery('english', {query}) END"
+    )
+}
 
 impl PostgresMemoryStore {
     pub(super) async fn search(
@@ -60,12 +64,13 @@ impl PostgresMemoryStore {
             .await
             .context("acquire database connection")?;
         let limit = i64::try_from(limit)?;
+        let keyword_query = keyword_query_sql("$1", "$2");
         let rows = connection.query(
                 &format!("SELECT memories.id AS memory_id, fragments.id AS fragment_id, memories.agent_id, \
                     fragments.text, ts_rank_cd(ARRAY[0.025, 0.1, 0.4, 1.0]::real[], fragments.search_vector, query, 32)::double precision AS score, {} \
              FROM public.fragments AS fragments \
              JOIN public.memories AS memories ON memories.id = fragments.memory_id \
-             CROSS JOIN (SELECT {KEYWORD_QUERY} AS query) AS parsed \
+             CROSS JOIN (SELECT {keyword_query} AS query) AS parsed \
              WHERE memories.chain_id IS NULL AND fragments.search_vector @@ query \
                AND ($3::text IS NULL OR memories.agent_id = $3) \
                              AND ($5::text IS NULL OR memories.context->>'scope' = $5) \
@@ -89,10 +94,11 @@ impl PostgresMemoryStore {
             .get()
             .await
             .context("acquire database connection")?;
+        let keyword_query = keyword_query_sql("$1", "$2");
         let row = connection
             .query_one(
                 &format!(
-                    "SELECT ({KEYWORD_QUERY})::text AS parsed_query, \
+                    "SELECT ({keyword_query})::text AS parsed_query, \
                 tsvector_to_array(to_tsvector('english', $1)) AS terms"
                 ),
                 &[&query, &filter.match_mode.as_str()],

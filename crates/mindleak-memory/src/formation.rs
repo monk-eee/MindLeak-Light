@@ -193,5 +193,11 @@ pub struct FormationPreview {
 #[async_trait]
 pub trait KnowledgeFormer: Send + Sync {
     fn model(&self) -> &str;
+    fn capabilities(&self) -> crate::ProcessingCapabilities {
+        crate::ProcessingCapabilities {
+            mode: "custom",
+            model: Some(self.model().into()),
+        }
+    }
     async fn form(&self, sources: &FormationContext) -> Result<KnowledgeFormation>;
 }

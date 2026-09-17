@@ -46,7 +46,458 @@ async fn successful(
 ) -> Value {
     let result = client.call_tool(call(name, arguments)).await.unwrap();
     assert_ne!(result.is_error, Some(true));
-    result.structured_content.unwrap()
+    let structured = result.structured_content.unwrap();
+    if let Some(diagnostics) = structured.get("costDiagnostics") {
+        let content = serde_json::to_value(&result.content).unwrap();
+        let emitted_bytes = content[0]["text"].as_str().unwrap().len();
+        assert_eq!(
+            diagnostics["responseBytes"], emitted_bytes,
+            "measure the server JSON, not a client's floating-point reserialization"
+        );
+    }
+    structured
+}
+
+#[tokio::test]
+async fn compact_knowledge_budget_is_independent_of_unused_full_evidence() {
+    let directory = tempfile::tempdir().unwrap();
+    let client = connect(directory.path(), None).await;
+    let scope = format!("compact-budget-{}", Uuid::new_v4());
+    let query = format!("compactbudget{}", Uuid::new_v4().simple());
+    let context =
+        json!({"scope":scope,"source":"synthetic:compact-budget","sessionId":Uuid::new_v4()});
+    let source = (0..8)
+        .map(|index| format!("Synthetic supporting observation number {index}."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let observation = successful(
+        &client,
+        "write_memory",
+        json!({
+            "agentId":"budget-learner","text":source,"context":context
+        }),
+    )
+    .await;
+    assert_eq!(observation["fragments"].as_array().unwrap().len(), 8);
+    let evidence: Vec<_> = observation["fragments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, fragment)| {
+            json!({"fragmentId":fragment["fragmentId"],"role":"supports",
+            "reason":if index < 5 { "\u{0001}".repeat(940) } else { "A".repeat(1000) }})
+        })
+        .collect();
+    let write = |chain: Value| {
+        json!({"agentId":"budget-learner","requestId":Uuid::new_v4(),
+        "text":"Recorded a synthetic budget decision.","context":context,"chain":chain})
+    };
+    let validation = json!({"method":"Inspect synthetic support","result":"Only the recorded conditions apply",
+        "source":"synthetic:budget-validation","counterEvidenceReviewed":[]});
+    let mut supports = Vec::new();
+    for index in 0..8 {
+        let chain_id = Uuid::new_v4();
+        successful(&client, "write_memory", write(json!({"operation":"propose","chainId":chain_id,"document":{
+            "claim":format!("Budget supporting comparison {index}"),"conclusion":"Reuse the tested procedure.",
+            "rationale":"Eight bounded source references.","applicability":"The synthetic runtime only.",
+            "assumptions":[],"evidence":evidence
+        }}))).await;
+        successful(
+            &client,
+            "write_memory",
+            write(json!({"operation":"accept","chainId":chain_id,
+            "expectedRevision":1,"validation":validation})),
+        )
+        .await;
+        supports.push(
+            json!({"chainId":chain_id,"revision":2,"reason":"Recorded synthetic comparison."}),
+        );
+    }
+    for index in 0..4 {
+        let chain_id = Uuid::new_v4();
+        successful(&client, "write_memory", write(json!({"operation":"propose","chainId":chain_id,"document":{
+            "kind":"principle","claim":format!("{query} comparison {index}"),
+            "conclusion":"Use the procedure only under its verified conditions.",
+            "rationale":"Supporting evidence remains available by exact inspection.",
+            "applicability":"The synthetic runtime only.","assumptions":["The runtime contract is unchanged."],
+            "evidence":[],"supportedBy":supports
+        }}))).await;
+        successful(
+            &client,
+            "write_memory",
+            write(json!({"operation":"accept","chainId":chain_id,
+            "expectedRevision":1,"validation":validation})),
+        )
+        .await;
+    }
+    let full_error = client
+        .call_tool(call(
+            "recall_memory",
+            json!({
+                "knowledge":{"operation":"search","query":query},"scope":scope,"limit":4
+            }),
+        ))
+        .await
+        .expect_err("full evidence must retain its existing aggregate byte limit");
+    assert!(full_error.to_string().contains("512 KiB"));
+    let compact = successful(&client, "recall_memory", json!({
+        "knowledge":{"operation":"search","query":query,"view":"compact","costDiagnostics":true},
+        "scope":scope,"limit":4
+    })).await;
+    assert_eq!(compact["principles"].as_array().unwrap().len(), 4);
+    assert!(compact["chains"].as_array().unwrap().is_empty());
+    assert!(compact["observations"].as_array().unwrap().is_empty());
+    assert!(
+        compact["costDiagnostics"]["responseBytes"]
+            .as_u64()
+            .unwrap()
+            < 10 * 1024
+    );
+    assert_eq!(compact["costDiagnostics"]["providerRequestCount"], 0);
+    for principle in compact["principles"].as_array().unwrap() {
+        assert_eq!(principle["applicability"], "The synthetic runtime only.");
+        assert_eq!(
+            principle["assumptions"],
+            json!(["The runtime contract is unchanged."])
+        );
+        assert_eq!(principle["supportingChains"].as_array().unwrap().len(), 8);
+    }
+    let inspected = successful(
+        &client,
+        "recall_memory",
+        json!({
+            "chain":{"operation":"inspect","chainId":supports[0]["chainId"]},"scope":scope,"limit":1
+        }),
+    )
+    .await;
+    assert_eq!(
+        inspected["evidence"][0]["reference"]["reason"],
+        "\u{0001}".repeat(940)
+    );
+    let large_chain_id = Uuid::new_v4();
+    let large_query = format!("unusedsource{}", Uuid::new_v4().simple());
+    let mut large_proposal = write(
+        json!({"operation":"propose","chainId":large_chain_id,"document":{
+            "kind":"principle","claim":large_query,"conclusion":"Use the conditional procedure.",
+            "rationale":"\u{0001}".repeat(4096),"applicability":"The synthetic runtime only.",
+            "assumptions":[],"evidence":[],"supportedBy":supports
+        }}),
+    );
+    let large_source = (0..8)
+        .map(|index| format!("Source {index} {}.", "\u{0001}".repeat(4000)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    large_proposal["text"] = json!(large_source);
+    successful(&client, "write_memory", large_proposal).await;
+    let mut large_acceptance = write(json!({"operation":"accept","chainId":large_chain_id,
+        "expectedRevision":1,"validation":validation}));
+    large_acceptance["text"] = json!(large_source);
+    successful(&client, "write_memory", large_acceptance).await;
+    let large_compact = successful(&client, "recall_memory", json!({
+        "knowledge":{"operation":"search","query":large_query,"view":"compact","costDiagnostics":true},
+        "scope":scope,"limit":1
+    })).await;
+    assert_eq!(
+        large_compact["principles"][0]["chainId"],
+        large_chain_id.to_string()
+    );
+    assert!(
+        large_compact["costDiagnostics"]["responseBytes"]
+            .as_u64()
+            .unwrap()
+            < 3 * 1024
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn checkpoint_capture_recipes_are_retry_safe_and_reusable_in_fresh_sessions() {
+    let manifest: Value = serde_json::from_str(include_str!(
+        "../.agents/skills/mindleak-memory/references/tool-recipes.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        manifest["captureCalls"]
+            .as_object()
+            .expect("capture recipes are shipped")
+            .len(),
+        2
+    );
+    let recipes = json!({"calls":manifest["captureCalls"]});
+    let directory = tempfile::tempdir().unwrap();
+    for mode in ["project", "general"] {
+        let cue = format!("capturecue{}", Uuid::new_v4().simple());
+        let scope = format!("capture-scope-{}", Uuid::new_v4());
+        let text = "When the upstream is slow, the verified timeout test rejects the short deadline; use the tested twelve-second deadline only for this runtime.";
+        let bindings = std::collections::HashMap::from([
+            (
+                "$AGENT_ID",
+                json!(format!("capture-agent-{}", Uuid::new_v4())),
+            ),
+            ("$SCOPE", json!(scope)),
+            ("$SESSION_ID", json!(Uuid::new_v4())),
+            ("$REQUEST_ID", json!(Uuid::new_v4())),
+            ("$FACT_TEXT", json!(text)),
+            ("$SOURCE", json!("synthetic:verified-timeout-test")),
+            (
+                "$RETRIEVAL_CUES",
+                json!(format!("{cue} upstream timeout deadline")),
+            ),
+        ]);
+        let request = super::mcp_lifecycle::recipe(&recipes, mode, &bindings);
+        let client = connect(directory.path(), None).await;
+        let written = client.call_tool(request.clone()).await.unwrap();
+        assert_ne!(written.is_error, Some(true));
+        let receipt = written.structured_content.unwrap();
+        let replay = client.call_tool(request).await.unwrap();
+        assert_ne!(replay.is_error, Some(true));
+        assert_eq!(replay.structured_content.unwrap(), receipt);
+        client.cancel().await.unwrap();
+
+        let client = connect(directory.path(), None).await;
+        let mut search = json!({"query":cue,"limit":5});
+        if mode == "project" {
+            search["scope"] = json!(scope);
+        }
+        let recalled = successful(&client, "recall_memory", search.clone()).await;
+        assert_eq!(recalled["results"].as_array().unwrap().len(), 1);
+        let found = &recalled["results"][0];
+        assert_eq!(found["memoryId"], receipt["memoryId"]);
+        assert_eq!(found["context"]["summary"], bindings["$RETRIEVAL_CUES"]);
+        assert_eq!(found["context"]["source"], bindings["$SOURCE"]);
+        assert_eq!(
+            found["context"]["scope"],
+            if mode == "project" {
+                json!(scope)
+            } else {
+                Value::Null
+            }
+        );
+        assert_eq!(found["lifecycle"]["confirmedSessions"], 0);
+        assert_eq!(found["lifecycle"]["usefulSessions"], 0);
+        let mut inspection = json!({"fragmentId":found["fragmentId"],"limit":1});
+        if mode == "project" {
+            inspection["scope"] = json!(scope);
+        }
+        let inspected = successful(&client, "recall_memory", inspection).await;
+        assert_eq!(inspected["rawText"], text);
+        search["scope"] = json!(format!("{scope}-unrelated"));
+        assert!(
+            successful(&client, "recall_memory", search).await["results"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        client.cancel().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn learning_capabilities_are_model_free_and_separate_extraction_from_search() {
+    let directory = tempfile::tempdir().unwrap();
+    let provider = MockServer::start().await;
+    let client = connect_configured(
+        directory.path(),
+        &[
+            ("MINDLEAK_DECOMPOSITION", "openai".into()),
+            ("MINDLEAK_LLM_URL", format!("{}/v1", provider.uri())),
+            ("MINDLEAK_MODEL", "configured-extractor".into()),
+            ("MINDLEAK_RELEVANCE", "openai".into()),
+            ("MINDLEAK_RELEVANCE_URL", format!("{}/v1", provider.uri())),
+            ("MINDLEAK_RELEVANCE_MODEL", "configured-selector".into()),
+        ],
+    )
+    .await;
+    let capabilities = successful(
+        &client,
+        "recall_memory",
+        json!({"knowledge":{"operation":"capabilities"}}),
+    )
+    .await;
+    assert_eq!(capabilities["retrieval"]["strategy"], "keyword");
+    assert!(capabilities["retrieval"]["embeddingModel"].is_null());
+    assert_eq!(capabilities["decomposition"]["mode"], "openai");
+    assert_eq!(
+        capabilities["decomposition"]["model"],
+        "configured-extractor"
+    );
+    assert_eq!(capabilities["formation"]["mode"], "off");
+    assert_eq!(capabilities["learning"]["agentAuthoredChains"], true);
+    assert_eq!(capabilities["learning"]["agentAuthoredPrinciples"], true);
+    assert_eq!(capabilities["learning"]["modelPreviewRequired"], false);
+    assert_eq!(
+        capabilities["learning"]["acceptance"],
+        "explicit_validation"
+    );
+    assert_eq!(capabilities["learning"]["recallChangesKnowledge"], false);
+    assert_eq!(capabilities["learning"]["checkpointMode"], "agent_guided");
+    assert_eq!(
+        capabilities["learning"]["checkpointTriggers"],
+        json!([
+            "verified_fix",
+            "verified_failure",
+            "changed_assumption",
+            "before_handoff"
+        ])
+    );
+    assert!(capabilities["learning"]["captureFormat"]
+        .as_str()
+        .unwrap()
+        .contains("verification"));
+    assert!(capabilities["learning"]["captureFormat"]
+        .as_str()
+        .unwrap()
+        .contains("retrieval cues"));
+    assert_eq!(
+        capabilities["retrieval"]["relevanceModel"],
+        "configured-selector"
+    );
+    assert_eq!(capabilities["retrieval"]["providerCallsInstrumented"], true);
+    assert_eq!(capabilities["knowledgeViews"], json!(["full", "compact"]));
+    for extra in [
+        json!({"scope":"project"}),
+        json!({"agentId":"learner"}),
+        json!({"limit":1}),
+        json!({"includeInactive":true}),
+    ] {
+        let mut arguments = extra;
+        arguments["knowledge"] = json!({"operation":"capabilities"});
+        assert!(client
+            .call_tool(call("recall_memory", arguments))
+            .await
+            .is_err());
+    }
+    assert!(provider.received_requests().await.unwrap().is_empty());
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn knowledge_costs_include_relevance_without_changing_selection() {
+    let directory = tempfile::tempdir().unwrap();
+    let provider = MockServer::start().await;
+    let failure = Arc::new(AtomicUsize::new(0));
+    let failure_mode = failure.clone();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |request: &Request| {
+            if failure_mode.load(Ordering::SeqCst) != 0 {
+                return ResponseTemplate::new(503);
+            }
+            let body: Value = request.body_json().unwrap();
+            let input: Value =
+                serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let selected: Vec<_> = input["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|candidate| json!({"index":candidate["index"],"evidence":candidate["text"]}))
+                .collect();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "choices":[{"finish_reason":"stop","message":{"content":json!({
+                    "requested_detail":"Recorded approval conditions", "relevant":selected
+                }).to_string()}}],
+                "usage":{"prompt_tokens":37,"completion_tokens":13,"total_tokens":50,
+                    "prompt_tokens_details":{"cached_tokens":5}}
+            }))
+        })
+        .mount(&provider)
+        .await;
+    let client = connect_configured(
+        directory.path(),
+        &[
+            ("MINDLEAK_RELEVANCE", "openai".into()),
+            ("MINDLEAK_RELEVANCE_URL", format!("{}/v1", provider.uri())),
+            ("MINDLEAK_RELEVANCE_MODEL", "test-selector".into()),
+        ],
+    )
+    .await;
+    let scope = format!("knowledge-costs-{}", Uuid::new_v4());
+    let query = format!("approvalfixture{}", Uuid::new_v4().simple());
+    let context =
+        json!({"scope":scope,"source":"synthetic:approval-workflow","sessionId":Uuid::new_v4()});
+    let observation = successful(&client, "write_memory", json!({
+        "agentId":"learner","text":format!("For {query}, the blocked runtime failed the approval check."),
+        "context":context
+    })).await;
+    let chain_id = Uuid::new_v4();
+    let write = |chain: Value| {
+        json!({"agentId":"learner","text":"Recorded the verified approval condition.",
+        "requestId":Uuid::new_v4(),"context":context,"chain":chain})
+    };
+    successful(&client, "write_memory", write(json!({"operation":"propose","chainId":chain_id,"document":{
+        "claim":format!("Check approval for {query}"),"rationale":"The blocked runtime was rejected.",
+        "conclusion":"Check approval before exporting.","applicability":"The tested runtime only.",
+        "assumptions":["The approval contract has not changed."],"evidence":[{
+            "fragmentId":observation["fragments"][0]["fragmentId"],"role":"supports","reason":"Verified rejection."
+        }]
+    }}))).await;
+    successful(
+        &client,
+        "write_memory",
+        write(
+            json!({"operation":"accept","chainId":chain_id,"expectedRevision":1,
+                "validation":{"method":"Run the approval test","result":"Blocked runtime rejected",
+                    "source":"synthetic:approval-test","counterEvidenceReviewed":[]}
+            }),
+        ),
+    )
+    .await;
+    assert!(provider.received_requests().await.unwrap().is_empty());
+    let plain = successful(
+        &client,
+        "recall_memory",
+        json!({
+            "knowledge":{"operation":"search","query":query},"scope":scope,"limit":2
+        }),
+    )
+    .await;
+    assert!(plain.get("costDiagnostics").is_none());
+    assert_eq!(provider.received_requests().await.unwrap().len(), 2);
+    let measured = successful(&client, "recall_memory", json!({
+        "knowledge":{"operation":"search","query":query,"view":"compact","diagnostics":true,"costDiagnostics":true},
+        "scope":scope,"limit":2
+    })).await;
+    assert_eq!(provider.received_requests().await.unwrap().len(), 4);
+    assert_eq!(
+        measured["chains"][0]["chainId"],
+        plain["chains"][0]["chain"]["chainId"]
+    );
+    assert_eq!(measured["chains"][0]["score"], plain["chains"][0]["score"]);
+    assert_eq!(
+        measured["observations"][0]["fragmentId"],
+        plain["observations"][0]["fragmentId"]
+    );
+    assert_eq!(measured["diagnostics"]["relevanceFilter"], true);
+    assert_eq!(measured["costDiagnostics"]["providerRequestCount"], 2);
+    for call in measured["costDiagnostics"]["providerCalls"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(call["operation"], "relevance");
+        assert_eq!(call["model"], "test-selector");
+        assert_eq!(
+            call["usage"],
+            json!({"inputTokens":37,"outputTokens":13,"totalTokens":50,"cachedInputTokens":5})
+        );
+    }
+    let chains = successful(
+        &client,
+        "recall_memory",
+        json!({
+            "chain":{"operation":"search","query":query,"diagnostics":true,"costDiagnostics":true},
+            "scope":scope,"limit":2
+        }),
+    )
+    .await;
+    assert_eq!(chains["costDiagnostics"]["providerRequestCount"], 1);
+    failure.store(1, Ordering::SeqCst);
+    let failed = client.call_tool(call("recall_memory", json!({
+        "knowledge":{"operation":"search","query":query,"view":"compact","costDiagnostics":true},
+        "scope":scope
+    }))).await.unwrap();
+    assert_eq!(failed.is_error, Some(true));
+    client.cancel().await.unwrap();
 }
 
 #[tokio::test]
@@ -93,7 +544,11 @@ async fn full_knowledge_formation_revision_retrieval_and_export_across_sessions(
                 .enumerate()
                 .map(|(index, _)| json!({"index":index,"embedding":[1.0,0.0]}))
                 .collect();
-            ResponseTemplate::new(200).set_body_json(json!({"model":"test-model","data":data}))
+            let mut response = json!({"model":"test-model","data":data});
+            if !body["input"][0].as_str().unwrap().contains("unreported") {
+                response["usage"] = json!({"prompt_tokens":11,"total_tokens":11});
+            }
+            ResponseTemplate::new(200).set_body_json(response)
         })
         .mount(&provider)
         .await;
@@ -195,6 +650,64 @@ async fn full_knowledge_formation_revision_retrieval_and_export_across_sessions(
         knowledge["principles"][0]["supportingChains"][0]["document"]["kind"],
         "chain"
     );
+    assert!(
+        knowledge.get("view").is_none()
+            && knowledge.get("diagnostics").is_none()
+            && knowledge.get("costDiagnostics").is_none()
+    );
+    let compact_request = |suffix: &str| {
+        json!({"knowledge":{"operation":"search","query":format!("{query} {suffix}"),
+        "view":"compact","matchMode":"any","diagnostics":true,"costDiagnostics":true},"scope":scope,"limit":3})
+    };
+    let compact = successful(&client, "recall_memory", compact_request("diagnostic")).await;
+    assert_eq!(compact["view"], "compact");
+    assert_eq!(
+        compact["principles"][0]["conclusion"],
+        principle_document["conclusion"]
+    );
+    assert_eq!(
+        compact["principles"][0]["applicability"],
+        principle_document["applicability"]
+    );
+    assert_eq!(compact["diagnostics"]["keyword"]["matchMode"], "any");
+    assert!(compact["diagnostics"]["keyword"]["parsedQuery"]
+        .as_str()
+        .unwrap()
+        .contains('|'));
+    assert_eq!(compact["costDiagnostics"]["providerRequestCount"], 1);
+    assert_eq!(
+        compact["costDiagnostics"]["providerCalls"][0]["usage"]["inputTokens"],
+        11
+    );
+    assert!(compact["costDiagnostics"]["providerCalls"][0]["usage"]["outputTokens"].is_null());
+    let cached = successful(&client, "recall_memory", compact_request("diagnostic")).await;
+    assert_eq!(cached["costDiagnostics"]["providerRequestCount"], 0);
+    let (shared_first, shared_second) = tokio::join!(
+        successful(&client, "recall_memory", compact_request("coalesced")),
+        successful(&client, "recall_memory", compact_request("coalesced"))
+    );
+    let shared_calls = [shared_first, shared_second]
+        .iter()
+        .map(|result| {
+            result["costDiagnostics"]["providerRequestCount"]
+                .as_u64()
+                .unwrap()
+        })
+        .sum::<u64>();
+    assert_eq!(
+        shared_calls, 1,
+        "a shared query embedding must be charged once"
+    );
+    let (first, second) = tokio::join!(
+        successful(&client, "recall_memory", compact_request("first")),
+        successful(&client, "recall_memory", compact_request("second"))
+    );
+    for result in [first, second] {
+        assert_eq!(result["costDiagnostics"]["providerRequestCount"], 1);
+    }
+    let unknown = successful(&client, "recall_memory", compact_request("unreported")).await;
+    assert_eq!(unknown["costDiagnostics"]["providerRequestCount"], 1);
+    assert!(unknown["costDiagnostics"]["providerCalls"][0]["usage"]["inputTokens"].is_null());
     let unchanged = successful(
         &client,
         "recall_memory",
@@ -280,6 +793,43 @@ async fn full_knowledge_formation_revision_retrieval_and_export_across_sessions(
         json!("Alpha and beta only; gamma is excluded by recorded counterevidence.");
     successful(&client, "write_memory", write(json!({"operation":"revise","chainId":principle_id,"expectedRevision":3,"document":principle_document}))).await;
     successful(&client, "write_memory", write(json!({"operation":"accept","chainId":principle_id,"expectedRevision":4,"validation":validation}))).await;
+    let compact = successful(&client, "recall_memory", compact_request("diagnostic")).await;
+    assert_eq!(compact["principles"][0]["revision"], 5);
+    assert_eq!(
+        compact["principles"][0]["applicability"],
+        principle_document["applicability"]
+    );
+    assert_eq!(
+        compact["principles"][0]["counterevidence"][0]["fragmentId"],
+        counter_id
+    );
+    assert_eq!(
+        compact["principles"][0]["counterevidence"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(compact["principles"][0]["counterevidence"][0]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason.as_str().unwrap().contains("Gamma")));
+    assert!(
+        compact["principles"][0].get("document").is_none()
+            && compact["principles"][0].get("rawText").is_none()
+    );
+    assert!(
+        serde_json::to_vec(&compact).unwrap().len() < serde_json::to_vec(&knowledge).unwrap().len()
+    );
+    let mut foreign = compact_request("diagnostic");
+    foreign["scope"] = json!(format!("unrelated-{scope}"));
+    let foreign = successful(&client, "recall_memory", foreign).await;
+    assert!(
+        foreign["principles"].as_array().unwrap().is_empty()
+            && foreign["chains"].as_array().unwrap().is_empty()
+            && foreign["observations"].as_array().unwrap().is_empty()
+    );
     assert_eq!(
         successful(&client, "recall_memory", search).await["principles"][0]["chain"]["revision"],
         5

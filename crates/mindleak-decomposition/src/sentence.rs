@@ -7,6 +7,13 @@ pub struct SentenceDecomposer;
 
 #[async_trait]
 impl MemoryDecomposer for SentenceDecomposer {
+    fn capabilities(&self) -> mindleak_memory::ProcessingCapabilities {
+        mindleak_memory::ProcessingCapabilities {
+            mode: "sentences",
+            model: None,
+        }
+    }
+
     async fn decompose(&self, text: &str) -> Result<Vec<String>> {
         validate_text(text, "text", MAX_MEMORY_BYTES)?;
         let fragments = text

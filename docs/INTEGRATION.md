@@ -368,6 +368,20 @@ v0.6.0; published v0.5.0 does not provide them:
 Choose one mode per call. Existing calls and defaults remain unchanged; derived
 knowledge never enters ordinary observation recall.
 
+**Unreleased, targeting v0.7.0:** [compact learning context](CHAINS.md#compact-learning-context)
+adds `knowledge.operation: capabilities`, `knowledge.view: compact` on searches,
+and nested `matchMode`, `diagnostics` and `costDiagnostics` on knowledge/chain
+searches. Discover these fields before using them; published v0.6.0 lacks them.
+Capability discovery separates agent-authored chains from optional model previews
+and the actual retrieval strategy. The existing full search is still the default.
+Agents can author chains directly with v0.6.0; no formation model is required.
+
+The unreleased companion skill also supplies [evidence checkpoints](CHAINS.md#evidence-checkpoints)
+and `captureCalls.project`/`.general` templates. They use existing ordinary writes
+with a real source and short retrieval cues, so no new write API is required.
+The agent decides when verified evidence warrants a capture; the server does not
+observe task completion or save lessons automatically.
+
 | Tool | Arguments | Successful Result |
 |---|---|---|
 | `write_memory` | `agentId`, `text`, optional `context`, per-fragment `facts`, and `requestId` (v0.3.0+) | `memoryId` and `fragments` with IDs, text, and tier after commit |
