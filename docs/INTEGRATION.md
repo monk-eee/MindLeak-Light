@@ -16,7 +16,7 @@ always-on instructions and verify its behaviour during a normal task.
 
 All paths expose exactly `write_memory`, `recall_memory`, and `decompose_memory`.
 `agentId` is provenance, not permission: clients of a deployment share one trust
-domain. The local launcher is unreleased source functionality after v0.4.0;
+domain. The local launcher is included in v0.5.0 native packages;
 published v0.4.0 native binaries still use the older direct-PostgreSQL stdio path.
 
 ## VS Code and GitHub Copilot
@@ -266,7 +266,7 @@ application, include this policy in its persistent instruction context.
 
 The canonical detailed workflow is the
 [mindleak-memory companion skill](../.agents/skills/mindleak-memory/SKILL.md).
-Source builds can [install its project instructions automatically](INSTALL.md#automatic-project-setup)
+The v0.5.0 native binary can [install its project instructions automatically](INSTALL.md#automatic-project-setup)
 for a selected existing connection, with an optional SDK connection check.
 Install its whole folder in each client's supported location; see
 [client setup](INSTALL.md#companion-agent-skill). It loads on demand and does not

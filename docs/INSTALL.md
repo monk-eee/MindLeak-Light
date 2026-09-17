@@ -5,25 +5,26 @@ embedding model; [models are a recommended optional upgrade](MODELS.md).
 
 **Start here for a local trial:** the [VS Code local guide](LOCAL.md) uses a
 native launcher with Docker/stdio and no client credentials. Its `local` commands
-are unreleased source functionality after v0.4.0; published v0.4.0 native
-archives do not include them. Build this checkout until a release includes the
-launcher. No published image or old executable is upgraded by new settings.
+are included in v0.5.0 native archives, alongside the `agent` instruction
+installer. Published v0.4.0 native archives do not include those commands.
+No published image or old executable is upgraded by new settings.
 
 | Package | Best For | You Supply |
 |---|---|---|
-| Local launcher (unreleased) | Trying memory in VS Code; sharing one store among trusted local clients | Native build and Docker Desktop; no manual token |
+| Local launcher | Trying memory in VS Code; sharing one store among trusted local clients | v0.5.0 native package and Docker Desktop; no manual token |
 | Native binary | Plugging into a desktop or coding agent over stdio | PostgreSQL with pgvector |
 | All-in-one container | One container to run and back up | Docker/Podman, a persistent volume, and an HTTP token |
 | Source Compose stack | Developing MindLeak itself | Git and Docker/Podman Compose |
 
-This guide targets **v0.4.0**: model-free keyword recall, optional pgvector or
+This guide targets **v0.5.0**: local onboarding, general/scoped agent setup,
+model-free keyword recall, optional pgvector or
 hybrid recall, contextual fact lifecycle, retry-safe writes, bounded corrective
 evidence, exact original-source inspection, and document recall controls.
 Models remain optional. Download versioned
 archives from [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
 or get the full all-in-one image from
 [Docker Hub](https://hub.docker.com/r/monkeemagic/mindleak-light), pinned as
-`monkeemagic/mindleak-light:0.4.0`. The
+`monkeemagic/mindleak-light:0.5.0`. The
 [publishing workflow](https://github.com/monk-eee/MindLeak-Light/actions/workflows/docker-hub.yml)
 records image verification. Older binaries do not gain features from new settings.
 
@@ -62,7 +63,7 @@ tables and waits for MCP requests; silence in a terminal is normal. See
 Each archive also includes the editable architecture board, four self-contained
 SVG previews, and the architecture guide.
 
-Source packaging now includes credential-free `mcp.example.json` and
+The v0.5.0 package includes credential-free `mcp.example.json` and
 `mcp.vscode.example.json` plus the local guide. Prefer `local setup` or
 `local configure` to generate VS Code configuration with the absolute launcher
 path and immutable container ID rather than manually copying the name-based
@@ -79,11 +80,11 @@ The binary uses your configured database; it does not bundle PostgreSQL.
 
 ## Companion Agent Skill
 
-The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md) is a
-new source/distribution addition, not included in the already-published v0.4.0
-archives or image. It works with the current 0.4.0 server; no model or server
-upgrade is needed. Future native archives built from this source include the
-same `.agents/skills/mindleak-memory` folder. Container users install the skill
+The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md), version
+1.1.0, is included in v0.5.0 native archives and embedded in the installer. The
+already-published v0.4.0 archives do not include it. It works with v0.4.0 and
+newer servers; no model is required. Native archives include the complete
+`.agents/skills/mindleak-memory` folder. Container users install the skill
 on their agent's side, not inside the database container.
 
 Obtain the entire folder, including `references`, from one reviewed source
@@ -135,8 +136,8 @@ other projects as a side effect of this repository's setup.
 
 ### Automatic Project Setup
 
-**Unreleased:** `agent setup` and `agent check` require a binary built from this
-source, not the already-published v0.4.0 binary. Run them on the client machine,
+`agent setup` and `agent check` are included in the v0.5.0 native binary, not
+the already-published v0.4.0 binary. Run them on the client machine,
 not inside the database container. The selected server can remain on v0.4.0.
 
 First configure the intended MCP connection in your project. For general shared
@@ -263,7 +264,7 @@ HTTP port is exposed. A process supervisor manages startup and shutdown.
 Pin the version tag so upgrades are deliberate:
 
 ```sh
-docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.4.0
+docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.5.0
 ```
 
 That token is a public local-development example. For anything shared, use your
@@ -293,7 +294,7 @@ docker compose -f docker/compose.all-in-one.yml up --detach --wait
 ```
 
 This starts one container, not the two-service development stack. The file
-defaults to `monkeemagic/mindleak-light:0.4.0`. This release does not promote the
+defaults to `monkeemagic/mindleak-light:0.5.0`. This release does not promote the
 `latest` alias. Override `MINDLEAK_IMAGE` to pin a digest or another version.
 Podman may not expose embedded health metadata from published OCI images. The
 Compose template defines its own health check so `up --wait` still verifies
@@ -325,18 +326,20 @@ PostgreSQL major-version upgrades require a database upgrade procedure, not just
 changing the image tag. This single-container package is convenient for a laptop
 or small deployment, not a high-availability database service.
 
-### Upgrade from 0.1.0, 0.2.0, or 0.3.0
+### Upgrade from 0.1.0, 0.2.0, 0.3.0, or 0.4.0
 
 Back up and test the restore first. Stop all old MCP processes, then replace the
-binary or container with 0.4.0 using the same database or volume. Startup applies
+binary or container with 0.5.0 using the same database or volume. Startup applies
 the required migrations atomically under the existing database advisory lock.
 Existing raw text, IDs, fragments, vectors, relationships, and embedding model
 metadata are preserved. Existing context, lifecycle states, tiers, pins,
 feedback history, and 0.3.0 keyed-write receipts are retained. Facts from 0.1.0
 acquire empty context and active, unconfirmed, short-term lifecycle defaults.
 Unkeyed memories stay unkeyed. No re-embedding or model download is required.
+An existing v0.4.0 database needs no new schema migration for v0.5.0. Keep its
+retrieval, decomposition, embedding model, dimensions, and credentials unchanged.
 
-Version 0.4.0 creates two relationship indexes, backfills a derived combined
+Upgrading from before v0.4.0 creates two relationship indexes, backfills a derived combined
 fragment/metadata search vector and recoverable fragment order, and builds a
 replacement GIN index. The database role needs function/trigger privileges as
 well as schema privileges. The first backfill and index build need additional
@@ -356,10 +359,17 @@ original text; see the [tool contract](INTEGRATION.md#tool-contract).
 Keep the original embedding model and dimensions when enabling vector or hybrid
 recall. Avoid running mixed server versions during the upgrade: older servers
 do not support the new retry and response contracts, and 0.1.0 also ignores
-lifecycle visibility. Rollback means stopping 0.4.0, restoring the pre-upgrade
+lifecycle visibility. Rollback means stopping 0.5.0, restoring the pre-upgrade
 backup to a separate database or volume, and pointing the previous binary at
 that restored copy. An in-place downgrade is not supported. Clients must check
 the server's advertised tool schema before using `requestId` or `fragmentId`.
+
+After replacing an all-in-one container, its ID changes even if its name does
+not. Review the data volume, remove only the stale `mindleak-light-local` client
+entry, and run `local configure` to pin the replacement. A relocated native
+launcher similarly requires configuration refresh. Agent setup never changes a
+previously selected store silently; review its managed instruction/state files
+when intentionally changing that connection. See [local recovery](LOCAL.md#existing-store-or-another-workspace).
 
 For optional models, pass the [model settings](MODELS.md) as container environment
 variables. For a calibrated similarity threshold in the all-in-one
