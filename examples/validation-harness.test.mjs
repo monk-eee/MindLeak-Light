@@ -910,6 +910,10 @@ test("swarm provider failures stop dependent work and keep usage unknown", async
 
 test("CI runs the real lab workflows without external model calls", async () => {
   const workflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.match(workflow, /node-version: 22\n      - run: npm ci --prefix examples --ignore-scripts\n      - run: cargo fmt/);
+  assert.match(workflow, /node-version: 22\n      - run: npm ci --prefix examples --ignore-scripts\n      - uses: actions\/setup-python/);
+  const makefile = await readFile(new URL("../Makefile", import.meta.url), "utf8");
+  assert.ok(makefile.includes("\tnpm ci --prefix examples --ignore-scripts\n"));
   assert.ok(workflow.includes("Verify isolated memory labs"));
   assert.ok(workflow.includes("MINDLEAK_LAB2_TEST_BINARY: ${{ github.workspace }}/target/release/mindleak-light"));
   assert.ok(workflow.includes("MINDLEAK_VALIDATION_CODE_ENGINE: docker"));
