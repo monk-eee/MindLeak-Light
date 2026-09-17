@@ -1,5 +1,6 @@
 mod connection;
 mod documents;
+mod domain;
 mod lifecycle;
 mod migrations;
 mod persistence;

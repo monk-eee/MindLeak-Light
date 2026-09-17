@@ -84,6 +84,264 @@ fn call(name: &'static str, arguments: Value) -> CallToolRequestParams {
     CallToolRequestParams::new(name).with_arguments(arguments.as_object().unwrap().clone())
 }
 
+#[tokio::test]
+async fn omitted_scope_searches_general_memory_across_scopes() {
+    PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 4, None)
+        .await
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "sentences".into()),
+        ("MINDLEAK_RETRIEVAL", "keyword".into()),
+        ("MINDLEAK_RELEVANCE", "off".into()),
+    ]);
+    let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+    let namespace = format!("optional-scope-{}", Uuid::new_v4());
+    let mut receipts = Vec::new();
+    for (index, scope) in [None, Some("project-one"), Some("project-two")]
+        .into_iter()
+        .enumerate()
+    {
+        let mut request = json!({
+            "agentId": namespace, "requestId": Uuid::new_v4(),
+            "text": "ScopeOptionalCanary is an imported fixture.",
+            "domain": {"kind": "entity", "identity": {"namespace": namespace, "id": format!("entity-{index}")},
+                "label": "ScopeOptionalCanary", "entityType": "fixture"}
+        });
+        if let Some(scope) = scope {
+            request["context"] = json!({"scope": scope});
+        }
+        let result = client
+            .call_tool(call("write_memory", request))
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        receipts.push(result.structured_content.unwrap());
+    }
+    for scope in [None, Some("project-one")] {
+        let mut request = json!({"query": "ScopeOptionalCanary", "agentId": namespace});
+        if let Some(scope) = scope {
+            request["scope"] = json!(scope);
+        }
+        let response = client
+            .call_tool(call("recall_memory", request))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        let results = response["results"].as_array().unwrap();
+        assert_eq!(results.len(), if scope.is_none() { 3 } else { 1 });
+        if scope.is_none() {
+            assert!(results
+                .iter()
+                .any(|record| record["context"]["scope"].is_null()));
+            for receipt in &receipts {
+                assert!(results
+                    .iter()
+                    .any(|record| record["memoryId"] == receipt["memoryId"]));
+            }
+        } else {
+            assert_eq!(results[0]["memoryId"], receipts[1]["memoryId"]);
+        }
+    }
+    let general = client
+        .call_tool(call(
+            "recall_memory",
+            json!({
+                "domain": {"kind": "entity", "identity": {"namespace": namespace, "id": "entity-1"}}
+            }),
+        ))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(general["record"]["memoryId"], receipts[1]["memoryId"]);
+    assert!(client
+        .call_tool(call(
+            "recall_memory",
+            json!({"scope": "project-two",
+                "domain": {"kind": "entity", "identity": {"namespace": namespace, "id": "entity-1"}}
+            })
+        ))
+        .await
+        .is_err());
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn domain_entities_replay_the_same_stable_source_episode() {
+    PostgresMemoryStore::connect(&database_url(), Some(("test-model", 2)), 4, None)
+        .await
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+    command.current_dir(directory.path()).env_clear().envs([
+        ("MINDLEAK_DATABASE_URL", database_url()),
+        ("MINDLEAK_DECOMPOSITION", "sentences".into()),
+        ("MINDLEAK_RETRIEVAL", "keyword".into()),
+        ("MINDLEAK_RELEVANCE", "off".into()),
+    ]);
+    let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+    let namespace = format!("domain-{}", Uuid::new_v4());
+    let request = json!({
+        "agentId": "domain-import-test", "requestId": Uuid::new_v4(),
+        "text": "  Package A is a software component.\n",
+        "context": {"scope": namespace},
+        "domain": {"kind": "entity", "identity": {"namespace": namespace, "id": "package-a"},
+            "label": "Package A", "entityType": "package"}
+    });
+    let first = client
+        .call_tool(call("write_memory", request.clone()))
+        .await
+        .expect("write_memory must accept a domain entity independently of lifecycle facts");
+    assert_ne!(first.is_error, Some(true));
+    let receipt = first.structured_content.unwrap();
+    let replayed = client
+        .call_tool(call("write_memory", request.clone()))
+        .await
+        .unwrap();
+    assert_eq!(replayed.structured_content.as_ref(), Some(&receipt));
+    let inspected = client
+        .call_tool(call(
+            "recall_memory",
+            json!({
+                "fragmentId": receipt["fragments"][0]["fragmentId"], "scope": namespace
+            }),
+        ))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(inspected["rawText"], request["text"]);
+    assert_eq!(inspected["memoryId"], receipt["memoryId"]);
+    assert!(inspected["relationships"].as_array().unwrap().is_empty());
+    let mut changed = request;
+    changed["domain"]["label"] = json!("A different entity label");
+    assert!(client
+        .call_tool(call("write_memory", changed))
+        .await
+        .is_err());
+    let second = client.call_tool(call("write_memory", json!({
+        "agentId": "domain-import-test", "requestId": Uuid::new_v4(),
+        "text": "Package B is a software component.", "context": {"scope": namespace},
+        "domain": {"kind": "entity", "identity": {"namespace": namespace, "id": "package-b"},
+            "label": "Package B", "entityType": "package"}
+    }))).await.unwrap().structured_content.unwrap();
+    let mut edge_receipts = Vec::new();
+    for (edge_id, predicate) in [
+        ("dependency-1", "depends_on"),
+        ("dependency-2", "depends_on"),
+        ("claim-1", "confirms"),
+    ] {
+        let edge = json!({
+            "agentId": "domain-import-test", "requestId": Uuid::new_v4(),
+            "text": "The source export reports a directed package relationship.",
+            "context": {"scope": namespace},
+            "domain": {"kind": "edge", "identity": {"namespace": namespace, "id": edge_id},
+                "source": {"namespace": namespace, "id": "package-a"},
+                "target": {"namespace": namespace, "id": "package-b"}, "predicate": predicate,
+                "provenance": {"sourceReferences": [format!("export:fixture#{edge_id}")], "reportedConfidence": 0.63}}
+        });
+        let written = client
+            .call_tool(call("write_memory", edge.clone()))
+            .await
+            .unwrap();
+        assert_ne!(
+            written.is_error,
+            Some(true),
+            "Domain edges must persist independently from lifecycle links"
+        );
+        let written = written.structured_content.unwrap();
+        let repeated = client
+            .call_tool(call("write_memory", edge.clone()))
+            .await
+            .unwrap();
+        assert_eq!(repeated.structured_content.as_ref(), Some(&written));
+        edge_receipts.push((edge, written));
+    }
+    let mut query = json!({"scope": namespace, "limit": 1,
+        "domain": {"kind": "entity", "identity": {"namespace": namespace, "id": "package-a"},
+            "predicate": "depends_on", "direction": "outgoing"}});
+    let page = client
+        .call_tool(call("recall_memory", query.clone()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(page["record"]["memoryId"], receipt["memoryId"]);
+    assert_eq!(page["relationships"].as_array().unwrap().len(), 1);
+    assert!(!page["nextCursor"].is_null());
+    query["domain"]["after"] = page["nextCursor"].clone();
+    let next = client
+        .call_tool(call("recall_memory", query.clone()))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert_eq!(next["relationships"].as_array().unwrap().len(), 1);
+    assert_ne!(
+        page["relationships"][0]["memoryId"],
+        next["relationships"][0]["memoryId"]
+    );
+    assert!(next["nextCursor"].is_null());
+    query["domain"]["direction"] = json!("incoming");
+    assert!(client
+        .call_tool(call("recall_memory", query))
+        .await
+        .is_err());
+    for (edge, written) in edge_receipts {
+        let read = client
+            .call_tool(call(
+                "recall_memory",
+                json!({"scope": namespace,
+                    "domain": {"kind": "edge", "identity": edge["domain"]["identity"]}
+                }),
+            ))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert_eq!(read["record"]["domain"], edge["domain"]);
+        assert_eq!(read["record"]["memoryId"], written["memoryId"]);
+        assert_eq!(read["record"]["rawText"], edge["text"]);
+    }
+    let incoming = client.call_tool(call("recall_memory", json!({"scope": namespace,
+        "domain": {"kind": "entity", "identity": {"namespace": namespace, "id": "package-b"}, "direction": "incoming"}
+    }))).await.unwrap().structured_content.unwrap();
+    assert_eq!(incoming["relationships"].as_array().unwrap().len(), 3);
+    let identity_only = client.call_tool(call("recall_memory", json!({"scope": namespace,
+        "domain": {"kind": "entity", "identity": {"namespace": namespace, "id": "package-a"}}
+    }))).await.unwrap();
+    assert_ne!(
+        identity_only.is_error,
+        Some(true),
+        "Identity-only inspection must not require adjacency work"
+    );
+    let identity_only = identity_only.structured_content.unwrap();
+    assert_eq!(identity_only["scannedRelationships"], 0);
+    assert!(identity_only["relationships"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let unchanged = client
+        .call_tool(call(
+            "recall_memory",
+            json!({
+                "fragmentId": second["fragments"][0]["fragmentId"], "scope": namespace
+            }),
+        ))
+        .await
+        .unwrap()
+        .structured_content
+        .unwrap();
+    assert!(unchanged["relationships"].as_array().unwrap().is_empty());
+    assert_eq!(unchanged["lifecycle"]["confirmedSessions"], 0);
+    assert_eq!(unchanged["lifecycle"]["usefulSessions"], 0);
+    client.cancel().await.unwrap();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn local_connect_never_starts_a_container_with_missing_postgres_files() {

@@ -16,6 +16,7 @@ use tokio_postgres::{Client, NoTls};
 use url::Url;
 use uuid::Uuid;
 
+mod domain;
 mod lifecycle;
 
 fn filter(agent_id: Option<&str>) -> RecallFilter {
@@ -344,8 +345,65 @@ fn keyed_memory(agent_id: &str) -> PreparedMemory {
         text: memory.raw_text.clone(),
         context: memory.context.clone(),
         facts: Vec::new(),
+        domain: None,
     });
     memory
+}
+
+#[tokio::test]
+async fn domain_metadata_uses_the_existing_gin_and_preserves_vectors() {
+    use mindleak_memory::{DomainIdentity, DomainWrite};
+
+    let (store, mut database) = setup().await;
+    let agent_id = format!("domain-search-{}", Uuid::new_v4());
+    let mut entity = keyed_memory(&agent_id);
+    let domain = DomainWrite::Entity {
+        identity: DomainIdentity {
+            namespace: agent_id.clone(),
+            id: "graph-entity".into(),
+        },
+        label: "GraphIdentifierCanary.Cobalt".into(),
+        entity_type: "PackageTypeCanary".into(),
+    };
+    entity.request.as_mut().unwrap().domain = Some(domain.clone());
+    store.save(&entity).await.unwrap();
+    let retriever = KeywordMemoryRetriever::new(store.clone());
+    let found = retriever
+        .recall("GraphIdentifierCanary", &filter(Some(&agent_id)), 5)
+        .await
+        .unwrap();
+    assert!(
+        !found.is_empty(),
+        "Domain identity metadata must be available through indexed keyword discovery"
+    );
+    for result in found {
+        assert_eq!(result.memory_id, entity.id);
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["domain"],
+            serde_json::to_value(&domain).unwrap()
+        );
+    }
+    let unchanged: String = database
+        .query_one(
+            "SELECT embedding::text FROM public.fragments WHERE id = $1",
+            &[&entity.fragments[0].id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(unchanged, "[1,0]");
+    let transaction = database.transaction().await.unwrap();
+    transaction
+        .batch_execute("SET LOCAL enable_seqscan = off")
+        .await
+        .unwrap();
+    let plan = transaction.query("EXPLAIN SELECT id FROM public.fragments WHERE search_vector @@ plainto_tsquery('english', $1)", &[&"GraphIdentifierCanary"])
+        .await.unwrap().into_iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>().join("\n");
+    assert!(
+        plan.contains("fragments_document_search_idx"),
+        "Domain metadata must share the existing GIN: {plan}"
+    );
+    transaction.rollback().await.unwrap();
 }
 
 #[tokio::test]
@@ -1858,11 +1916,15 @@ async fn batched_upgrade_matches_original_vectors_order_and_preserves_all_source
     let mismatches: i64 = database.query_one(
         "SELECT
          (SELECT count(*) FROM public.memories JOIN original_memories USING (id)
-          WHERE to_jsonb(memories) - 'request_id' - 'request_payload' - 'write_result' <> record) +
+            WHERE to_jsonb(memories) - 'request_id' - 'request_payload' - 'write_result' - 'domain_entity' <> record
+               OR domain_entity IS NOT NULL) +
          (SELECT count(*) FROM public.fragments JOIN original_fragments USING (id)
           WHERE to_jsonb(fragments) - 'search_vector' - 'fragment_index' <> record) +
-         (SELECT count(*) FROM ((SELECT to_jsonb(relationships) FROM public.relationships)
+            (SELECT count(*) FROM ((SELECT to_jsonb(relationships) - ARRAY['edge_memory_id', 'source_entity',
+                'target_entity', 'domain_namespace', 'domain_id', 'predicate', 'provenance'] FROM public.relationships)
           EXCEPT (SELECT record FROM original_relationships)) AS changes) +
+            (SELECT count(*) FROM public.relationships WHERE num_nonnulls(edge_memory_id, source_entity,
+                target_entity, domain_namespace, domain_id, predicate, provenance) <> 0) +
          (SELECT count(*) FROM public.fragments JOIN original_vectors USING (id) WHERE search_vector <> vector) +
          (SELECT count(*) FROM public.fragments LEFT JOIN original_order USING (id)
           WHERE fragments.fragment_index IS DISTINCT FROM original_order.fragment_index)", &[]

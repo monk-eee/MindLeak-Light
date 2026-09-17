@@ -2,6 +2,16 @@
 
 - One shared trust domain. `agentId` is caller-supplied provenance, not identity
   or tenant isolation. Anyone holding the HTTP token can access all memories.
+- Unreleased domain relationships are immutable attributed claims, not a mutable
+  graph synchronization or recursive reasoning engine. Namespace/IDs are stable
+  import identities, not permissions. A domain `confirms` predicate never changes
+  lifecycle evidence. The [v1 importer](DOMAIN-RELATIONSHIPS.md) supports only its
+  documented JSONL contract, reports unsupported/unresolved records, and commits per
+  record rather than atomically importing an entire file. Confidence is not truth.
+- Indexed domain adjacency examines at most 128 edges plus lookahead per page,
+  with up to 50 complete records within 512 KiB. Sparse filters may require empty
+  advancing pages; there is no full-degree count or cross-page snapshot. The 12,000-edge
+  plan regression verifies bounded access, not million-memory semantic recall capacity.
 - Model-free decomposition splits sentences and list items, not every semantic
   claim. It does not resolve pronouns or rewrite facts. A model is recommended
   for richer extraction, but JSON validation still cannot prove semantic accuracy.

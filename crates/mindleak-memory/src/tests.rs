@@ -369,6 +369,7 @@ async fn fact_directives_preserve_context_and_exact_source_fact_links() {
             "raw episode",
             WriteOptions {
                 request_id: None,
+                domain: None,
                 context: context.clone(),
                 facts: vec![FactDirective {
                     text: "Keep PRs small".into(),

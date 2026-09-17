@@ -7,12 +7,12 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::{
-    normalize_fragments, validate_embeddings, validate_text, EmbeddedFragment, FragmentInspection,
-    InvalidInput, KeywordMatchMode, MemoryDecomposer, MemoryRetriever, MemoryStore, MemoryTier,
-    PreparedMemory, PreparedRelationship, RecallFilter, RecallMatch, RecallResponse,
-    RelationshipCursor, TextEmbedder, WriteMemoryResult, WriteOptions, WriteRequest,
-    MAX_FACT_LINKS, MAX_FRAGMENTS, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES, MAX_MEMORY_LINKS,
-    MAX_RECALL_LIMIT, MAX_RECALL_RESULT_BYTES,
+    normalize_fragments, validate_embeddings, validate_text, DomainInspection, DomainQuery,
+    EmbeddedFragment, FragmentInspection, InvalidInput, KeywordMatchMode, MemoryDecomposer,
+    MemoryRetriever, MemoryStore, MemoryTier, PreparedMemory, PreparedRelationship, RecallFilter,
+    RecallMatch, RecallResponse, RelationshipCursor, TextEmbedder, WriteMemoryResult, WriteOptions,
+    WriteRequest, MAX_FACT_LINKS, MAX_FRAGMENTS, MAX_FRAGMENT_BYTES, MAX_MEMORY_BYTES,
+    MAX_MEMORY_LINKS, MAX_RECALL_LIMIT, MAX_RECALL_RESULT_BYTES,
 };
 
 #[derive(Clone)]
@@ -47,6 +47,16 @@ impl MemoryService {
         validate_text(agent_id, "agentId", 256)?;
         validate_text(text, "text", MAX_MEMORY_BYTES)?;
         options.context.validate()?;
+        if let Some(domain) = &options.domain {
+            domain.validate()?;
+            if options.request_id.is_none() || !options.facts.is_empty() {
+                return Err(InvalidInput(
+                    "domain writes require requestId and cannot include lifecycle fact directives"
+                        .into(),
+                )
+                .into());
+            }
+        }
         if options.facts.len() > MAX_FRAGMENTS {
             return Err(InvalidInput("too many fact directives".into()).into());
         }
@@ -92,6 +102,7 @@ impl MemoryService {
             text: text.to_owned(),
             context: options.context.clone(),
             facts: options.facts.clone(),
+            domain: options.domain.clone(),
         });
         if let Some(request) = &request {
             if let Some(result) = self.store.lookup_write(request).await? {
@@ -158,6 +169,21 @@ impl MemoryService {
     pub async fn decompose_memory(&self, text: &str) -> Result<Vec<String>> {
         validate_text(text, "text", MAX_MEMORY_BYTES)?;
         normalize_fragments(self.decomposer.decompose(text).await?)
+    }
+
+    pub async fn inspect_domain(
+        &self,
+        query: &DomainQuery,
+        filter: &RecallFilter,
+        limit: usize,
+    ) -> Result<DomainInspection> {
+        query.validate(filter, limit)?;
+        self.store
+            .inspect_domain(query, filter, limit)
+            .await?
+            .ok_or_else(|| {
+                InvalidInput("domain record not found in the requested filters".into()).into()
+            })
     }
 
     pub async fn inspect_fragment(

@@ -52,6 +52,13 @@ bodies and Origin rejection; TLS is required at network ingress.
 
 ## Storage Module Map
 
+The unreleased [domain relationship extension](DOMAIN-RELATIONSHIPS.md) adds
+identified entities and independently attributed domain edges without adding tables
+or tools. Entity/source episodes remain in `memories`, fragments/vectors remain in
+`fragments`, and mutually exclusive domain/lifecycle rows share `relationships`.
+The existing diagrams describe the fact lifecycle; this new domain path is separate
+and follows [ADR-0020](../adr.d/0020-domain-relationships.md).
+
 The PostgreSQL crate keeps its existing public store/retriever names at the crate
 root. Internal modules separate responsibilities; retry receipts stay in the
 existing store rather than a parallel persistence path:
@@ -61,6 +68,7 @@ existing store rather than a parallel persistence path:
 | [lib.rs](../crates/mindleak-storage-postgres/src/lib.rs) | Store types and public retriever re-exports |
 | [connection.rs](../crates/mindleak-storage-postgres/src/connection.rs) | TLS, pooling, detached migration connection, model binding, and health |
 | [migrations.rs](../crates/mindleak-storage-postgres/src/migrations.rs) | Bounded checkpointed backfills, maintenance limits, index recovery, and pre-readiness schema verification (unreleased) |
+| [domain.rs](../crates/mindleak-storage-postgres/src/domain.rs) | Indexed entity resolution, atomic domain edges, bounded directional windows and physical source/provenance verification |
 | [persistence.rs](../crates/mindleak-storage-postgres/src/persistence.rs) | Validated atomic writes, request-key arbitration, and immutable receipt lookup/replay |
 | [queries.rs](../crates/mindleak-storage-postgres/src/queries.rs) | Filtered SQL searches and result decoding |
 | [retrieval.rs](../crates/mindleak-storage-postgres/src/retrieval.rs) | Keyword/vector/hybrid strategies, query cache, and rank fusion |

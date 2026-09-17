@@ -501,6 +501,17 @@ pub(super) async fn initialize(
         )
         .await?;
     }
+    ddl(
+        client,
+        "0009",
+        "prepare",
+        &format!(
+            "BEGIN; {} COMMIT;",
+            include_str!("../migrations/0009-domain-relationships.sql")
+        ),
+        options,
+    )
+    .await?;
     let progress = phase_progress(client, "0008", "verify", options.statement_timeout).await?;
     progress.timeout(client).await?;
     let verified: bool = client

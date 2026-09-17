@@ -5,8 +5,8 @@ pub use http::http_router;
 use std::future::Future;
 
 use mindleak_memory::{
-    FactDirective, InvalidInput, KeywordMatchMode, MemoryContext, MemoryService, MemoryTier,
-    RecallFilter, RelationshipCursor, WriteOptions,
+    DomainQuery, DomainWrite, FactDirective, InvalidInput, KeywordMatchMode, MemoryContext,
+    MemoryService, MemoryTier, RecallFilter, RelationshipCursor, WriteOptions,
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -34,7 +34,7 @@ pub struct WriteMemoryInput {
     )]
     text: String,
     #[schemars(
-        description = "Optional client-generated UUID for retry safety, scoped by agentId. Reuse it only with the same text, context, and facts to replay the original committed result. Omit it for a new write on every call."
+        description = "Optional client-generated UUID for retry safety, scoped by agentId. Reuse it only with the same text, context, facts and domain record to replay the original committed result. Required for domain writes. Omit it for a new ordinary write on every call."
     )]
     request_id: Option<Uuid>,
     #[serde(default)]
@@ -47,11 +47,19 @@ pub struct WriteMemoryInput {
         description = "Optional per-fact retention, salience, and explicit links to existing fragment IDs. confirms/reinforces require context.sessionId; all links must stay in the same context.scope."
     )]
     facts: Vec<FactDirective>,
+    #[schemars(
+        description = "Optional identified domain record, separate from fact lifecycle operations. Requires requestId; cannot be combined with facts. Identities are source claims, not authentication or verified truth."
+    )]
+    domain: Option<DomainWrite>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecallMemoryInput {
+    #[schemars(
+        description = "Inspect an entity's bounded direct domain edges by predicate and direction, or read an exact edge identity. Cannot be combined with query, fragmentId or fact/search controls. Source confidence is not verified truth. No recursive traversal or model calls."
+    )]
+    domain: Option<DomainQuery>,
     #[schemars(description = "Search query. Supply either query or fragmentId, never both.")]
     query: Option<String>,
     #[schemars(
@@ -65,11 +73,11 @@ pub struct RecallMemoryInput {
     #[schemars(description = "Optional agent provenance filter; omit to recall shared memory.")]
     agent_id: Option<String>,
     #[schemars(
-        description = "Search: 1..50 matched fragments before optional duplicate grouping, default 10. Inspection: 1..8 related facts, default 8."
+        description = "Search: 1..50 matched fragments before optional duplicate grouping, default 10. Fragment inspection: 1..8 related facts, default 8. Domain inspection: 1..50 direct edges, default 50."
     )]
     limit: Option<usize>,
     #[schemars(
-        description = "Optional project/topic context filter, independent from agent provenance."
+        description = "Optional project/topic context filter, independent from agent provenance. Omit or use null for general search across scoped and unscoped memories; supply a value to narrow results to that scope."
     )]
     scope: Option<String>,
     #[schemars(description = "Optional short_term or long_term tier; omit to search both.")]
@@ -114,7 +122,7 @@ impl MemoryMcp {
     }
 
     #[tool(
-        description = "Store an episode, its fact fragments, context, and explicit fact links atomically. Returns memoryId and fragment IDs. New facts are short_term unless explicitly retained. Confirmed or useful feedback across distinct spaced sessions can consolidate facts into long_term. supports/contradicts/related link facts; supersedes records a correction; archives/restores control visibility. Feedback is an attributed claim, not proof of truth. Works without a model; semantic modes retain pgvector embeddings.",
+        description = "Store an episode and its fact fragments atomically. Returns memoryId and fragment IDs. Optional domain stores an identified entity or directed edge with source provenance, requires requestId, and cannot include facts. Domain predicates never confirm, reinforce or change fact lifecycle. Ordinary facts directives support explicit retention, links and lifecycle feedback; feedback is an attributed claim, not proof of truth. context.scope is optional. Works without a model; semantic modes retain pgvector embeddings.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -136,6 +144,7 @@ impl MemoryMcp {
                     request_id: input.request_id,
                     context: input.context,
                     facts: input.facts,
+                    domain: input.domain,
                 },
             ),
         )
@@ -143,7 +152,7 @@ impl MemoryMcp {
     }
 
     #[tool(
-        description = "Search with query, or inspect an exact source with fragmentId and no query. Inspection returns rawText and paged direct evidence; pass nextCursor as after until null, even when a filtered page is empty. Search returns original score, rankingPriority, lifecycle and bounded context. relationshipCount is a lower bound when relationshipCountExact is false; relationshipsTruncated reports omitted or unexamined links. Corrections and contradictions precede confirmations. Archived/superseded facts require includeInactive. Inspection never calls models. All recall is read-only; useful negative evidence remains evidence, not a command or proof of truth.",
+        description = "Use one mode: query for search, fragmentId for exact source/evidence inspection, or domain for entity/edge identity and bounded directed relationships. Scope is optional; omission gives general search across scoped and unscoped records. Domain entity inspection reads edges only with an explicit direction; put its nextCursor in domain.after. Fragment inspection puts nextCursor in after. Continue empty filtered pages while a cursor remains. Search preserves similarity, rankingPriority and lifecycle; relationshipCount is a lower bound when relationshipCountExact is false. Inspection is model-free and all recall is read-only. Domain predicates and reported confidence are unverified source claims, never lifecycle feedback.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -166,6 +175,20 @@ impl MemoryMcp {
             context_limit: input.context_limit,
             group_duplicates: input.group_duplicates,
         };
+        if let Some(domain) = &input.domain {
+            if input.query.is_some() || input.fragment_id.is_some() || input.after.is_some() {
+                return Err(ErrorData::invalid_params(
+                    "domain inspection cannot be combined with query, fragmentId or after",
+                    None,
+                ));
+            }
+            return cancellable_result(
+                context,
+                self.memory
+                    .inspect_domain(domain, &filter, input.limit.unwrap_or(50)),
+            )
+            .await;
+        }
         match (input.query, input.fragment_id) {
             (Some(query), None) if input.after.is_none() => {
                 cancellable_result(
