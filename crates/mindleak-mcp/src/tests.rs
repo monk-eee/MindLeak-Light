@@ -123,6 +123,22 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
         tokio::join!(MemoryMcp::new(memory).serve(server_io), ().serve(client_io));
     let server = server.unwrap();
     let client = client.unwrap();
+    let info = client.peer_info().unwrap();
+    let instructions = info.instructions.as_deref().unwrap();
+    for phrase in [
+        "Before substantial work",
+        "limit 5",
+        "explicit general mode",
+        "across all scopes",
+        "verified reusable",
+        "Never store secrets",
+        "approvals",
+    ] {
+        assert!(
+            instructions.contains(phrase),
+            "Missing memory activation guidance: {phrase}"
+        );
+    }
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
     names.sort();

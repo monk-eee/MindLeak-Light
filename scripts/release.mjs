@@ -53,8 +53,8 @@ export function packageBinary(root, target, version) {
     if (!target.includes("windows")) chmodSync(join(staging, binaryName), 0o755);
     for (const name of [
       "README.md", "LICENSE", "SECURITY.md",
-      "docs/INSTALL.md", "docs/INTEGRATION.md", "docs/MODELS.md", "docs/LIFECYCLE.md", "docs/ARCHITECTURE.md",
-      "docs/BACKUP.md", "adr.d/0017-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md",
+      "docs/INSTALL.md", "docs/INTEGRATION.md", "docs/MODELS.md", "docs/LIFECYCLE.md", "docs/ARCHITECTURE.md", "docs/LOCAL.md",
+  "docs/BACKUP.md", "adr.d/0019-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md",
       "assets/mindleak_logo.png", "assets/mindleak_128x128.png",
       "assets/architecture.excalidraw", "assets/architecture-overview.svg",
       "assets/architecture-write.svg", "assets/architecture-recall.svg", "assets/architecture-lifecycle.svg",
@@ -66,7 +66,14 @@ export function packageBinary(root, target, version) {
       mkdirSync(dirname(destination), { recursive: true });
       copyFileSync(join(root, name), destination);
     }
+    const local = { command: binaryName, args: ["local", "connect", "--container", "mindleak-light"] };
     writeFileSync(join(staging, "mcp.example.json"), `${JSON.stringify({
+      mcpServers: { "mindleak-light-local": local },
+    }, null, 2)}\n`);
+    writeFileSync(join(staging, "mcp.vscode.example.json"), `${JSON.stringify({
+      servers: { "mindleak-light-local": { type: "stdio", ...local } },
+    }, null, 2)}\n`);
+    writeFileSync(join(staging, "mcp.postgres.example.json"), `${JSON.stringify({
       mcpServers: {
         "mindleak-light": {
           command: binaryName,

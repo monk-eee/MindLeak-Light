@@ -1,4 +1,4 @@
-# ADR-0017: Encrypted Administrative Backups
+# ADR-0019: Encrypted Administrative Backups
 
 - Status: Proposed
 - Date: 2026-09-17

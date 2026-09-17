@@ -6,10 +6,42 @@ MindLeak Light stores potentially sensitive raw memories, fragments, and vectors
 All agents on a deployment share access. `agentId` is an attribution/filter field,
 not authentication or tenant isolation. A vector is not an anonymized memory.
 
-Stdio relies on the launching operating-system account. HTTP requires a bearer
+Stdio relies on the launching operating-system account. Ordinary HTTP requires a bearer
 token on every route, including health. It rejects browser Origin headers, limits
 request bodies to 256 KiB, and does not enable CORS. Tokens are compared using a
 constant-time primitive. This is not OAuth or a per-agent authorization system.
+
+The unreleased [project instruction installer](docs/INSTALL.md#automatic-project-setup)
+edits only explicitly selected project files. It does not install credentials,
+grant tool permissions, create a database, or change global client profiles.
+Its default checks inspect files only. `--connect` explicitly authorizes contact
+with the selected HTTP server or execution of the selected stdio command; trust
+that command as you would any local program. Connection reports omit credential
+values and provider bodies. Installed instructions and server-supplied reminders
+remain guidance, not an enforcement or authorization mechanism.
+
+The unreleased local launcher offers credential-free Docker/stdio, validates
+local engine endpoints and pins the selected container ID in generated VS Code
+configuration. New trials publish no ports and use `--network none`. Their
+internal HTTP worker remains token-protected with an automatically generated
+token that clients do not need. Existing shared server settings are not weakened
+or replaced by local configuration.
+
+An explicit `--allow-unauthenticated-loopback` exception is available only in the
+native macOS/Windows `local http` bridge. It rejects non-loopback listeners,
+nonlocal peers, mismatched Host, browser Origin, and forwarding headers. Linux
+builds, including shipped containers, refuse this mode before binding. Docker
+host port mappings therefore cannot publish an unauthenticated container
+listener through this option. Do not proxy or tunnel the native bridge. Local
+users and administrators are inside its trust boundary; this is not protection
+against a privileged operator deliberately exposing a local service.
+
+MindLeak does not provide OAuth client registration. Cancel unexpected registration dialogs.
+
+The fixed 401 recovery body and bearer challenge do not prevent client OAuth
+fallback. Use [scoped cached-input recovery](docs/INTEGRATION.md#recover-a-rejected-or-cached-token),
+not authentication removal, for shared HTTP. Never put credentials, full
+container environments, or memory content into support diagnostics.
 
 ## Deployment
 
@@ -38,6 +70,11 @@ contents. Avoid turning on wire-level logging in external proxies or clients.
 Recalled text is untrusted data. Agents must not follow instructions embedded in
 memories merely because a fragment scored highly. The extraction prompt and MCP
 descriptions reinforce this boundary; they do not eliminate prompt injection.
+
+General memory omits recall's scope filter and can return matching facts from
+any scope in the same authorized deployment. It is not a separate private store.
+The installer requires an explicit mode choice and refuses to broaden an existing
+scoped setup implicitly. General writes still cannot link across scopes.
 
 Context scopes and evidence sessions are also caller-supplied, not access controls
 or proof of independent corroboration. The lifecycle rejects cross-scope links,

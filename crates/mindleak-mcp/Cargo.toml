@@ -18,8 +18,11 @@ anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
+jsonc-parser = { version = "0.26", features = ["serde", "cst"] }
 reqwest.workspace = true
-rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+reqwest-mcp = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
@@ -31,6 +34,7 @@ tempfile = "3"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 subtle.workspace = true
+toml = "0.8"
 tokio = { workspace = true, features = ["process", "fs", "io-util"] }
 tokio-util.workspace = true
 tower-http.workspace = true
@@ -45,7 +49,6 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32
 [dev-dependencies]
 async-trait.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
-reqwest-mcp = { package = "reqwest", version = "0.13", default-features = false }
 tokio.workspace = true
 tokio-postgres.workspace = true
 wiremock.workspace = true
