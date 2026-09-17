@@ -1,4 +1,15 @@
-# Benchmark Results
+# Learning Evidence and Benchmark Results
+
+MindLeak is evaluated as knowledge formation for agents. Three claims stay
+separate: evidence-backed knowledge can be formed; later agents can use it;
+and that use improves outcomes against matched controls. The measurements below
+retain their original tasks, hashes and interpretation. Repositioning the product
+does not turn a protocol pass into a learning result.
+
+The [lab recordings](VALIDATION.md#recorded-local-run) include formation and reuse
+experiments, including flat outcomes and retrieval misses. The complete reuse
+pilot and independent held-out confirmation remain unrun. No general compounding
+advantage or 100,000-to-200 compression result is claimed.
 
 ## Knowledge Workflow: 2026-09-17
 

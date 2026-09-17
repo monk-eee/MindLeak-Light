@@ -1,5 +1,10 @@
 # Administrative Backups
 
+Back up the whole knowledge lineage: source observations, chain and principle
+revisions, evidence links, validation records and retry receipts. A principle
+export alone is not a recoverable store. Knowledge canaries verify retained
+sources and revisions; recovery is separate from the truth of their conclusions.
+
 **v0.6.0 development interface.** Published v0.4.0 and v0.5.0 binaries do not contain
 these commands. Local PG/restic behavior has executable regression coverage;
 [platform acceptance](../gaps.d/backup-platform-acceptance.md) must be completed

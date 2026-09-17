@@ -220,6 +220,10 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
     let info = client.peer_info().unwrap();
     let instructions = info.instructions.as_deref().unwrap();
     for phrase in [
+        "Knowledge formation for agents",
+        "Observations are evidence",
+        "Chains of Memory",
+        "Principles",
         "Before substantial work",
         "limit 5",
         "explicit general mode",

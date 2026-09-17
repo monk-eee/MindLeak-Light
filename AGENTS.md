@@ -1,6 +1,12 @@
-# MindLeak Light: Agent Guide
+# MindLeak: Agent Guide
 
-## Agent Memory
+## Agent Learning
+
+MindLeak is knowledge formation for agents: observations become evidence-backed
+Chains of Memory, and validated chains support reusable Principles. Read the
+[product thesis](RATIONALE.md) when changing product language, labs, or evaluation.
+Keep formation, later verified use, and measured comparative benefit separate.
+The `mindleak-light` package and three existing tools remain stable identifiers.
 
 For nontrivial work with an approved MindLeak connection, read the
 [activation policy](.agents/skills/mindleak-memory/references/agent-policy.md)
@@ -87,7 +93,8 @@ Use Conventional Commits, explicit staging, and never `--no-verify`.
   contract. Edit its canonical activation policy first; update the matching
   README/integration snippets together. Never add client-specific permission
   grants, hardcoded MCP prefixes, or automatic service startup to the skill.
-- Keep the README focused on a human's first successful write and recall.
+- Keep the README focused on the knowledge hierarchy and a human's first
+  observation, evidence-backed chain, and later reuse. Retain a connection check.
   Put optional model setup and contributor internals in the linked guides.
 
 See [DEVELOPERS.md](DEVELOPERS.md) for commands and release procedures.

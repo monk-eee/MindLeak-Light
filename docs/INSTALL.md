@@ -1,4 +1,9 @@
-# Install MindLeak Light
+# Install MindLeak
+
+Install the knowledge-formation system, connect your agents, then use the
+[learning policy](../README.md#give-your-agent-a-memory-policy) to capture
+observations, validate Chains of Memory, and reuse Principles. The package,
+executable and image retain the `mindleak-light` name for compatibility.
 
 Choose the package that fits your agent stack. Neither requires a chat or
 embedding model; [models are a recommended optional upgrade](MODELS.md).
@@ -11,7 +16,7 @@ No published image or old executable is upgraded by new settings.
 
 | Package | Best For | You Supply |
 |---|---|---|
-| Local launcher | Trying memory in VS Code; sharing one store among trusted local clients | v0.6.0 native package and Docker Desktop; no manual token |
+| Local launcher | Forming and sharing knowledge in VS Code among trusted local agents | v0.6.0 native package and Docker Desktop; no manual token |
 | Native binary | Plugging into a desktop or coding agent over stdio | PostgreSQL with pgvector |
 | All-in-one container | One container to run and back up | Docker/Podman, a persistent volume, and an HTTP token |
 | Source Compose stack | Developing MindLeak itself | Git and Docker/Podman Compose |

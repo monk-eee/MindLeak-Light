@@ -10,9 +10,18 @@ import { agentSettings, createAgent, publicExecution } from "./validation-agent.
 import { agentTools, containerConfiguration, createCodingWorkspace, openMemoryDriver, renderScaleCharts, scopedMemory } from "./validation-runtime.mjs";
 import { answerSchemaFor, categories, codingFixture, digest, evaluateAnswer, evaluatePoisoning, generateScenarios, handoffSchema, pairedMetrics, retrievalMetrics, scaleCharts, verifyCodingPreparation } from "./validation-scenarios.mjs";
 import { longitudinalBinding, runLongitudinal } from "./validation-longitudinal.mjs";
+import { writeDemoReplay } from "./demo-replay.mjs";
+import { openCopilotProvider, createCopilotAgent } from "./copilot-agent.mjs";
 import { knowledgeFixtureIdentity, runKnowledgeValidation } from "./validation-knowledge.mjs";
 
-const optionalCategories = ["knowledge_workflow"];
+const optionalCategories = ["three_agent_demo", "knowledge_workflow"];
+const threeAgentPlan = {
+  id: "three_agent_demo", version: 1, fixture: "rediscovery_demo",
+  title: "Session expiry investigation",
+  stages: ["agent-a-investigates", "agent-b-independently-verifies", "agent-c-compares"],
+  comparisons: ["withoutMemory", "afterAgentA", "afterAgentsAB"],
+  telemetry: ["tool-events", "test-results", "memory-delivery", "elapsed-time", "provider-token-usage"],
+};
 
 const mean = values => values.length ? values.reduce((sum, value) => sum + Number(value), 0) / values.length : null;
 const measured = values => values.filter(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
@@ -110,8 +119,8 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
   const memories = [];
   const queries = [];
   const pairs = [];
-  const memory = (category, role = "fixture") => {
-    const scoped = scopedMemory(driver, `validation-${runId}-${category}`, `validation-${role}-${randomUUID()}`);
+  const memory = (category, role = "fixture", identity = `validation-${role}-${randomUUID()}`) => {
+    const scoped = scopedMemory(driver, `validation-${runId}-${category}`, identity);
     memories.push(scoped);
     return scoped;
   };
@@ -197,11 +206,166 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
       elapsedDays: 0, timeModel: "fresh-session-replay-not-tomorrow", identicalStartingFiles: true,
       testsRunInNetworkDisabledContainer: true, noDiscoveryEditsTransferred: true };
   }
+  async function threeAgentTask() {
+    if (!agent || !code) return notMeasured(!agent ? "requires_explicit_agent_under_test" : "requires_explicit_code_container");
+    const kind = "rediscovery_demo";
+    const scenario = plan.scenarios[kind];
+    const fixtureSha256 = digest(codingFixture(kind));
+    const events = [];
+    const trialResults = [];
+    const demoStarted = performance.now();
+    const emit = record => {
+      const event = { id: events.length + 1, atMs: performance.now() - demoStarted, ...record };
+      events.push(event);
+      onProgress({ event: "demo_event", record: event });
+    };
+    const writer = (slot, role, identity) => {
+      const source = memory(slot, role, identity);
+      const sessionId = randomUUID();
+      const requests = new Map();
+      return { ...source, async write(text, options = {}) {
+        const key = digest([text, options]);
+        if (!requests.has(key)) requests.set(key, randomUUID());
+        return source.write(text, { ...options, requestId: requests.get(key),
+          context: { ...options.context, sessionId } });
+      } };
+    };
+    const recordExecution = (execution, role, trial, condition, stageStart) => {
+      for (const event of execution.trace) emit({ ...event, type: "tool", role, trial, condition,
+        atMs: stageStart + (event.startedMs ?? 0) + (event.elapsedMs ?? 0) });
+      for (const event of execution.responses ?? []) if (Number.isFinite(event.startedMs)) {
+        emit({ ...event, type: "inference", role, trial, condition, atMs: stageStart + event.startedMs + (event.elapsedMs ?? 0) });
+      }
+    };
+    for (let trial = 1; trial <= trials; trial += 1) {
+      const slot = `three-agent-${trial}`;
+      const identityA = `validation-agent-a-${randomUUID()}`;
+      const sourceA = writer(slot, "agent-a", identityA);
+      const sourceB = writer(slot, "agent-b");
+      const snapshotA = writer(`${slot}-a-only`, "agent-a-snapshot", identityA);
+      const result = { trial, preparations: {}, conditions: {}, comparisons: {},
+        confirmation: notMeasured("requires_two_verified_investigations"), fixtureSha256 };
+      trialResults.push(result);
+      const investigate = async (role, source) => {
+        await driver.restart();
+        const stageStart = performance.now() - demoStarted;
+        emit({ type: "stage_started", role, trial });
+        const workspace = await workspaceFactory(kind, code);
+        try {
+          if (workspace.fixtureSha256 !== fixtureSha256) throw new Error("demo_fixture_changed");
+          const before = await workspace.test();
+          emit({ type: "tests", role, trial, phase: "baseline", ...before });
+          if (before.passed || before.tests !== before.expectedTests) throw new Error("demo_requires_failing_fixture");
+          const execution = await agent.run(scenario.discovery,
+            agentTools(source, workspace, { recall: false, write: true, handoffKind: kind }), "", answerSchemaFor(kind, "preparation"));
+          const after = await workspace.test();
+          const verification = verifyCodingPreparation(kind, execution, source.observations.handoffBriefs, after);
+          const preparation = { ...publicExecution(execution), agentElapsedMs: execution.elapsedMs,
+            elapsedMs: performance.now() - demoStarted - stageStart, baselineTests: before, finalTests: after,
+            fixtureSha256, memoriesWritten: source.observations.writes.length, handoffVerification: verification,
+            briefs: source.observations.handoffBriefs };
+          recordExecution(execution, role, trial, null, stageStart);
+          emit({ type: "tests", role, trial, phase: "verification", ...after });
+          emit({ type: "stage_finished", role, trial, status: execution.status, success: verification.ready,
+            inputTokens: execution.inputTokens, outputTokens: execution.outputTokens, toolCalls: execution.toolCalls });
+          return preparation;
+        } finally { await workspace.close(); }
+      };
+      try {
+        result.preparations.A = await investigate("A", sourceA);
+        let outcome;
+        if (result.preparations.A.handoffVerification.ready) {
+          outcome = await sourceA.write("Session expiry investigation: the independently corrected checkout passed all three immutable session-expiry checks.");
+          emit({ type: "memory_saved", role: "A", trial, fragments: outcome.fragments.length, memoryId: outcome.memoryId });
+          const originals = [...new Map(sourceA.observations.writes.map(receipt => [receipt.memoryId, receipt])).values()];
+          for (const receipt of originals) {
+            const episode = await sourceA.inspect(receipt.fragments[0].fragmentId);
+            const copied = await snapshotA.write(episode.rawText, { context: { source: `control-copy:${receipt.memoryId}` } });
+            if (JSON.stringify(copied.fragments.map(fragment => fragment.text)) !== JSON.stringify(receipt.fragments.map(fragment => fragment.text))) {
+              throw new Error("demo_snapshot_changed_fragments");
+            }
+          }
+          emit({ type: "snapshot", role: "A", trial, records: originals.length });
+        }
+        result.preparations.B = await investigate("B", sourceB);
+        if (result.preparations.A.sessionId === result.preparations.B.sessionId) throw new Error("demo_requires_fresh_sessions");
+        if (outcome && result.preparations.B.handoffVerification.ready) {
+          const target = outcome.fragments[0].fragmentId;
+          const before = await sourceA.inspect(target);
+          const text = "Session expiry investigation: Agent B independently reproduced the failure and validated the same three immutable checks after a correction.";
+          const receipt = await sourceB.write(text, { facts: [{ text, links: [{ targetFragmentId: target, relationshipType: "confirms" }] }] });
+          const after = await sourceA.inspect(target);
+          if (after.lifecycle.confirmedSessions !== before.lifecycle.confirmedSessions + 1
+            || after.lifecycle.usefulSessions !== before.lifecycle.usefulSessions || after.lifecycle.tier !== before.lifecycle.tier) {
+            throw new Error("demo_confirmation_mismatch");
+          }
+          result.confirmation = { status: "confirmed", claim: "immutable-test-outcome-only", relationshipType: "confirms",
+            targetFragmentId: target, evidenceMemoryId: receipt.memoryId, confirmedSessionsBefore: before.lifecycle.confirmedSessions,
+            confirmedSessionsAfter: after.lifecycle.confirmedSessions, tierAfter: after.lifecycle.tier,
+            independentlyAdjudicatedNarrative: false, immediatePromotion: false };
+          emit({ type: "confirmation", role: "B", trial, ...result.confirmation });
+        }
+        const identifiers = source => new Set(source.observations.writes.flatMap(receipt => receipt.fragments.map(fragment => fragment.fragmentId)));
+        const sourcesA = identifiers(sourceA);
+        const sourcesB = identifiers(sourceB);
+        const copiesA = identifiers(snapshotA);
+        const order = ["withoutMemory", "afterAgentA", "afterAgentsAB"];
+        const rotation = Number.parseInt(digest(`${plan.seed}:three-agent:${trial}`).slice(0, 4), 16) % order.length;
+        result.order = [...order.slice(rotation), ...order.slice(0, rotation)];
+        for (const condition of result.order) {
+          await driver.restart();
+          const target = condition === "withoutMemory" ? null : memory(condition === "afterAgentA" ? `${slot}-a-only` : slot, "agent-c");
+          const workspace = await workspaceFactory(kind, code);
+          const stageStart = performance.now() - demoStarted;
+          emit({ type: "stage_started", role: "C", trial, condition });
+          try {
+            if (workspace.fixtureSha256 !== fixtureSha256) throw new Error("demo_fixture_changed");
+            const before = await workspace.test();
+            if (before.passed || before.tests !== before.expectedTests) throw new Error("demo_requires_failing_fixture");
+            const execution = await agentOutcome(agent, scenario.task, target, workspace, "", null, answerSchemaFor(kind));
+            const exposed = target?.observations.exposed ?? new Set();
+            const memoryExposure = { agentA: [...(condition === "afterAgentA" ? copiesA : sourcesA)].some(id => exposed.has(id)),
+              agentB: [...sourcesB].some(id => exposed.has(id)) };
+            result.conditions[condition] = { ...publishedOutcome(execution), memoryExposure, fixtureSha256, baselineTests: before };
+            recordExecution(execution, "C", trial, condition, stageStart);
+            emit({ type: "memory_delivery", role: "C", trial, condition, ...memoryExposure });
+            emit({ type: "tests", role: "C", trial, condition, phase: "verification", ...execution.tests });
+            emit({ type: "stage_finished", role: "C", trial, condition, success: execution.success, status: execution.status,
+              inputTokens: execution.inputTokens, outputTokens: execution.outputTokens, toolCalls: execution.toolCalls });
+          } finally { await workspace.close(); }
+        }
+        const { withoutMemory, afterAgentA, afterAgentsAB } = result.conditions;
+        const preparedA = result.preparations.A.handoffVerification.ready;
+        const preparedAB = preparedA && result.preparations.B.handoffVerification.ready && result.confirmation.status === "confirmed";
+        result.comparisons = {
+          afterAgentA: pairedMetrics(withoutMemory, afterAgentA, { preparationReady: preparedA, memoryExposed: afterAgentA.memoryExposure.agentA }),
+          afterAgentsAB: pairedMetrics(withoutMemory, afterAgentsAB, { preparationReady: preparedAB,
+            memoryExposed: afterAgentsAB.memoryExposure.agentA && afterAgentsAB.memoryExposure.agentB }),
+          incrementalB: pairedMetrics(afterAgentA, afterAgentsAB, { preparationReady: preparedAB,
+            memoryExposed: afterAgentA.memoryExposure.agentA && afterAgentsAB.memoryExposure.agentA && afterAgentsAB.memoryExposure.agentB }),
+        };
+        result.preparationCostMs = result.preparations.A.elapsedMs + result.preparations.B.elapsedMs;
+        result.status = "measured";
+      } catch {
+        result.status = "error";
+        result.reason = "demo_execution_failed";
+        emit({ type: "stage_error", trial, reason: result.reason });
+      }
+    }
+    events.sort((left, right) => left.atMs - right.atMs || left.id - right.id);
+    return { status: trialResults.some(trial => trial.status === "error") ? "error" : "measured", protocol: threeAgentPlan,
+      trials: trialResults, events, elapsedMs: performance.now() - demoStarted, independentTasks: 1,
+      fixtureSha256, realMcpProcess: driver.realProcess, immediateReplayIsNotSpacedConsolidation: true,
+      comparisonScope: "same original fixture; isolated A-only snapshot; C receives no earlier conversation or code edits" };
+  }
   for (const category of selected) {
     onProgress({ event: "category_started", category });
     const scenario = plan.scenarios[category];
     try {
       switch (category) {
+        case "three_agent_demo":
+          results[category] = await threeAgentTask();
+          break;
         case "knowledge_workflow":
           results[category] = await runKnowledgeValidation(driver, { onProgress });
           break;
@@ -372,11 +536,12 @@ async function main() {
     help: { type: "boolean" }, plan: { type: "boolean" }, binary: { type: "string" }, seed: { type: "string" },
     sizes: { type: "string" }, category: { type: "string", multiple: true }, trials: { type: "string" },
     agent: { type: "boolean" }, "agent-max-steps": { type: "string" }, "agent-timeout-ms": { type: "string" },
+    "agent-provider": { type: "string" }, "agent-model": { type: "string" },
     "agent-max-output-tokens": { type: "string" }, "agent-reasoning-effort": { type: "string" },
     "input-usd-per-million": { type: "string" }, "output-usd-per-million": { type: "string" },
     "code-engine": { type: "string" }, "code-image": { type: "string" },
     "longitudinal-state": { type: "string" }, day: { type: "string" },
-    "chart-dir": { type: "string" },
+    "chart-dir": { type: "string" }, "replay-dir": { type: "string" },
     decomposition: { type: "string" }, retrieval: { type: "string" }, relevance: { type: "string" },
     formation: { type: "string" }, "formation-reasoning-effort": { type: "string" },
     "decomposition-reasoning-effort": { type: "string" }, "relevance-reasoning-effort": { type: "string" },
@@ -388,20 +553,28 @@ async function main() {
       modelFree: "MINDLEAK_TEST_DATABASE_URL=..._test node examples/validation-harness.mjs --binary target/debug/mindleak-light",
       knowledge: "--category knowledge_workflow --formation off|openai (requires v0.6.0 schemas; formation reports model output separately)",
       agents: "Set MINDLEAK_VALIDATION_AGENT_URL and MINDLEAK_VALIDATION_AGENT_MODEL, then add --agent --code-engine podman",
+      threeAgents: "--category three_agent_demo --agent --agent-provider copilot --agent-model gpt-6-astra --code-engine podman --replay-dir NEW_DIRECTORY",
       longitudinal: "--longitudinal-state PRIVATE_PATH --day 1|2|30 (requires actual elapsed time; retains synthetic memory between invocations)",
     }, categories, optionalCategories, defaultSizes: [100, 500, 1000], controls: ["--seed UINT32", "--sizes 100,500,1000", "--category NAME (repeatable)",
       "--trials 1..10", "--retrieval keyword|vector|hybrid", "--decomposition sentences|openai", "--relevance off|openai",
-      "--agent-max-steps 1..32", "--agent-timeout-ms 100..300000", "--agent-max-output-tokens 128..16384", "--agent-reasoning-effort none|low|medium|high|max", "--code-image IMAGE", "--chart-dir NEW_DIRECTORY", "--input-usd-per-million RATE --output-usd-per-million RATE"],
+      "--agent-provider openai|copilot", "--agent-model MODEL_ID", "--agent-max-steps 1..32", "--agent-timeout-ms 100..300000", "--agent-max-output-tokens 128..16384 (OpenAI-compatible)", "--agent-reasoning-effort none|low|medium|high|max", "--code-image IMAGE", "--chart-dir NEW_DIRECTORY", "--input-usd-per-million RATE --output-usd-per-million RATE (OpenAI-compatible)"],
       privacy: "Local synthetic data only; no uploads, production database, provider bodies, or secret exports." }, null, 2));
     return;
   }
   const plan = generateScenarios({ seed: Number(values.seed ?? 20260916), sizes: values.sizes?.split(",").map(Number) ?? [100, 500, 1000] });
-  if (values.plan) { console.log(JSON.stringify(plan, null, 2)); return; }
   const selected = values.category ?? categories;
   if (selected.some(category => ![...categories, ...optionalCategories].includes(category)) || new Set(selected).size !== selected.length) throw new Error("invalid_category");
+  const providerKind = values["agent-provider"] ?? "openai";
+  if (!["openai", "copilot"].includes(providerKind)) throw new Error("invalid_agent_provider");
+  if (values["replay-dir"] && (!selected.includes("three_agent_demo") || values.day !== undefined)) throw new Error("replay_requires_three_agent_demo");
   if (values.formation !== undefined && !selected.includes("knowledge_workflow")) throw new Error("formation_requires_knowledge_workflow");
+  if (values.plan) {
+    console.log(JSON.stringify({ ...plan, ...(selected.includes("three_agent_demo") ? { threeAgentDemo: threeAgentPlan } : {}) }, null, 2));
+    return;
+  }
   const trials = Number(values.trials ?? 1);
   if (!Number.isInteger(trials) || trials < 1 || trials > 10) throw new Error("invalid_trials");
+  if (selected.includes("three_agent_demo") && (!values.agent || !values["code-engine"])) throw new Error("demo_requires_agent_and_container");
   const settings = benchmarkSettings(process.env, values);
   if (values["chart-dir"] && (!selected.includes("memory_over_time") || values.day !== undefined)) throw new Error("charts_require_scale_scenarios");
   if (values["code-image"] && !values["code-engine"]) throw new Error("code_image_requires_code_engine");
@@ -409,29 +582,43 @@ async function main() {
     || values.day !== undefined && (![1, 2, 30].includes(Number(values.day)) || values.category || values.sizes || values.trials || values["code-engine"])) {
     throw new Error("invalid_longitudinal_options");
   }
-  if (!values.agent && ["agent-max-steps", "agent-timeout-ms", "agent-max-output-tokens", "agent-reasoning-effort", "input-usd-per-million", "output-usd-per-million", "code-engine", "code-image"]
+  if (!values.agent && ["agent-provider", "agent-model", "agent-max-steps", "agent-timeout-ms", "agent-max-output-tokens", "agent-reasoning-effort", "input-usd-per-million", "output-usd-per-million", "code-engine", "code-image"]
     .some(name => values[name] !== undefined)) throw new Error("agent_options_require_agent");
-  const agent = values.agent ? await createAgent(agentSettings(process.env, { maxSteps: Number(values["agent-max-steps"] ?? 16),
-    timeoutMs: Number(values["agent-timeout-ms"] ?? 60000),
-    maxOutputTokens: Number(values["agent-max-output-tokens"] ?? 4096), reasoningEffort: values["agent-reasoning-effort"] ?? null,
-    inputPrice: values["input-usd-per-million"] === undefined ? null : Number(values["input-usd-per-million"]),
-    outputPrice: values["output-usd-per-million"] === undefined ? null : Number(values["output-usd-per-million"]) })) : null;
+  if (providerKind === "copilot" && ["agent-max-output-tokens", "input-usd-per-million", "output-usd-per-million"].some(key => values[key] !== undefined)) {
+    throw new Error("copilot_uses_recorded_session_limits_not_openai_budget_overrides");
+  }
   const code = values["code-engine"] ? await containerConfiguration(values["code-engine"], values["code-image"]) : null;
   const binary = values.binary ?? fileURLToPath(new URL(`../target/debug/mindleak-light${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
   const sources = ["validation-harness.mjs", "validation-scenarios.mjs", "validation-runtime.mjs", "validation-agent.mjs", "validation-longitudinal.mjs", "benchmark-recall.mjs"];
+  if (providerKind === "copilot") sources.push("copilot-agent.mjs");
+  if (selected.includes("three_agent_demo")) sources.push("demo-replay.mjs", "demo-view.mjs", "demo-view.html");
   if (selected.includes("knowledge_workflow")) sources.push("validation-knowledge.mjs", "fixtures/knowledge-v1.json");
   const sourceHashes = async () => Object.fromEntries(await Promise.all(sources.map(async path => [path, digest(await readFile(new URL(path, import.meta.url)))])));
   const harnessSources = await sourceHashes();
-  const driver = await openMemoryDriver(binary, settings);
+  const replayDirectory = values["replay-dir"] ? resolve(values["replay-dir"]) : null;
+  if (replayDirectory) { await mkdir(dirname(replayDirectory), { recursive: true }); await mkdir(replayDirectory, { mode: 0o700 }); }
+  let driver;
+  let provider;
   let report;
   try {
+    provider = values.agent && providerKind === "copilot" ? await openCopilotProvider() : null;
+    const agent = provider ? createCopilotAgent(provider, { model: values["agent-model"] ?? "gpt-6-astra",
+      maxSteps: Number(values["agent-max-steps"] ?? 16), timeoutMs: Number(values["agent-timeout-ms"] ?? 300000),
+      reasoningEffort: values["agent-reasoning-effort"] ?? "low" })
+      : values.agent ? await createAgent(agentSettings({ ...process.env,
+        ...(values["agent-model"] ? { MINDLEAK_VALIDATION_AGENT_MODEL: values["agent-model"] } : {}) }, {
+        maxSteps: Number(values["agent-max-steps"] ?? 16), timeoutMs: Number(values["agent-timeout-ms"] ?? 60000),
+        maxOutputTokens: Number(values["agent-max-output-tokens"] ?? 4096), reasoningEffort: values["agent-reasoning-effort"] ?? null,
+        inputPrice: values["input-usd-per-million"] === undefined ? null : Number(values["input-usd-per-million"]),
+        outputPrice: values["output-usd-per-million"] === undefined ? null : Number(values["output-usd-per-million"]) })) : null;
+    driver = await openMemoryDriver(binary, settings);
     report = values["longitudinal-state"]
       ? await runLongitudinal({ driver, plan, agent, statePath: values["longitudinal-state"], day: Number(values.day), binding: longitudinalBinding(settings, plan) })
       : await runValidation({ driver, plan, agent, code, trials, selected,
         onProgress: event => console.error(JSON.stringify(event)) });
     report.configuration = settings.configuration;
     report.reasoning = settings.reasoning;
-  } finally { await driver.close(); }
+  } finally { try { if (driver) await driver.close(); } finally { if (provider) await provider.close(); } }
   report.harnessSources = harnessSources;
   report.sourceFilesUnchangedDuringRun = digest(harnessSources) === digest(await sourceHashes());
   if (!report.sourceFilesUnchangedDuringRun) report.status = "partial";
@@ -447,6 +634,15 @@ async function main() {
     } catch {
       report.status = "partial";
       report.chartArtifacts = { status: "error", reason: "chart_render_or_new_directory_write_failed" };
+    }
+  }
+  if (replayDirectory) {
+    try {
+      report.replayArtifacts = { status: "written", files: ["report.json", "index.html"] };
+      await writeDemoReplay(report, replayDirectory, { reserved: true });
+    } catch {
+      report.status = "partial";
+      report.replayArtifacts = { status: "error", reason: "replay_recording_failed" };
     }
   }
   console.log(JSON.stringify(report, null, 2));

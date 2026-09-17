@@ -1,11 +1,17 @@
-# Memory That Earns Persistence
+# Evidence Retention and Lifecycle
+
+MindLeak's knowledge hierarchy is **observations -> Chains of Memory -> Principles**.
+This guide describes the underlying observation-retention controls, not stages
+of knowledge formation. Long-term retention does not turn an observation into
+a justified belief or a principle. Chains and principles have their own explicit
+[validation, revision and review lifecycle](CHAINS.md#validate-challenge-and-revise).
 
 Available from **v0.2.0**, this adds a biologically inspired lifecycle while keeping **pgvector**
 for semantic search and PostgreSQL keyword search for the model-free quickstart.
 
-## The Three Layers
+## Retention Layers
 
-| Layer | What It Means in Light |
+| Layer | What It Means in MindLeak |
 |---|---|
 | Working memory | The bounded set of facts returned for the current task; nothing is written by recall |
 | Short-term memory | New facts attached to an immutable source episode and its context |

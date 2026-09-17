@@ -1,4 +1,11 @@
-# Recall and Extraction Benchmarks
+# Knowledge Evaluation and Retrieval Benchmarks
+
+MindLeak's product evaluation follows **observations -> Chains of Memory ->
+Principles -> later reuse**. Begin with the [learning acceptance criteria](VALIDATION.md#learning-acceptance)
+and [knowledge workflow checks](VALIDATION.md#check-chains-and-principles).
+The three learning labs test discovery, formation, and reuse against controls.
+This guide covers the retrieval/extraction foundation that those workflows need.
+A better retrieval score alone does not establish a better agent.
 
 The [runner](../examples/benchmark-recall.mjs) tests real MCP write/recall and
 decomposition-preview calls through the official SDK. It distinguishes source
@@ -16,13 +23,15 @@ See [installation](INSTALL.md) for server feature availability and
 [recorded results](BENCHMARK-RESULTS.md) for earlier measurements and limits.
 The older v1 source-ID scores are not comparable with current fact-level scores.
 
-## Useful Negative Evidence
+## Knowledge Workflow
 
 For the newer chain/principle workflow, use the existing validation harness's
 explicit [knowledge benchmark](VALIDATION.md#check-chains-and-principles). It
 measures hierarchical retrieval, evidence preservation, dependency review,
 revision/export and optional real model formation. It does not change the frozen
 legacy recall corpora or give a source match automatic reasoning-quality credit.
+
+## Useful Negative Evidence
 
 Relevance is not restricted to a positive value. A directly relevant prohibition,
 explicit unknown, missing prerequisite, or correction to the question's premise

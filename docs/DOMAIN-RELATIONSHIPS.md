@@ -1,5 +1,10 @@
 # Domain Relationships and Verified Imports
 
+Domain records supply identified source context for MindLeak's knowledge workflow.
+A relationship is an attributed observation, not a Chain of Memory or a Principle.
+Use the [knowledge contract](CHAINS.md) to justify, validate and generalize beliefs;
+importing more edges does not perform that learning step.
+
 **Available in v0.6.0.** These additive `domain` fields use the existing
 `write_memory` and `recall_memory` tools. Older binaries reject them. There are
 still exactly three application tables and three MCP tools. No graph worker,

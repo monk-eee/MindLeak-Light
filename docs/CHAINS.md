@@ -1,4 +1,8 @@
-# Knowledge Formation: Chains and Principles
+# Knowledge Formation for Agents
+
+**Observations capture experience. Chains of Memory justify beliefs. Principles
+turn validated beliefs into reusable expertise.** Future agents can inspect and
+apply that knowledge without inheriting an earlier conversation.
 
 **Available in v0.6.0, opt-in:** a Chain of Memory is a versioned claim with a recorded
 justification, evidence, applicability, counterexamples, and validation history.
@@ -14,9 +18,9 @@ export of a model's private reasoning process.
 
 ## Agent Learning
 
-The v0.7.0 thesis is whether agents can form memory chains from verified work,
-then build on that knowledge across tasks. Agent-authored chains already need
-no formation model. A useful chain records a reusable decision, its conditions,
+Knowledge formation is MindLeak's central workflow, not a synonym for retaining
+more context. Agent-authored chains already need no formation model. A useful
+chain records a reusable decision, its conditions,
 the observations supporting it, and where it failed. It is not another task log.
 
 Start with a verified observation; look for an existing chain before proposing
@@ -25,6 +29,9 @@ uses the conclusion to choose targeted current checks. New contrary evidence
 justifies a challenge or revision, with counterexamples preserved. A principle
 generalizes accepted chains only where their shared conditions justify it.
 
+The learning policy selects this workflow on a capable approved connection;
+the ordinary MCP defaults remain unchanged. See the [product thesis](../RATIONALE.md)
+and [learning acceptance criteria](VALIDATION.md#learning-acceptance).
 Evaluate formation, correct later reuse/revision, and measured benefit separately.
 More stored notes, agreement or revisions alone does not establish learning.
 The compact/capability/diagnostic additions below are **unreleased work targeting

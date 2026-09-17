@@ -31,7 +31,7 @@ enum Transport {
 #[command(
     name = "mindleak-light",
     version,
-    about = "Shared, decomposed agent memory over MCP"
+    about = "Knowledge formation for agents over MCP"
 )]
 struct Args {
     #[command(flatten)]
@@ -66,7 +66,7 @@ enum Command {
     Backup(admin::BackupArgs),
     #[command(
         subcommand,
-        about = "Install or check project memory instructions for an existing MCP connection"
+        about = "Install or check agent learning instructions for an existing MCP connection"
     )]
     Agent(agent_setup::AgentCommand),
     #[command(
