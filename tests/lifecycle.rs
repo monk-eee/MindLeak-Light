@@ -35,6 +35,7 @@ async fn idempotent_lifecycle_retry_preserves_receipt_without_reapplying_links()
         agent_id: archive.agent_id.clone(),
         text: archive.raw_text.clone(),
         context: archive.context.clone(),
+        domain: None,
         facts: vec![FactDirective {
             text: archive.fragments[0].text.clone(),
             links: vec![FactLink {

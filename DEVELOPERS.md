@@ -97,7 +97,7 @@ test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 ### Backup Administration
 
 See [the operator guide](docs/BACKUP.md) and
-[ADR-0020](adr.d/0020-encrypted-administrative-backups.md). Offline CLI/safety
+[ADR-0021](adr.d/0021-encrypted-administrative-backups.md). Offline CLI/safety
 tests run with the ordinary Rust suite. To run real encryption/restore and
 concurrent-capture tests, install restic 0.19.x and select a disposable PG16
 container, in addition to the test database URL above:
@@ -171,6 +171,26 @@ checks. Use a disposable `_test` database for it. These are protocol-contract
 checks, not model-behaviour or native Copilot/Claude/Codex activation evidence;
 record those separately using the [acceptance checklist](docs/INTEGRATION.md#verify-the-agent-behaviour).
 Never turn an unrun client combination into a compatibility claim.
+
+### Domain Import Verification
+
+The domain importer uses the existing SDK dependency and must be tested against a
+freshly built binary, not a stale executable. With an owned `_test` database:
+
+```sh
+cargo build --locked -p mindleak-mcp --bin mindleak-light
+npm ci --prefix examples --ignore-scripts
+MINDLEAK_DOMAIN_TEST_BINARY="$PWD/target/debug/mindleak-light" node --test --test-name-pattern='domain importer' scripts/repository.test.mjs
+```
+
+The test also requires `MINDLEAK_TEST_DATABASE_URL`; it rejects other database names.
+Include `MINDLEAK_DOMAIN_TEST_BINARY` when running `make ci` to execute this optional
+real-client slice locally. CI's PostgreSQL job runs it after building its release
+binary. Rust `--all-features` additionally runs the actual 12,000-edge EXPLAIN ANALYZE
+regression, metadata/GIN/vector preservation and edge integrity/pagination tests.
+See [the domain guide](docs/DOMAIN-RELATIONSHIPS.md) for import and migration limits.
+
+### Agent Setup
 
 The v0.5.0 [project installer](docs/INSTALL.md#automatic-project-setup) lives
 in [agent_setup.rs](crates/mindleak-mcp/src/agent_setup.rs); its

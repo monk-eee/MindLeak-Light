@@ -377,6 +377,7 @@ async fn encrypted_backup_roundtrip_preserves_source_and_owned_cleanup() {
         text: episode.raw_text.clone(),
         context: episode.context.clone(),
         facts: Vec::new(),
+        domain: None,
     });
     let receipt = store.save(&episode).await.unwrap();
     let read_only = PostgresMemoryStore::connect_read_only(source_url.as_str(), 2, None)

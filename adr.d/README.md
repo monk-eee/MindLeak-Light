@@ -31,4 +31,5 @@ record when the design changes instead of silently rewriting their rationale.
 | [0017](0017-credential-free-local-access.md) | Credential-Free Local Access | Accepted |
 | [0018](0018-project-memory-instructions.md) | Project Memory Instruction Installation | Accepted |
 | [0019](0019-bounded-resumable-migrations.md) | Bounded Resumable Migrations | Accepted |
-| [0020](0020-encrypted-administrative-backups.md) | Encrypted Administrative Backups | Proposed |
+| [0020](0020-domain-relationships.md) | Indexed Domain Relationships and Verified Imports | Accepted |
+| [0021](0021-encrypted-administrative-backups.md) | Encrypted Administrative Backups | Proposed |

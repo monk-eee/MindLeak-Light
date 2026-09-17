@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseEnv } from "node:util";
+import { isDeepStrictEqual, parseEnv } from "node:util";
 import { inflateSync } from "node:zlib";
 import test from "node:test";
 import { readAdrs, updateIndex } from "./adr-index.mjs";
@@ -14,6 +14,7 @@ import { checkDocs } from "./check-docs.mjs";
 import { packageBinary, releaseNotes } from "./release.mjs";
 import { captureBenchmark, regressionPlan, runRegression } from "./regression-check.mjs";
 import { cleanupProjects } from "./container-projects.mjs";
+import { domainRequestId, importDomain, importReport, planDomainImport } from "../examples/import-domain.mjs";
 
 const nativeBaselineAvailable = Object.hasOwn(
   JSON.parse(readFileSync(new URL("./regression-baseline.json", import.meta.url), "utf8")).archives,
@@ -25,6 +26,162 @@ function fixture(context) {
   context.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("domain importer accounts for unsupported, unresolved and duplicate source edges", () => {
+  const header = { format: "mindleak-domain", version: 1, namespace: "test:domain", scope: "test:domain" };
+  const entity = { kind: "entity", id: "one", label: "One", entityType: "package", text: "Original entity source." };
+  const edge = { kind: "edge", id: "edge-one", source: "one", target: "one", predicate: "confirms",
+    provenance: { sourceReferences: ["fixture:edge"], reportedConfidence: 0.4 }, text: "Original edge source." };
+  const source = [header, edge, entity, edge, { ...edge, id: "missing", target: "absent" }, { ...edge, id: "extra", verifiedTruth: true }].map(value => JSON.stringify(value)).join("\n");
+  const plan = planDomainImport(source);
+  const report = importReport(plan);
+  assert.equal(report.sourceRecords, 5);
+  assert.equal(report.sourceEdges, 4);
+  assert.deepEqual(report.counts, { ready: 3, unresolved: 1, unsupported: 1 });
+  assert.equal(report.complete, false);
+  assert.equal(plan.records[0].requestId, plan.records[2].requestId);
+  assert.notEqual(domainRequestId("test:domain", "entity", "one"), domainRequestId("test:domain", "edge", "one"));
+  assert.ok(!JSON.stringify(report).includes("Original edge source"));
+  const conflicts = planDomainImport([header, entity, { ...entity, label: "Changed" }, edge].map(value => JSON.stringify(value)).join("\n"));
+  assert.deepEqual(importReport(conflicts).counts, { conflict: 2, unresolved: 1 });
+  const repeated = planDomainImport([header, ...Array(2000).fill(entity), { ...entity, label: "Changed" }, entity, edge].map(value => JSON.stringify(value)).join("\n"));
+  assert.deepEqual(importReport(repeated).counts, { conflict: 2002, unresolved: 1 });
+});
+
+test("domain importer resumes with stable receipts and verifies every source edge", async () => {
+  const header = { format: "mindleak-domain", version: 1, namespace: "test:resume" };
+  const entity = { kind: "entity", id: "one", label: "One", entityType: "package", text: "Exact entity source." };
+  const edge = { kind: "edge", id: "one", source: "one", target: "one", predicate: "depends_on", provenance: { sourceReferences: ["fixture:one"] }, text: "Exact edge source." };
+  const source = [header, edge, entity, { ...edge, id: "two" }, edge].map(value => JSON.stringify(value)).join("\n");
+  assert.equal(planDomainImport(source).header.scope, null, "Omitted import scope is valid and leaves records unscoped");
+  const records = new Map();
+  const calls = [];
+  const client = {
+    getServerVersion: () => ({ name: "mindleak-light", version: "test" }),
+    listTools: async () => ({ tools: ["write_memory", "recall_memory", "decompose_memory"].map(name => ({ name, inputSchema: { properties: { domain: {} } } })) }),
+    callTool: async call => {
+      calls.push(call);
+      const input = call.arguments;
+      const key = JSON.stringify([input.domain.kind, input.domain.identity]);
+      if (call.name === "write_memory") {
+        const previous = records.get(key);
+        if (previous && !isDeepStrictEqual(previous.input, input)) throw { code: -32602 };
+        if (!previous) records.set(key, { input, memoryId: input.requestId });
+        return { structuredContent: { memoryId: records.get(key).memoryId } };
+      }
+      const { input: saved, memoryId } = records.get(key);
+      return { structuredContent: { record: { memoryId, agentId: saved.agentId, rawText: saved.text, context: saved.context, domain: saved.domain } } };
+    },
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const report = await importDomain(planDomainImport(source), client, { agentId: "import-test", concurrency: 2 });
+    assert.equal(report.complete, true);
+    assert.deepEqual(report.counts, { verified: 4 });
+    assert.equal(report.sourceEdges, 3);
+    assert.equal(records.size, 3);
+  }
+  assert.ok(calls.filter(call => call.name === "write_memory").every(call => !call.arguments.facts));
+});
+
+test("domain importer does not credit failed or mismatched writes and respects concurrency", async () => {
+  const header = { format: "mindleak-domain", version: 1, namespace: "test:failures", scope: "test:failures" };
+  const entities = Array.from({ length: 8 }, (_, index) => ({ kind: "entity", id: `entity-${index}`, label: "Entity", entityType: "package", text: "Sensitive source canary." }));
+  const edge = { kind: "edge", id: "edge", source: entities[0].id, target: entities[1].id, predicate: "depends_on", provenance: { sourceReferences: ["fixture:edge"] }, text: "Sensitive edge canary." };
+  const source = [header, ...entities, edge].map(value => JSON.stringify(value)).join("\n");
+  let active = 0;
+  let peak = 0;
+  const client = {
+    getServerVersion: () => ({ name: "mindleak-light", version: "test" }),
+    listTools: async () => ({ tools: ["write_memory", "recall_memory", "decompose_memory"].map(name => ({ name, inputSchema: { properties: { domain: {} } } })) }),
+    callTool: async call => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise(resolve => setImmediate(resolve));
+      active--;
+      assert.equal(call.arguments.domain.kind, "entity", "Edges with unverified endpoints must not be attempted");
+      if (call.name === "write_memory") return { structuredContent: { memoryId: "acknowledged" } };
+      return { structuredContent: { record: { memoryId: "different", rawText: "Sensitive edge canary." } } };
+    },
+  };
+  const report = await importDomain(planDomainImport(source), client, { agentId: "test", concurrency: 3 });
+  assert.equal(report.complete, false);
+  assert.deepEqual(report.counts, { failed: 8, unresolved: 1 });
+  assert.ok(peak > 1 && peak <= 3);
+  assert.ok(!JSON.stringify(report).includes("Sensitive"));
+  const cancelled = await importDomain(planDomainImport(source), client, { agentId: "test", signal: AbortSignal.abort() });
+  assert.deepEqual(cancelled.counts, { not_imported: 9 });
+  await assert.rejects(importDomain(planDomainImport(source), { ...client, getServerVersion: () => ({ name: "other" }) }, { agentId: "test" }), /server_does_not_support/);
+});
+
+test("domain importer refuses an existing report before starting a server", {
+  skip: !existsSync(new URL("../examples/node_modules/@modelcontextprotocol/sdk/package.json", import.meta.url)) && "Install example SDK dependencies for the CLI child-process probe.",
+}, context => {
+  const directory = fixture(context);
+  const input = join(directory, "input.jsonl");
+  const report = join(directory, "report.json");
+  const launched = join(directory, "launched");
+  writeFileSync(input, JSON.stringify({ format: "mindleak-domain", version: 1, namespace: "test:output", scope: null }) + "\n");
+  writeFileSync(report, "prior evidence");
+  const child = join(directory, "child.cjs");
+  writeFileSync(child, `require("node:child_process").spawn = () => { require("node:fs").writeFileSync(${JSON.stringify(launched)}, "launched"); throw new Error("probe child startup"); }; require("node:module").syncBuiltinESMExports();`);
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL("../examples/import-domain.mjs", import.meta.url)),
+    "--input", input, "--apply", "--binary", process.execPath, "--output", report], {
+    encoding: "utf8", env: { ...process.env, NODE_OPTIONS: `--require=${JSON.stringify(child)}` }, timeout: 10000,
+  });
+  assert.equal(result.status, 1);
+  assert.equal(readFileSync(report, "utf8"), "prior evidence");
+  assert.ok(!existsSync(launched), "Report refusal must precede all MCP startup");
+});
+
+test("domain importer preserves real PostgreSQL edges across fresh stdio processes", {
+  skip: !process.env.MINDLEAK_DOMAIN_TEST_BINARY && "Set MINDLEAK_DOMAIN_TEST_BINARY and an owned *_test database for the real importer check.",
+}, async context => {
+  const database = new URL(process.env.MINDLEAK_TEST_DATABASE_URL);
+  assert.ok(decodeURIComponent(database.pathname).endsWith("_test"));
+  const directory = fixture(context);
+  const input = join(directory, "domain.jsonl");
+  const namespace = `import-${randomUUID()}`;
+  const header = { format: "mindleak-domain", version: 1, namespace, scope: namespace };
+  const entities = ["source", "target"].map(id => ({ kind: "entity", id, label: id, entityType: "package", text: `The exported ${id} is a package.` }));
+  const edges = ["one", "two", "three"].map((id, index) => ({ kind: "edge", id, source: "source", target: index === 2 ? "source" : "target",
+    predicate: index === 1 ? "confirms" : "depends_on", provenance: { sourceReferences: [`fixture:${id}`], reportedConfidence: 0.7 }, text: `The export reports relationship ${id}.` }));
+  const unresolved = { ...edges[0], id: "unresolved", target: "absent" };
+  const malformed = { ...edges[0], id: "unsupported", silentlyDiscardThis: "private-canary" };
+  writeFileSync(input, [header, ...edges, ...entities, edges[0], unresolved, malformed].map(value => JSON.stringify(value)).join("\n"));
+  const importer = fileURLToPath(new URL("../examples/import-domain.mjs", import.meta.url));
+  const env = { ...process.env, MINDLEAK_DATABASE_URL: database.href, MINDLEAK_DECOMPOSITION: "sentences", MINDLEAK_RETRIEVAL: "keyword", MINDLEAK_RELEVANCE: "off" };
+  const invoke = () => spawnSync(process.execPath, [importer, "--input", input, "--apply", "--binary", process.env.MINDLEAK_DOMAIN_TEST_BINARY,
+    "--agent-id", namespace, "--concurrency", "4"], { cwd: directory, env, encoding: "utf8", timeout: 60000, maxBuffer: 1024 * 1024 });
+  const initial = invoke();
+  assert.equal(initial.status, 1);
+  assert.ok(!initial.error && !initial.stderr.includes("private-canary"));
+  const first = JSON.parse(initial.stdout);
+  assert.equal(first.complete, false);
+  assert.deepEqual(first.counts, { verified: 6, unresolved: 1, unsupported: 1 });
+  assert.equal(first.sourceEdges, 6);
+  assert.ok(!initial.stdout.includes("private-canary") && !initial.stdout.includes("The export reports"));
+  writeFileSync(input, [header, ...edges, ...entities, edges[0]].map(value => JSON.stringify(value)).join("\n"));
+  const resumed = invoke();
+  assert.equal(resumed.status, 0, "The valid import must resume through a fresh MCP process");
+  const second = JSON.parse(resumed.stdout);
+  assert.equal(second.complete, true);
+  assert.equal(new Set(second.records.map(record => record.memoryId)).size, 5);
+  assert.deepEqual(second.records.map(record => record.memoryId), first.records.slice(0, 6).map(record => record.memoryId));
+  const { Client } = await import("../examples/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js");
+  const { StdioClientTransport } = await import("../examples/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js");
+  const client = new Client({ name: "domain-import-readback", version: "1.0.0" });
+  try {
+    await client.connect(new StdioClientTransport({ command: process.env.MINDLEAK_DOMAIN_TEST_BINARY, args: ["--transport", "stdio"], env, cwd: directory, stderr: "pipe" }));
+    const result = await client.callTool({ name: "recall_memory", arguments: { scope: namespace, domain: {
+      kind: "entity", identity: { namespace, id: "source" }, direction: "outgoing",
+    } } });
+    assert.ok(!result.isError);
+    const records = result.structuredContent.relationships;
+    assert.equal(records.length, 3);
+    assert.equal(new Set(records.map(record => record.domain.identity.id)).size, 3);
+    assert.ok(records.some(record => record.domain.source.id === record.domain.target.id));
+  } finally { await client.close(); }
+});
 
 test("release regression plans pin corpora and require independent disposable databases", (context) => {
   const environment = {
@@ -631,11 +788,11 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md", "BACKUP.md", "MIGRATIONS.md"];
+  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md", "BACKUP.md", "DOMAIN-RELATIONSHIPS.md", "MIGRATIONS.md"];
   for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
-  const backupRecords = ["adr.d/0020-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md"];
+  const backupRecords = ["adr.d/0021-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md"];
   for (const name of backupRecords) {
     mkdirSync(dirname(join(directory, name)), { recursive: true });
     writeFileSync(join(directory, name), `# ${name}\n`);

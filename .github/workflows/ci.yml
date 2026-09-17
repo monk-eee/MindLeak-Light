@@ -88,6 +88,11 @@ jobs:
           node-version: 22
       - run: npm ci --prefix examples --ignore-scripts
       - run: cargo build --release --locked -p mindleak-mcp --bin mindleak-light
+      - name: Verify domain imports through real MCP
+        timeout-minutes: 3
+        env:
+          MINDLEAK_DOMAIN_TEST_BINARY: ${{ github.workspace }}/target/release/mindleak-light
+        run: node --test --test-name-pattern='domain importer' scripts/repository.test.mjs
       - name: Compare with the pinned released baseline
         timeout-minutes: 12
         env:

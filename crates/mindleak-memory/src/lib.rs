@@ -1,3 +1,4 @@
+mod domain;
 mod lifecycle;
 mod service;
 
@@ -8,6 +9,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use domain::{
+    DomainCursor, DomainIdentity, DomainInspection, DomainQuery, DomainRecord, DomainWrite,
+    EdgeProvenance,
+};
 pub use lifecycle::{
     EvidenceStatus, FactLifecycle, FactState, MemoryContext, MemoryTier, RecallFilter,
 };
@@ -138,6 +143,8 @@ pub struct WriteRequest {
     pub text: String,
     pub context: MemoryContext,
     pub facts: Vec<FactDirective>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<DomainWrite>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -172,6 +179,8 @@ pub struct RecallMatch {
     pub relationship_count_exact: bool,
     pub relationships_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<DomainWrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fragment_index: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document_context: Option<DocumentContext>,
@@ -197,6 +206,8 @@ pub struct RecallSource {
     pub relationship_count_exact: bool,
     pub relationships_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<DomainWrite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fragment_index: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document_context: Option<DocumentContext>,
@@ -217,6 +228,7 @@ impl From<RecallMatch> for RecallSource {
             relationship_count: fact.relationship_count,
             relationship_count_exact: fact.relationship_count_exact,
             relationships_truncated: fact.relationships_truncated,
+            domain: fact.domain,
             fragment_index: fact.fragment_index,
             document_context: fact.document_context,
         }
@@ -272,6 +284,8 @@ pub struct FragmentInspection {
     pub relationships: Vec<RelatedFact>,
     pub next_cursor: Option<RelationshipCursor>,
     pub scanned_relationships: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<DomainWrite>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -347,6 +361,7 @@ pub struct WriteOptions {
     pub context: MemoryContext,
     #[serde(default)]
     pub facts: Vec<FactDirective>,
+    pub domain: Option<DomainWrite>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
@@ -394,6 +409,18 @@ pub trait MemoryStore: Send + Sync {
         after: Option<&RelationshipCursor>,
         limit: usize,
     ) -> Result<Option<FragmentInspection>>;
+
+    async fn inspect_domain(
+        &self,
+        _query: &DomainQuery,
+        _filter: &RecallFilter,
+        _limit: usize,
+    ) -> Result<Option<DomainInspection>> {
+        Err(
+            InvalidInput("the configured store does not support domain relationships".into())
+                .into(),
+        )
+    }
 }
 
 #[async_trait]

@@ -75,6 +75,10 @@ impl PostgresMemoryStore {
             relationships: Vec::new(),
             next_cursor: None,
             scanned_relationships: 0,
+            domain: row
+                .try_get::<_, Option<String>>("domain")?
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
         };
         if serde_json::to_vec(&result)?.len() > MAX_RECALL_RESULT_BYTES {
             return Err(InvalidInput(
