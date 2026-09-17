@@ -5,7 +5,8 @@ optional. The default preserves source text and uses sentence/list decomposition
 with keyword recall.
 
 This guide describes v0.6.0: knowledge formation, domain records, bounded migrations
-and administrative backups. Those additions are not in older v0.5.0 packages.
+and administrative backups, plus explicitly marked unreleased work targeting v0.7.0.
+The v0.6.0 additions are not in older v0.5.0 packages.
 See [installation](INSTALL.md) for release availability. The existing memory-engine
 diagrams are editable in the [architecture board](../assets/architecture.excalidraw);
 the optional knowledge flow is shown separately below.
@@ -85,6 +86,11 @@ accuracy of extracted prose. See [retry safety](../adr.d/0011-idempotent-memory-
 
 ## Knowledge Formation
 
+The v0.7.0 question is whether agents can form chains from verified work and build
+on them across tasks. The core preserves observations, conditional conclusions
+and revisions; real agent formation, later reuse and measured benefit are distinct
+evaluation claims. A formation model is an optional assistant to the authoring agent.
+
 1. Preserve observations and their exact sources.
 2. Preview candidate chains, optionally using a configured model.
 3. Check evidence, run validation and explicitly accept a chain revision.
@@ -103,6 +109,19 @@ observations still available. Knowledge and its references share a final read-on
 snapshot after provider work; observations use their normal separate snapshot.
 Changed support sets `requiresReview` without rewriting historical acceptance.
 Revisions retain direct and inherited counterexamples.
+
+Unreleased v0.7.0 controls add a deterministic `compact` projection with a 32 KiB
+JSON cap. It keeps complete conditions, counterexample IDs/reasons and factual
+review reasons; full evidence stays behind exact inspection. Capability discovery
+reads the configured abstractions without model/database work, separating agent
+authoring from optional extraction, formation and semantic retrieval. Knowledge
+search reuses ordinary keyword parsing with explicit modes and no broadening.
+
+Optional search cost diagnostics collect request-local embedding/relevance calls,
+provider-reported usage, elapsed retrieval time and structured response bytes.
+Unknown usage stays null; query-cache hits do not duplicate provider work. No
+telemetry table, persistent counter, model rewrite or read-time learning effect is
+introduced. See [ADR-0023](../adr.d/0023-agent-learning-context.md).
 
 Export is a bounded JSON/Markdown projection, not a model rewrite or server file
 write. Ordinary memory calls remain unchanged and exclude derived episodes.
@@ -216,6 +235,7 @@ engine and key with the recovery plan. See [backup operations](BACKUP.md).
 | Knowledge results / direct supports | 10 / 8 |
 | Formation input / output candidates | 128 KiB / 3 |
 | Expanded context / complete payload | 32 KiB / 512 KiB |
+| Compact knowledge payload (unreleased) | 32 KiB including diagnostics |
 
 Bounds are serialized UTF-8 bytes, not tokens. Truncation flags retain references
 and identify omitted details. These bounds do not establish large-corpus capacity.

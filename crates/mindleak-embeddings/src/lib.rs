@@ -40,6 +40,10 @@ impl OpenAiEmbedder {
 
 #[async_trait]
 impl TextEmbedder for OpenAiEmbedder {
+    fn records_usage(&self) -> bool {
+        true
+    }
+
     fn dimensions(&self) -> usize {
         self.dimensions
     }
@@ -49,6 +53,7 @@ impl TextEmbedder for OpenAiEmbedder {
             return Ok(Vec::new());
         }
         ensure!(texts.len() <= MAX_FRAGMENTS, "embedding batch is too large");
+        let started = std::time::Instant::now();
         let mut request = self.client.post(self.endpoint.clone()).json(&json!({
             "model": self.model,
             "input": texts,
@@ -75,7 +80,15 @@ impl TextEmbedder for OpenAiEmbedder {
                 .is_none_or(|model| model == &self.model),
             "embedding provider model does not match the configured model"
         );
-        ordered_embeddings(response, texts.len(), self.dimensions)
+        let usage = mindleak_memory::ProviderUsage::from_response(&response.usage);
+        let embeddings = ordered_embeddings(response, texts.len(), self.dimensions)?;
+        mindleak_memory::record_provider_call(mindleak_memory::ProviderCall {
+            operation: "embedding",
+            model: self.model.clone(),
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            usage,
+        });
+        Ok(embeddings)
     }
 }
 
@@ -83,6 +96,8 @@ impl TextEmbedder for OpenAiEmbedder {
 struct EmbeddingResponse {
     model: Option<String>,
     data: Vec<EmbeddingItem>,
+    #[serde(default)]
+    usage: serde_json::Value,
 }
 
 #[derive(Deserialize)]

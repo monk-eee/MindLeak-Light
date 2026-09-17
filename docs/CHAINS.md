@@ -12,6 +12,24 @@ references those fragments rather than replacing them. The calling agent or
 human authors the claim and its concise, auditable rationale; that is not an
 export of a model's private reasoning process.
 
+## Agent Learning
+
+The v0.7.0 thesis is whether agents can form memory chains from verified work,
+then build on that knowledge across tasks. Agent-authored chains already need
+no formation model. A useful chain records a reusable decision, its conditions,
+the observations supporting it, and where it failed. It is not another task log.
+
+Start with a verified observation; look for an existing chain before proposing
+one. Validate the conclusion explicitly. A later agent checks applicability and
+uses the conclusion to choose targeted current checks. New contrary evidence
+justifies a challenge or revision, with counterexamples preserved. A principle
+generalizes accepted chains only where their shared conditions justify it.
+
+Evaluate formation, correct later reuse/revision, and measured benefit separately.
+More stored notes, agreement or revisions alone does not establish learning.
+The compact/capability/diagnostic additions below are **unreleased work targeting
+v0.7.0**, not features of the published v0.6.0 binaries. Discover the actual schema.
+
 ## Compatibility
 
 - There are still exactly three MCP tools and three application tables.
@@ -232,6 +250,89 @@ to inventing precision.
 
 ## Retrieve Knowledge Explicitly
 
+### Compact Learning Context
+
+For the unreleased v0.7.0 controls, first check that the advertised schema supports
+capability discovery. This call uses local configuration only, with no database
+or model work and no search filters or limit:
+
+```json
+{"knowledge": {"operation": "capabilities"}}
+```
+
+`learning` reports agent-authored chains/principles and explicit validation.
+`formation` describes the optional preview provider, not whether an agent can
+author a chain. `decomposition` is separate again. `retrieval` reports the actual
+keyword/vector/hybrid strategy, supported `matchModes`, query diagnostics,
+embedding model/dimensions, similarity floor, relevance model and whether provider
+requests are instrumented. An extraction or formation model does not enable
+semantic search. Custom providers remain `custom` unless they describe themselves.
+Capabilities are not authorization or a provider health check.
+
+Use one compact knowledge search for reusable conclusions and independent
+observations, rather than automatically issuing a second ordinary search:
+
+```json
+{
+  "knowledge": {"operation": "search", "query": "report export", "view": "compact"},
+  "limit": 3
+}
+```
+
+Each principle/chain keeps its complete `conclusion`, `applicability`, `assumptions`,
+direct and inherited `counterevidence` IDs/reasons, author, scope, exact revision,
+state/review, `requiresReview` and original scores. `supportingChains` keeps pinned
+and current revisions, availability and review state without repeating full
+documents. Identical counterexample IDs are grouped, retaining distinct reasons.
+Independent observations keep their text, IDs, author, scope, score and lifecycle
+state/evidence status. No model rewrites or summarizes these fields.
+
+`reviewReasons` identifies recorded challenges/unreviewed status, changed or
+unavailable supporting chains, and unavailable, inactive or disputed supporting
+observations. An unknown current revision is unavailable, not assumed changed.
+`evidenceDetailsAvailable: false` means not every reference could be resolved;
+the references and recorded counterexample reasons remain. Even when available,
+expanding all source details can require separate bounded inspections.
+
+Inspect `chainId` with `revision` for full justification, validation, source and
+history; inspect ordinary `fragmentId` references for exact observations. Compact
+responses are capped at **32 KiB of serialized UTF-8 JSON**, including requested
+diagnostics. Overflow fails: lower `limit` or inspect individual records. Conditions
+and counterevidence are never shortened or silently dropped to meet the cap.
+Existing internal hydration bounds still apply; compact is a response projection,
+not a different relevance filter or a promise of less database/provider work.
+
+### Explicit Search Controls
+
+The new controls belong inside `knowledge` or `chain` when `operation: search`:
+
+- `matchMode: websearch` remains the default, preserving phrases, `OR` and
+  exclusions. English terms are ANDed; punctuation can introduce compound terms.
+  For example, `report-export` can miss a document containing `report export`,
+  and an absent extra term such as `API` can exclude it.
+- `matchMode: all` or `any` explicitly chooses literal English term matching.
+  `any` admits alternatives; it is not an automatic fallback or relevance claim.
+  Vector-only search rejects these modes before calling the embedding provider.
+- `diagnostics: true` adds the active strategy, actual PostgreSQL `parsedQuery`
+  and normalized `terms`, plus whether relevance selection is enabled. Vector
+  diagnostics have no keyword query. There is no silent query broadening.
+- `costDiagnostics: true` adds `retrievalMs`, exact structured `responseBytes`,
+  `providerRequestCount` and `providerCalls` with operation/model/timing and reported
+  input/output/total/cached-input token counts. Missing or invalid counts are null,
+  never estimated. A known cache hit has zero new embedding requests; concurrent
+  callers count a shared request only in the initializing call, not in every waiter.
+
+Timing includes retrieval, hydration and requested query diagnostics, excluding
+MCP transport. Bytes include the diagnostic object itself but exclude the MCP
+envelope and duplicate text content. Measure the original server JSON (also in
+MCP text content), not a client's reserialization: floating-point parsing can
+change numeric encodings and their lengths. These are successful-search measurements,
+not total agent, formation, failed-request or monetary costs. Provider errors still
+fail the operation. Diagnostics are opt-in, request-local and not persisted or
+logged; they do not change scores, acceptance, evidence or query selection.
+
+### Full Results and Inspection
+
 For principles-first retrieval, call:
 
 ```json
@@ -359,7 +460,9 @@ accepted chain revisions. Claim, conclusion, and
 applicability are each limited to 2048 bytes; rationale is 4096 bytes; individual
 assumptions/reasons are 1024 bytes. The serialized document is at most 32 KiB.
 Search and history limits are 1..10; complete responses remain capped at 512 KiB.
-Lower the history/search limit if the response would exceed that cap.
+The optional compact view has a separate 32 KiB cap. Lower the history/search
+limit if the response would exceed its cap. Omitted view and diagnostics preserve
+the existing full response shape.
 
 Formation sources and knowledge relevance inputs are each capped at 128 KiB;
 formation returns at most three candidate documents. Source detail expansion

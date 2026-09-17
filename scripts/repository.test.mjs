@@ -585,7 +585,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   assert.match(frontmatter, /^name: mindleak-memory$/m);
   const description = JSON.parse(/^description: (".*")$/m.exec(frontmatter)?.[1] ?? "null");
   assert.ok(typeof description === "string" && description.length <= 1024 && description.includes("agents"));
-  assert.match(frontmatter, /version: "1\.2\.0"/);
+  assert.match(frontmatter, /version: "1\.3\.0"/);
   assert.doesNotMatch(frontmatter, /^(?:allowed-tools|hooks|context|agent|model):/m);
   assert.doesNotMatch(skill, /^!`|^```!/m);
   assert.ok(skill.split("\n").length < 250, "keep the on-demand workflow compact");
@@ -597,9 +597,16 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   }
   const recipes = JSON.parse(readFileSync(join(directory, "references/tool-recipes.json"), "utf8"));
   assert.equal(recipes.schemaVersion, 1);
-  assert.equal(recipes.skillVersion, "1.2.0");
+  assert.equal(recipes.skillVersion, "1.3.0");
   for (const term of ["formation", "principle", "requiresReview", "counterEvidenceReviewed", "supportedBy"]) assert.ok(skill.includes(term));
   assert.equal(recipes.minimumServerVersion, "0.4.0");
+  assert.match(recipes.learningAvailability, /Unreleased.*0\.7\.0.*schema|Unreleased.*0\.7\.0.*advertised/);
+  assert.deepEqual(Object.keys(recipes.learningCalls).sort(), ["capabilities", "compact_search"]);
+  assert.deepEqual(recipes.learningCalls.capabilities.arguments, {knowledge: {operation: "capabilities"}});
+  assert.deepEqual(recipes.learningCalls.compact_search.arguments, {
+    knowledge: {operation: "search", query: "$QUERY", view: "compact"}, scope: "$SCOPE", limit: 5,
+  });
+  for (const recipe of Object.values(recipes.learningCalls)) assert.equal(recipe.name, "recall_memory");
   assert.ok(skill.includes("General recall searches across all scopes"));
   assert.ok(skill.includes("Two unscoped facts may be linked"));
   for (const recipe of Object.values(recipes.generalCalls)) {

@@ -103,6 +103,19 @@ fn knowledge_retrieval_review_and_export_are_explicit_read_modes() {
     }
 }
 
+#[test]
+fn knowledge_search_controls_are_explicit_and_legacy_inputs_remain_valid() {
+    for input in [
+        json!({"query":"report export", "limit":5}),
+        json!({"knowledge":{"operation":"search","query":"report export"}}),
+        json!({"knowledge":{"operation":"search","query":"report-export","view":"compact","matchMode":"all","diagnostics":true,"costDiagnostics":true}}),
+        json!({"chain":{"operation":"search","query":"report export","matchMode":"any","diagnostics":true,"costDiagnostics":true}}),
+        json!({"knowledge":{"operation":"capabilities"}}),
+    ] {
+        assert!(serde_json::from_value::<RecallMemoryInput>(input).is_ok());
+    }
+}
+
 #[derive(Default)]
 struct Backend {
     started: CancellationToken,
@@ -214,6 +227,10 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
         "verified reusable",
         "Never store secrets",
         "approvals",
+        "agents can author chains directly",
+        "knowledge.operation=capabilities",
+        "view=compact",
+        "Recall never accepts or reinforces knowledge",
     ] {
         assert!(
             instructions.contains(phrase),

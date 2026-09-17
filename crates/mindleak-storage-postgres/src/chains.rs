@@ -631,10 +631,11 @@ impl PostgresMemoryStore {
         let kind = filter.kind.map(KnowledgeKind::as_str);
         let mut rankings = Vec::new();
         if vector.is_none() || hybrid {
+            let keyword_query = crate::queries::keyword_query_sql("$1", "$8");
             let rows = transaction.query(&format!("SELECT {CHAIN_COLUMNS}, \
-                ts_rank_cd(chain_search,websearch_to_tsquery('english',$1),32)::double precision AS score, {needs_review} AS needs_review \
-                FROM public.memories WHERE {conditions} AND chain_search @@ websearch_to_tsquery('english',$1) ORDER BY score DESC, chain_id LIMIT $7"),
-                &[&query, &filter.agent_id, &filter.scope, &filter.include_candidates, &filter.include_inactive, &kind, &bound]).await?;
+                ts_rank_cd(chain_search,({keyword_query}),32)::double precision AS score, {needs_review} AS needs_review \
+                FROM public.memories WHERE {conditions} AND chain_search @@ ({keyword_query}) ORDER BY score DESC, chain_id LIMIT $7"),
+                &[&query, &filter.agent_id, &filter.scope, &filter.include_candidates, &filter.include_inactive, &kind, &bound, &filter.match_mode.as_str()]).await?;
             rankings.push((false, rows));
         }
         if let Some(vector) = &vector {

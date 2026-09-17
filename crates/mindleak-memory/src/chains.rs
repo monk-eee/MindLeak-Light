@@ -459,6 +459,7 @@ impl ChainCommand {
 
 #[derive(Clone, Debug, Default)]
 pub struct ChainFilter {
+    pub match_mode: crate::KeywordMatchMode,
     pub kind: Option<KnowledgeKind>,
     pub agent_id: Option<String>,
     pub scope: Option<String>,
@@ -552,6 +553,21 @@ pub enum ChainQuery {
         kind: Option<KnowledgeKind>,
         #[serde(default)]
         include_candidates: bool,
+        #[serde(default)]
+        #[schemars(
+            description = "Keyword/hybrid only: websearch (default) preserves phrases, OR and exclusions; all/any treat input as literal English search terms. No automatic broadening; vector-only supports the default mode only."
+        )]
+        match_mode: crate::KeywordMatchMode,
+        #[serde(default)]
+        #[schemars(
+            description = "Include the active strategy and PostgreSQL-parsed keyword query and terms; optional, read-only and not a relevance guarantee."
+        )]
+        diagnostics: bool,
+        #[serde(default)]
+        #[schemars(
+            description = "Include retrieval timing, exact structured-response bytes and provider-reported usage. Null means unknown; no monetary estimate or persistent telemetry."
+        )]
+        cost_diagnostics: bool,
     },
     Inspect {
         chain_id: Uuid,

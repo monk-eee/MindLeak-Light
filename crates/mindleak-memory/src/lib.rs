@@ -1,4 +1,5 @@
 mod chains;
+mod diagnostics;
 mod domain;
 mod formation;
 mod lifecycle;
@@ -18,6 +19,10 @@ pub use chains::{
     ChainWriteResult, KnowledgeKind, PreparedChain, ReportedConfidence, MAX_CHAIN_EVIDENCE,
     MAX_CHAIN_RESULTS,
 };
+pub use diagnostics::{
+    record_provider_call, CostDiagnostics, KnowledgeCapabilities, LearningCapabilities,
+    ProcessingCapabilities, ProviderCall, ProviderUsage, RetrievalCapabilities, SearchReport,
+};
 pub use domain::{
     DomainCursor, DomainIdentity, DomainInspection, DomainQuery, DomainRecord, DomainWrite,
     EdgeProvenance,
@@ -30,8 +35,10 @@ pub use lifecycle::{
     EvidenceStatus, FactLifecycle, FactState, MemoryContext, MemoryTier, RecallFilter,
 };
 pub use service::{
-    KnowledgeExport, KnowledgeExportFormat, KnowledgeMatch, KnowledgeQuery, KnowledgeReview,
-    KnowledgeReviewPage, KnowledgeSearchResponse, MemoryService,
+    CompactCounterevidence, CompactKnowledge, CompactKnowledgeResponse, CompactObservation,
+    CompactSupport, KnowledgeExport, KnowledgeExportFormat, KnowledgeMatch, KnowledgeQuery,
+    KnowledgeReview, KnowledgeReviewPage, KnowledgeSearchOptions, KnowledgeSearchResponse,
+    KnowledgeView, KnowledgeViewResponse, MemoryService, MAX_COMPACT_KNOWLEDGE_BYTES,
 };
 
 pub const MAX_MEMORY_BYTES: usize = 32_768;
@@ -405,11 +412,20 @@ pub struct FactLink {
 
 #[async_trait]
 pub trait MemoryDecomposer: Send + Sync {
+    fn capabilities(&self) -> ProcessingCapabilities {
+        ProcessingCapabilities {
+            mode: "custom",
+            model: None,
+        }
+    }
     async fn decompose(&self, text: &str) -> Result<Vec<String>>;
 }
 
 #[async_trait]
 pub trait TextEmbedder: Send + Sync {
+    fn records_usage(&self) -> bool {
+        false
+    }
     fn dimensions(&self) -> usize;
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
@@ -476,6 +492,9 @@ pub trait MemoryStore: Send + Sync {
 
 #[async_trait]
 pub trait MemoryRetriever: Send + Sync {
+    fn capabilities(&self) -> RetrievalCapabilities {
+        RetrievalCapabilities::default()
+    }
     fn chain_strategy(&self) -> &'static str {
         "keyword"
     }
