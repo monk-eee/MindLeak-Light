@@ -166,7 +166,10 @@ fn private_windows(path: &Path, directory: bool) -> AdminResult<()> {
     }
 
     let unavailable = || failure("permissions", "windows_acl_unavailable", 2);
-    let denied = || failure("permissions", "owner_only_acl_required", 2);
+    let denied = |reason| {
+        failure("permissions", "owner_only_acl_required", 2)
+            .detail("reason", serde_json::json!(reason))
+    };
     let file = OpenOptions::new()
         .access_mode(READ_CONTROL)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
@@ -196,7 +199,7 @@ fn private_windows(path: &Path, directory: bool) -> AdminResult<()> {
         || unsafe { IsValidSid(owner) } == 0
         || unsafe { IsValidAcl(acl) } == 0
     {
-        return Err(denied());
+        return Err(denied("invalid_security_descriptor"));
     }
 
     let mut token = [0_usize; 32];
@@ -219,8 +222,14 @@ fn private_windows(path: &Path, directory: bool) -> AdminResult<()> {
         return Err(unavailable());
     }
     let user = unsafe { (*token.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    if unsafe { EqualSid(owner, user) } == 0 {
-        return Err(denied());
+    let trusted_identity = |sid| unsafe {
+        IsValidSid(sid) != 0
+            && (EqualSid(sid, user) != 0
+                || IsWellKnownSid(sid, WinLocalSystemSid) != 0
+                || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0)
+    };
+    if !trusted_identity(owner) {
+        return Err(denied("untrusted_owner"));
     }
     for index in 0..u32::from(unsafe { (*acl).AceCount }) {
         let mut entry = null_mut();
@@ -232,7 +241,7 @@ fn private_windows(path: &Path, directory: bool) -> AdminResult<()> {
             continue;
         }
         if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE {
-            return Err(denied());
+            return Err(denied("unsupported_access_entry"));
         }
         let flags = u32::from(header.AceFlags);
         let inheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
@@ -240,15 +249,11 @@ fn private_windows(path: &Path, directory: bool) -> AdminResult<()> {
             && (flags & inheritance != inheritance
                 || flags & (INHERIT_ONLY_ACE | NO_PROPAGATE_INHERIT_ACE) != 0)
         {
-            return Err(denied());
+            return Err(denied("noninheritable_access"));
         }
         let sid = unsafe { addr_of_mut!((*entry.cast::<ACCESS_ALLOWED_ACE>()).SidStart).cast() };
-        if unsafe { IsValidSid(sid) } == 0
-            || !(unsafe { EqualSid(sid, user) } != 0
-                || unsafe { IsWellKnownSid(sid, WinLocalSystemSid) } != 0
-                || unsafe { IsWellKnownSid(sid, WinBuiltinAdministratorsSid) } != 0)
-        {
-            return Err(denied());
+        if !trusted_identity(sid) {
+            return Err(denied("untrusted_access_identity"));
         }
     }
     Ok(())

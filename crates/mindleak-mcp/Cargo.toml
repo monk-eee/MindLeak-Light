@@ -27,7 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 fs2 = "0.4"
-quick-xml = "0.38"
+quick-xml = "0.41"
 tar = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
