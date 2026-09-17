@@ -1,6 +1,6 @@
 # Known Limitations
 
-- The unreleased knowledge workflow supports model-assisted candidate formation,
+- The v0.6.0 knowledge workflow supports model-assisted candidate formation,
   chains, principles, semantic retrieval, dependency review and export, not
   independently verified truth or autonomous acceptance. Evidence and lineage are
   bounded, source identity is not independence, and citations prove presence, not
@@ -10,7 +10,7 @@
   database containing chains because they do not recognize derived records.
 - One shared trust domain. `agentId` is caller-supplied provenance, not identity
   or tenant isolation. Anyone holding the HTTP token can access all memories.
-- Unreleased domain relationships are immutable attributed claims, not a mutable
+- Domain relationships are immutable attributed claims, not a mutable
   graph synchronization or recursive reasoning engine. Namespace/IDs are stable
   import identities, not permissions. A domain `confirms` predicate never changes
   lifecycle evidence. The [v1 importer](DOMAIN-RELATIONSHIPS.md) supports only its
@@ -135,13 +135,13 @@
 - Shared HTTP uses bearer authentication for trusted MCP clients, not an OAuth
   authorization server. Browser Origin requests are rejected. Use stdio or an
   appropriate trusted client for clients that cannot send custom HTTP headers.
-- The unreleased [bounded migration path](MIGRATIONS.md) preserves completed
+- The v0.6.0 [bounded migration path](MIGRATIONS.md) preserves completed
   data batches after interruption but restarts an interrupted index build or
   validation statement. Stop all older servers and other writers; this is not a
   rolling upgrade. Preserve checkpoint column comments with partial backups.
   Supply deployment-specific canaries before claiming retrieval acceptance;
   built-in verification and synthetic tests do not validate private corpora.
-- The v0.5.0 credential-free launcher requires a local Docker/Podman engine
+- The credential-free launcher requires a local Docker/Podman engine
   and the intended existing all-in-one database. It does not discover arbitrary
   PostgreSQL layouts or silently recreate missing stores. Container replacement
   requires explicit reconfiguration of the pinned container ID.

@@ -386,7 +386,7 @@ async function main() {
     console.log(JSON.stringify({ name: "MindLeak Validation Harness v1", commands: {
       plan: "node examples/validation-harness.mjs --plan",
       modelFree: "MINDLEAK_TEST_DATABASE_URL=..._test node examples/validation-harness.mjs --binary target/debug/mindleak-light",
-      knowledge: "--category knowledge_workflow --formation off|openai (explicit unreleased schemas; formation reports model output separately)",
+      knowledge: "--category knowledge_workflow --formation off|openai (requires v0.6.0 schemas; formation reports model output separately)",
       agents: "Set MINDLEAK_VALIDATION_AGENT_URL and MINDLEAK_VALIDATION_AGENT_MODEL, then add --agent --code-engine podman",
       longitudinal: "--longitudinal-state PRIVATE_PATH --day 1|2|30 (requires actual elapsed time; retains synthetic memory between invocations)",
     }, categories, optionalCategories, defaultSizes: [100, 500, 1000], controls: ["--seed UINT32", "--sizes 100,500,1000", "--category NAME (repeatable)",

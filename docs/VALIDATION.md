@@ -83,7 +83,7 @@ threshold on the reported test cases and then present them as unseen evaluation.
 
 ## Check Chains and Principles
 
-Knowledge checks are explicit and require a source build advertising the new
+Knowledge checks are explicit and require v0.6.0 advertising the new
 schemas. Existing ten-category runs and older-server behavior stay unchanged.
 
 ```sh

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "skillVersion": "1.2.0",
   "minimumServerVersion": "0.4.0",
-  "knowledgeAvailability": "Unreleased after 0.5.0: use knowledgeCalls only when the actual server schema advertises chain, knowledge and formation. The minimum server version above applies to ordinary calls. Formation additionally requires an operator-enabled model.",
+  "knowledgeAvailability": "Available from 0.6.0: use knowledgeCalls only when the actual server schema advertises chain, knowledge and formation. The minimum server version above applies to ordinary calls. Formation additionally requires an operator-enabled model.",
   "purpose": "Synthetic call templates for the companion workflow and its contract tests. Replace the example content with verified task evidence. Do not ingest these demonstration facts into production.",
   "placeholders": {
     "$AGENT_ID": "Stable contribution identity of the actual writer; different agents use their own identities.",

@@ -155,7 +155,7 @@ target instead. Never strip its scope or drop the link to force a write through.
 Keep ordinary memory calls as the default. Use this workflow only when the user
 or application explicitly chooses knowledge formation and the server advertises
 `write_memory.chain`, `recall_memory.knowledge` and `decompose_memory.formation`.
-Older servers do not implement it. Do not enable providers or simulate missing
+These methods require v0.6.0; older servers do not implement them. Do not enable providers or simulate missing
 operations by stripping fields, weakening scope, or writing unlinked prose.
 The separate `knowledgeCalls` recipes require typed placeholder substitution.
 Preserve the agreed memory mode: omit scope in general mode; all selected

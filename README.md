@@ -34,8 +34,8 @@ can inspect the evidence behind a recalled claim.
 Docker/stdio: no token to generate or copy, no secret-store setup, and no OAuth
 registration. No chat or embedding model is needed.
 
-The v0.5.0 native packages include the `local` launcher and `agent` instruction
-installer. The commands below explicitly select the v0.5.0 server image.
+The v0.6.0 native packages include the `local` launcher and `agent` instruction
+installer. New trials use the matching v0.6.0 server image by default.
 Existing containers are never upgraded implicitly.
 
 1. Start **Docker Desktop**. [Download and verify the native package](docs/INSTALL.md#native-binary),
@@ -43,14 +43,14 @@ Existing containers are never upgraded implicitly.
 2. Run setup in that folder's terminal:
 
    ```powershell
-   .\mindleak-light.exe local setup --image monkeemagic/mindleak-light:0.5.0
+  .\mindleak-light.exe local setup
    ```
 
-   On macOS/Linux, use `./mindleak-light local setup --image monkeemagic/mindleak-light:0.5.0`.
+  On macOS/Linux, use `./mindleak-light local setup`.
    From a source checkout with Rust installed:
 
    ```sh
-   cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup --image monkeemagic/mindleak-light:0.5.0
+  cargo run --locked -p mindleak-mcp --bin mindleak-light -- local setup
    ```
 
 3. Run **MCP: List Servers** in VS Code's Command Palette. Select
@@ -77,7 +77,7 @@ For Claude Code, other clients or your own application, use the
 
 The [Docker Hub image](https://hub.docker.com/r/monkeemagic/mindleak-light)
 includes MCP, PostgreSQL and pgvector. Use the versioned
-`monkeemagic/mindleak-light:0.5.0` image for an explicit deployment.
+`monkeemagic/mindleak-light:0.6.0` image for an explicit deployment.
 
 Sharing over HTTP requires a private bearer token and TLS for network access.
 Follow [shared HTTP setup](docs/INTEGRATION.md#shared-http) and
@@ -140,7 +140,7 @@ whether the agent follows its memory policy without being reminded.
 
 ## Test Cross-Agent Rediscovery
 
-The unreleased [knowledge formation workflow](docs/CHAINS.md) connects
+The v0.6.0 [knowledge formation workflow](docs/CHAINS.md) connects
 observations, validated chains and principles through MCP. It adds opt-in
 model-assisted candidate formation, explicit validation/revision, principles-first
 retrieval, dependency review and JSON/Markdown export. Ordinary calls and defaults
@@ -164,7 +164,7 @@ Memories retain their original source. Explicit links record support, correction
 and contradictions; archival is reversible. Recall never counts as confirmation
 and never deletes evidence. [Fact lifecycle](docs/LIFECYCLE.md) covers the controls.
 
-The unreleased [domain extension](docs/DOMAIN-RELATIONSHIPS.md) adds identified
+The v0.6.0 [domain extension](docs/DOMAIN-RELATIONSHIPS.md) adds identified
 entities and direct relationships with provenance, separate from fact lifecycle.
 
 Shared memory is one trust domain. Agent IDs and scopes are filters, not access
@@ -179,7 +179,8 @@ control. Separate untrusted users at the service/database boundary.
 | Teach an agent when to recall and what to retain | [Agent memory policy](#give-your-agent-a-memory-policy) |
 | Install the same memory workflow in another agent | [Companion skill](.agents/skills/mindleak-memory/SKILL.md), [client setup](docs/INSTALL.md#companion-agent-skill) |
 | Relate facts, retain preferences, or record corrections | [Fact lifecycle](docs/LIFECYCLE.md) |
-| Form, validate, revise or export chains and principles | [Knowledge workflow](docs/CHAINS.md), unreleased |
+| Form, validate, revise or export chains and principles | [Knowledge workflow](docs/CHAINS.md) |
+| Back up and verify a recovered store | [Backup operations](docs/BACKUP.md), with platform acceptance limits |
 | Add LM Studio, Ollama, or hosted models | [Optional models](docs/MODELS.md) |
 | Measure recall quality and compare configurations | [Benchmark guide](docs/BENCHMARKS.md), [measured results and limits](docs/BENCHMARK-RESULTS.md) |
 | Build, test, or contribute | [Developer guide](DEVELOPERS.md) |

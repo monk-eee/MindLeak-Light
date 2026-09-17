@@ -266,7 +266,7 @@ application, include this policy in its persistent instruction context.
 
 The canonical detailed workflow is the
 [mindleak-memory companion skill](../.agents/skills/mindleak-memory/SKILL.md).
-The v0.5.0 native binary can [install its project instructions automatically](INSTALL.md#automatic-project-setup)
+The v0.6.0 native binary can [install its project instructions automatically](INSTALL.md#automatic-project-setup)
 for a selected existing connection, with an optional SDK connection check.
 Install its whole folder in each client's supported location; see
 [client setup](INSTALL.md#companion-agent-skill). It loads on demand and does not
@@ -356,8 +356,8 @@ context. Do not bypass client approvals to make the policy appear automatic.
 
 ## Tool Contract
 
-Discover the actual server schema before using extensions. Published v0.5.0
-does not provide these unreleased modes:
+Discover the actual server schema before using extensions. These modes require
+v0.6.0; published v0.5.0 does not provide them:
 
 - [Domain records](DOMAIN-RELATIONSHIPS.md): `write_memory.domain` stores identified
   entities or edges; `recall_memory.domain` reads bounded direct relationships.

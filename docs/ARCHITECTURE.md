@@ -4,8 +4,8 @@ One executable exposes three MCP tools over one PostgreSQL database. Models are
 optional. The default preserves source text and uses sentence/list decomposition
 with keyword recall.
 
-This guide describes the development source. Knowledge formation, domain records,
-bounded migrations and administrative backups are not in published v0.5.0.
+This guide describes v0.6.0: knowledge formation, domain records, bounded migrations
+and administrative backups. Those additions are not in older v0.5.0 packages.
 See [installation](INSTALL.md) for release availability. The existing memory-engine
 diagrams are editable in the [architecture board](../assets/architecture.excalidraw);
 the optional knowledge flow is shown separately below.
@@ -30,7 +30,7 @@ receipts, domain entities and immutable knowledge revisions. `fragments` holds
 source facts and optional vectors. `relationships` holds explicit fact links or
 domain edges; their semantics remain separate.
 
-The unreleased [domain](DOMAIN-RELATIONSHIPS.md) and [knowledge](CHAINS.md)
+The v0.6.0 [domain](DOMAIN-RELATIONSHIPS.md) and [knowledge](CHAINS.md)
 extensions add explicit MCP modes, not tools or default behavior. Chains reference
 observations; principles pin validated chain revisions. Derived records remain
 excluded from ordinary recall. See [ADR-0020](../adr.d/0020-domain-relationships.md)
@@ -44,7 +44,7 @@ existing store rather than a parallel persistence path:
 |---|---|
 | [lib.rs](../crates/mindleak-storage-postgres/src/lib.rs) | Store types and public retriever re-exports |
 | [connection.rs](../crates/mindleak-storage-postgres/src/connection.rs) | TLS, pooling, detached migration connection, model binding, and health |
-| [migrations.rs](../crates/mindleak-storage-postgres/src/migrations.rs) | Bounded checkpointed backfills, maintenance limits, index recovery, and pre-readiness schema verification (unreleased) |
+| [migrations.rs](../crates/mindleak-storage-postgres/src/migrations.rs) | Bounded checkpointed backfills, maintenance limits, index recovery, and pre-readiness schema verification |
 | [domain.rs](../crates/mindleak-storage-postgres/src/domain.rs) | Indexed entity resolution, atomic domain edges, bounded directional windows and physical source/provenance verification |
 | [persistence.rs](../crates/mindleak-storage-postgres/src/persistence.rs) | Validated atomic writes, request-key arbitration, and immutable receipt lookup/replay |
 | [queries.rs](../crates/mindleak-storage-postgres/src/queries.rs) | Filtered SQL searches and result decoding |
@@ -57,7 +57,7 @@ existing store rather than a parallel persistence path:
 
 ## Administrative Backups
 
-The unreleased [backup interface](BACKUP.md) is a separate CLI path in the same
+The v0.6.0 [backup interface](BACKUP.md) is a separate CLI path in the same
 executable, not another MCP tool or table. Capture reads PG maintenance utilities
 without schema initialization; restore canaries use the explicit read-only store
 connection. Format, ownership, and release gates are in
@@ -65,7 +65,7 @@ connection. Format, ownership, and release gates are in
 
 ## Write
 
-The unreleased startup path commits bounded migration batches before serving.
+The v0.6.0 startup path commits bounded migration batches before serving.
 Checkpoints live in comments on the derived columns, not a fourth table.
 The optional candidate-runtime canary manifest is read-only and runs through the
 official MCP SDK before external readiness. See [database upgrades](MIGRATIONS.md)

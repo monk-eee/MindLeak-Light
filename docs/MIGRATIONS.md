@@ -1,10 +1,10 @@
 # Bounded Database Upgrades
 
-These changes are **unreleased**. Published v0.4.0 and v0.5.0 still run their
+The bounded runner ships in **v0.6.0**. Published v0.4.0 and v0.5.0 still run their
 document-search and fragment-order migrations in one startup transaction under
 a 15-second statement timeout. Updating this document does not fix an installed binary.
 
-The candidate keeps the three application tables and exact stored source data.
+The v0.6.0 runner keeps the three application tables and exact stored source data.
 It commits each schema phase separately, then backfills using keyset batches.
 Each batch commits its data and checkpoint together. Failure loses only the
 current transaction; restart resumes from the last committed checkpoint.

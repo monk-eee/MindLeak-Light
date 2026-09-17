@@ -354,6 +354,23 @@ mod agent_cli_tests {
     use clap::Parser;
 
     #[test]
+    fn new_local_trials_use_the_launcher_release_by_default() {
+        let arguments = Args::try_parse_from(["mindleak-light", "local", "setup"]).unwrap();
+        let Some(super::Command::Local(crate::local::LocalCommand::Setup { image, .. })) =
+            arguments.command
+        else {
+            panic!("local setup was not parsed");
+        };
+        assert_eq!(
+            image,
+            format!(
+                "docker.io/monkeemagic/mindleak-light:{}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+    }
+
+    #[test]
     fn accepts_project_agent_setup_without_server_configuration() {
         assert!(Args::try_parse_from([
             "mindleak-light",

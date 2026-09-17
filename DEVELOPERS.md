@@ -154,7 +154,7 @@ secret storage in CI artifacts.
 
 ### Companion Skill
 
-The unreleased [Chains of Memory](docs/CHAINS.md) contract is additive to the
+The v0.6.0 [Chains of Memory](docs/CHAINS.md) contract is additive to the
 existing memory API. Domain rules live in
 [chains.rs](crates/mindleak-memory/src/chains.rs), persistence and inspection in
 [the PostgreSQL chain module](crates/mindleak-storage-postgres/src/chains.rs).
@@ -207,7 +207,7 @@ See [the domain guide](docs/DOMAIN-RELATIONSHIPS.md) for import and migration li
 
 ### Agent Setup
 
-The v0.5.0 [project installer](docs/INSTALL.md#automatic-project-setup) lives
+The [project installer](docs/INSTALL.md#automatic-project-setup) lives
 in [agent_setup.rs](crates/mindleak-mcp/src/agent_setup.rs); its
 [connection probe](crates/mindleak-mcp/src/agent_setup/probe.rs) uses the official
 SDK rather than hand-written MCP requests. Both run before server environment

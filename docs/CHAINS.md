@@ -1,6 +1,6 @@
 # Knowledge Formation: Chains and Principles
 
-**Unreleased, opt-in:** a Chain of Memory is a versioned claim with a recorded
+**Available in v0.6.0, opt-in:** a Chain of Memory is a versioned claim with a recorded
 justification, evidence, applicability, counterexamples, and validation history.
 Principles generalize multiple validated chains. Model-assisted formation,
 knowledge-first retrieval, dependency review and JSON/Markdown projections are
@@ -42,8 +42,8 @@ place. Client compatibility is not mixed-server compatibility.
 Enable `MINDLEAK_FORMATION=openai` and configure the existing `MINDLEAK_LLM_URL`,
 `MINDLEAK_MODEL` and optional key/reasoning settings. Decomposition can remain
 `sentences`; models never become a quickstart prerequisite. Both Compose files
-forward the formation setting. Use a source build with the advertised schema;
-these operations are not in the published v0.5.0 binaries or images.
+forward the formation setting. Use v0.6.0 with the advertised schema;
+v0.5.0 and older binaries or images do not support these operations.
 
 Select observations using ordinary recall and source inspection, then call:
 

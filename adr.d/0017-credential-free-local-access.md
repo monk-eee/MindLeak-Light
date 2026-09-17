@@ -58,6 +58,11 @@ commands work with the pinned released v0.4.0 image without republishing that im
 Old native archives do not acquire the commands from documentation changes. No new
 application tables, MCP tools, background workers or authentication protocol are added.
 
+From v0.6.0, explicit new trials default to the launcher's versioned release tag,
+so the attached server exposes the same methods. `--image` still accepts a reviewed
+digest override. Existing configurations retain their full container ID; no
+running store is upgraded implicitly. Release publishing preserves version tags.
+
 ## Verification
 
 Unit and subprocess regressions cover persistent target validation, JSONC preservation,
