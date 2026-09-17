@@ -90,7 +90,13 @@ pub(super) async fn capture(
         .transpose()
         .map_err(|_| failure(stage, "input_file_unavailable", 3))?
         .map(Stdio::from)
-        .unwrap_or_else(Stdio::piped);
+        .unwrap_or_else(|| {
+            if input.is_empty() {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            }
+        });
     let mut child = invocation
         .command()
         .stdin(input_stdio)
@@ -244,6 +250,13 @@ mod tests {
     #[test]
     #[ignore = "owned subprocess fixture"]
     fn output_fixture() {
+        if std::env::var("MINDLEAK_BACKUP_OUTPUT_FIXTURE").as_deref() == Ok("stdin") {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            std::io::stdin().read_to_end(&mut bytes).unwrap();
+            println!("received-input-bytes:{}", bytes.len());
+            return;
+        }
         if std::env::var("MINDLEAK_BACKUP_OUTPUT_FIXTURE").as_deref() != Ok("overflow") {
             return;
         }
@@ -252,6 +265,34 @@ mod tests {
             .write_all(&vec![b'x'; 9 * 1024 * 1024])
             .unwrap();
         std::thread::park();
+    }
+
+    #[tokio::test]
+    async fn command_stdin_reaches_eof_with_and_without_input() {
+        let mut invocation = Invocation::new(std::env::current_exe().unwrap()).args([
+            "--exact",
+            "admin::process::tests::output_fixture",
+            "--ignored",
+            "--nocapture",
+        ]);
+        invocation
+            .env
+            .insert("MINDLEAK_BACKUP_OUTPUT_FIXTURE".into(), "stdin".into());
+        for input in [b"".as_slice(), b"input-fixture".as_slice()] {
+            let output = capture(
+                &invocation,
+                input,
+                5,
+                &CancellationToken::new(),
+                "stdin_probe",
+            )
+            .await
+            .unwrap();
+            let bytes = succeeded(output, "stdin_probe").unwrap();
+            assert!(String::from_utf8(bytes)
+                .unwrap()
+                .contains(&format!("received-input-bytes:{}", input.len())));
+        }
     }
 
     #[tokio::test]
