@@ -1,4 +1,11 @@
-# Developing MindLeak Light
+# Developing MindLeak
+
+Build knowledge formation for agents: observations, evidence-backed Chains of
+Memory, and reusable Principles. The [product thesis](RATIONALE.md) defines the
+direction; [learning acceptance](docs/VALIDATION.md#learning-acceptance) separates
+formation, later use, and measured improvement. Keep storage and retrieval gates
+as foundations. Never relax a frozen fixture to manufacture a learning result.
+The executable, crates, image and skill keep their existing compatibility names.
 
 Want to use MindLeak in an agent rather than work on its source? Start with the
 [quickstart](README.md#quickstart) and [agent integration](docs/INTEGRATION.md).

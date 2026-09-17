@@ -115,7 +115,7 @@ export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent =
       { operation: "accept", chainId, expectedRevision: node.revision, validation: { method: "Compare the initial failing immutable tests with the changed candidate's passing tests, and inspect exact source quotations.",
         result: `${verification.passedTests}/${verification.expectedTests} runtime checks passed; explanation is an attributed agent conclusion, not independent semantic adjudication.`,
         source: `synthetic:rediscovery/${source}/${verification.sourceSha256}`, counterEvidenceReviewed: [] } });
-    nodes.set(chainId, { ...node, state: result.state, revision: result.revision, memoryId: result.memoryId });
+    nodes.set(chainId, { ...node, state: result.state, review: result.review, revision: result.revision, memoryId: result.memoryId });
     return nodes.get(chainId);
   };
   const verifyFrozen = async frozen => {
@@ -151,7 +151,7 @@ export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent =
           conclusion: evidence.claim, applicability: lesson.conditions, assumptions: [lesson.limitations],
           evidence: (prior ? sources : [sources[index]]).map(source => ({ fragmentId: source.fragments[0].fragmentId, role: "supports", reason: "Exact inspected source from the verified investigation." })), supportedBy: [] };
         const candidate = await write(`${family.name}: the investigator proposed an evidence-backed case chain.`, fixture.id, { operation: "propose", chainId, document });
-        nodes.set(chainId, { chainId, actor: "mindleak", state: candidate.state, revision: candidate.revision, memoryId: candidate.memoryId, document });
+        nodes.set(chainId, { chainId, actor: "mindleak", state: candidate.state, review: candidate.review, revision: candidate.revision, memoryId: candidate.memoryId, document });
         const accepted = await accept(chainId, fixture.id, verification);
         supportedBy.push({ chainId, revision: accepted.revision, reason: "Verified investigation source; not an independent confirmation count." });
       }
@@ -159,7 +159,7 @@ export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent =
         conclusion: lesson.procedure, applicability: lesson.conditions, assumptions: [lesson.limitations], evidence: [], supportedBy };
       const candidate = await write(`${family.name}: the investigator proposed a reusable procedure after verification.`, fixture.id,
         { operation: plan.previousRevision === null ? "propose" : "revise", chainId: plan.id, ...(plan.previousRevision === null ? {} : { expectedRevision: plan.previousRevision }), document });
-      nodes.set(plan.id, { chainId: plan.id, actor: "mindleak", state: candidate.state, revision: candidate.revision, memoryId: candidate.memoryId, document });
+      nodes.set(plan.id, { chainId: plan.id, actor: "mindleak", state: candidate.state, review: candidate.review, revision: candidate.revision, memoryId: candidate.memoryId, document });
       const accepted = await accept(plan.id, fixture.id, verification);
       const saved = { ...structuredClone(lesson), id: plan.id, revision: accepted.revision, family: fixture.family, stage: fixture.stage,
         chainIds: supportedBy.map(item => item.chainId), document, memoryId: accepted.memoryId, sourceFixtureSha256: fixture.fixtureSha256,

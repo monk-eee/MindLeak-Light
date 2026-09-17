@@ -176,6 +176,33 @@ export function knowledgeMetrics(report = {}) {
   const observations = unique(knowledge.observations ?? report.memoryExhibits?.filter(item => item.agent !== "brief"), "memoryId");
   const chains = unique(knowledge.chains, "chainId");
   const principles = unique(knowledge.principles, "chainId");
+  const fragmentOwners = new Map([...observations.values()].flatMap(source => (source.fragments ?? []).map(fragment => [fragment.fragmentId, source.memoryId])));
+  const reviewed = record => record.state === "accepted" && record.review === "reviewed" && record.requiresReview !== true
+    && Number.isSafeInteger(record.revision) && record.revision > 0;
+  const knownEvidence = record => Array.isArray(record.document?.evidence)
+    && record.document.evidence.every(reference => fragmentOwners.has(reference.fragmentId));
+  const acceptedChains = new Map([...chains].filter(([, record]) => reviewed(record) && knownEvidence(record)
+    && record.document.evidence.some(reference => reference.role === "supports")));
+  const acceptedPrinciples = new Map([...principles].filter(([, record]) => {
+    const supports = record.document?.supportedBy;
+    return reviewed(record) && knownEvidence(record) && Array.isArray(supports) && supports.length >= 2
+      && new Set(supports.map(reference => reference.chainId)).size === supports.length
+      && supports.every(reference => acceptedChains.has(reference.chainId) && acceptedChains.get(reference.chainId).revision === reference.revision);
+  }));
+  const unknownReview = record => record.state === "accepted" && record.requiresReview !== true
+    && !["reviewed", "unreviewed", "challenged"].includes(record.review);
+  const levels = (records, accepted) => ({ stored: records.size, accepted: accepted.size,
+    recordedAccepted: [...records.values()].filter(record => record.state === "accepted").length,
+    candidates: [...records.values()].filter(record => record.state === "candidate").length,
+    needsReview: [...records].filter(([id, record]) => record.state === "accepted" && !accepted.has(id) && !unknownReview(record)).length,
+    reviewUnknown: [...records.values()].filter(unknownReview).length });
+  const supporting = new Set([...chains.values()].filter(record => record.state === "accepted" && knownEvidence(record)).flatMap(record => record.document.evidence
+    .filter(reference => reference.role === "supports").map(reference => fragmentOwners.get(reference.fragmentId))));
+  const formation = { observations: { stored: observations.size, supporting: supporting.size },
+    chains: levels(chains, acceptedChains), principles: levels(principles, acceptedPrinciples),
+    status: acceptedPrinciples.size ? "principles_formed" : acceptedChains.size ? "chains_formed"
+      : [...chains.values(), ...principles.values()].some(unknownReview) ? "review_metadata_unavailable"
+      : observations.size ? "observations_captured" : "awaiting_observations" };
   if (report.kind === "rediscovery_lab") {
     const live = [...new Map((report.events ?? []).filter(event => event.type === "rediscovery_task_finished" && event.phaseScope === "evaluation" && event.agent === "mindleak")
       .map(event => [event.caseId, event])).values()];
@@ -187,7 +214,7 @@ export function knowledgeMetrics(report = {}) {
       usedChainIds: [], firstVerifiedFixMedianMs: null, knownFailureCandidates: live.reduce((total, event) => total + (event.knownFailureCandidates ?? 0), 0) } : null);
     const fresh = report.metrics?.arms?.fresh;
     return { evaluatedTasks: memory?.completed ?? 0, successfulTasks: memory?.correct ?? 0,
-      reuse: { tasks: memory?.knowledgeReuse.successful ?? 0, rate: memory?.knowledgeReuse.rate ?? null, evidence: memory?.knowledgeReuse.evidence ?? "Prior exposure before a changed passing candidate" },
+      reuse: { kind: "temporal_change", tasks: memory?.knowledgeReuse.successful ?? 0, rate: memory?.knowledgeReuse.rate ?? null, evidence: memory?.knowledgeReuse.evidence ?? "Prior exposure before a changed passing candidate" },
       transfer: { attempts: memory?.transfer.attempts ?? 0, successful: memory?.transfer.successful ?? 0, rate: memory?.transfer.attempts ? memory.transfer.successful / memory.transfer.attempts : null,
         evidence: "A new transfer task with prior experience delivered before a changed passing implementation. All retrieval misses remain in the main-arm correctness result." },
       chains: { created: chains.size, used: memory?.usedChainIds.length ?? 0, rate: chains.size && memory ? memory.usedChainIds.length / chains.size : null,
@@ -195,7 +222,7 @@ export function knowledgeMetrics(report = {}) {
       compression: { observations: observations.size, chains: chains.size, principles: principles.size, observationsPerPrinciple: principles.size ? observations.size / principles.size : null, semanticQuality: "not_measured" },
       mistakesAvoided: { rate: null, count: null, status: "known_failure_candidates_only", withMemory: memory?.knownFailureCandidates ?? null, withoutMemory: fresh?.knownFailureCandidates ?? null },
       timeToCorrectHypothesis: { medianMs: memory?.firstVerifiedFixMedianMs ?? null, status: "verified_fix_time_only" },
-      capital: knowledgeCapital(report),
+      capital: knowledgeCapital(report), formation,
       curve: (report.metrics?.curve ?? []).map(point => ({ ...point, withMemory: point.mindleak, withoutMemory: point.fresh, tasksPerArm: point.mindleakScheduled })),
       evidenceScope: report.plan ? `${report.plan.profile} / ${report.plan.mainSessions} main + ${report.plan.diagnosticSessions} diagnostic sessions` : "Frozen rediscovery protocol",
       caseFamilies: report.plan?.families ?? null };
@@ -230,7 +257,7 @@ export function knowledgeMetrics(report = {}) {
       revision: round.frozen?.revision ?? null };
   });
   return { evaluatedTasks: tasks.length, successfulTasks: successful.length,
-    reuse: { tasks: reused.length, rate: successful.length ? reused.length / successful.length : null,
+    reuse: { kind: report.kind === "memory_lab" ? "source_linked" : "not_measured", tasks: reused.length, rate: successful.length ? reused.length / successful.length : null,
       evidence: "Verified task with prior guide retrieval and an exact guide-step/source link; not an independently proven causal effect." },
     transfer: { attempts: transfer.length, successful: transferred.length, rate: transfer.length ? transferred.length / transfer.length : null,
       evidence: "Recorded applications to a case outside initial preparation; repeated families are not independent families. Failed unlinked applications are not instrumented in old reports." },
@@ -239,7 +266,7 @@ export function knowledgeMetrics(report = {}) {
       observationsPerPrinciple: principles.size ? observations.size / principles.size : null, semanticQuality: "not_measured" },
     mistakesAvoided: { rate: null, count: null, status: "not_measured" },
     timeToCorrectHypothesis: { medianMs: null, status: "not_measured" },
-    capital: knowledgeCapital(report),
+    capital: knowledgeCapital(report), formation,
     curve, evidenceScope: rounds.length ? "Matched evaluation rounds" : report.kind === "swarm_build" ? "Verified build components; memory delivery is not measured application" : "Guide preparation",
     caseFamilies: report.controlExperiment?.plan?.caseFamilies ?? null };
 }
@@ -552,7 +579,7 @@ function initializeReplay() {
       byId("timeline").before(playback);
     }
     activityKey = "";
-    byId("lab-brand").textContent = `SWARM LAB / 0${lab}`;
+    byId("lab-brand").textContent = `LEARNING LAB / 0${lab}`;
     for (const [id, number] of [["nav-lab1", 1], ["nav-lab2", 2], ["nav-lab3", 3]]) {
       const link = byId(id);
       let target = number === lab ? "#recording" : (initial.navigation ?? profiles?.navigation)?.[`lab${number}`];
@@ -669,7 +696,9 @@ function initializeReplay() {
     byId("knowledge-hero-status").textContent = `${graph.nodes.length} visible records / ${graph.edges.length} source links${graph.omitted ? ` / ${graph.omitted} more in the ledger` : ""}${graph.missingReferences ? ` / ${graph.missingReferences} unresolved references` : ""}`;
     byId("hero-reuse").textContent = metrics.reuse.tasks;
     byId("hero-transfer").textContent = metrics.transfer.successful;
-    byId("hero-principles").textContent = metrics.capital.acceptedPrinciples;
+    byId("hero-reuse").nextElementSibling.textContent = metrics.reuse.kind === "source_linked" ? "successful tasks with source links" : "successful tasks with linked reuse";
+    byId("hero-transfer").nextElementSibling.textContent = metrics.reuse.kind === "source_linked" ? "new-case source-linked applications" : "successful new-case applications";
+    byId("hero-principles").textContent = metrics.formation.principles.recordedAccepted;
     const growth = byId("knowledge-growth-graph"); growth.replaceChildren();
     if (!graph.history.length) return;
     const maximum = Math.max(1, ...graph.history.flatMap(point => [point.observations, point.chains, point.principles]));
@@ -682,9 +711,20 @@ function initializeReplay() {
     }
     growth.append(svg("text", { x: 20, y: 116 }, "First recorded write"), svg("text", { x: 270, y: 116, "text-anchor": "end" }, "Latest"));
   }
-  function renderCapital(capital) {
+  function renderCapital(capital, formation) {
     for (const id of ["capital-panel", "knowledge-capital-panel"]) {
       const panel = byId(id); const field = name => panel.querySelector(`[data-capital="${name}"]`);
+      panel.setAttribute("aria-label", "Knowledge Formation");
+      const stage = name => panel.querySelector(`[data-formation="${name}"]`);
+      stage("status").textContent = { awaiting_observations: "Awaiting observations", observations_captured: "Source experiences captured",
+        chains_formed: "Evidence-backed chains formed", principles_formed: "Principles formed / later reuse assessed separately",
+        review_metadata_unavailable: "Recorded acceptance / review metadata unavailable" }[formation.status];
+      stage("observations").textContent = count(formation.observations.stored);
+      stage("sources").textContent = `${count(formation.observations.supporting)} distinct sources supporting accepted chains`;
+      for (const [kind, note] of [["chains", "chain-status"], ["principles", "principle-status"]]) {
+        const level = formation[kind]; stage(kind).textContent = count(level.recordedAccepted);
+        stage(note).textContent = `${level.accepted} ready / ${level.candidates} candidates / ${level.needsReview} need review${level.reviewUnknown ? ` / ${level.reviewUnknown} review unknown` : ""}`;
+      }
       field("score").textContent = count(capital.score);
       field("status").textContent = capital.score === null ? "Not measured in this recording" : "Evidence-backed reuse index";
       field("observations").textContent = count(capital.observations);
@@ -727,15 +767,18 @@ function initializeReplay() {
     const key = JSON.stringify(metrics);
     if (key === outcomeKey) return;
     outcomeKey = key;
-    renderCapital(metrics.capital);
+    renderCapital(metrics.capital, metrics.formation);
     const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "--";
     byId("outcome-scope").textContent = metrics.evidenceScope;
+    const sourceLinked = metrics.reuse.kind === "source_linked";
+    byId("reuse-rate").previousElementSibling.textContent = sourceLinked ? "SOURCE-LINKED APPLICATIONS" : "OBSERVED KNOWLEDGE REUSE";
+    byId("transfer-value").previousElementSibling.textContent = sourceLinked ? "NEW-CASE SOURCE LINKS" : "VERIFIED NEW-CASE USE";
     byId("reuse-rate").textContent = percent(metrics.reuse.rate);
     byId("reuse-rate").title = metrics.reuse.evidence;
-    byId("reuse-note").textContent = metrics.successfulTasks ? `${metrics.reuse.tasks} / ${metrics.successfulTasks} successful tasks with linked application` : "No verified applications yet";
+    byId("reuse-note").textContent = metrics.successfulTasks ? `${metrics.reuse.tasks} / ${metrics.successfulTasks} successful tasks${sourceLinked ? " / quotation evidence" : " with linked application"}` : "No verified applications yet";
     byId("transfer-value").textContent = metrics.transfer.attempts ? count(metrics.transfer.successful) : "--";
     byId("transfer-value").title = metrics.transfer.evidence;
-    byId("transfer-note").textContent = metrics.transfer.attempts ? `${metrics.transfer.successful} / ${metrics.transfer.attempts} recorded new-case applications` : "No new-case applications recorded";
+    byId("transfer-note").textContent = metrics.transfer.attempts ? `${metrics.transfer.successful} / ${metrics.transfer.attempts} recorded new-case applications${sourceLinked ? " / not behavioral transfer" : ""}` : "No new-case applications recorded";
     byId("verified-task-value").textContent = `${metrics.successfulTasks} / ${metrics.evaluatedTasks}`;
     byId("verified-task-note").textContent = recording?.report.kind === "swarm_build" ? "Memory-team components / immutable checks" : "Memory-team decisions / source + runtime checks";
     byId("chain-utility-value").textContent = metrics.chains.rate === null ? "--" : `${metrics.chains.used} / ${metrics.chains.created}`;
@@ -829,7 +872,8 @@ function initializeReplay() {
     if (changed) { position = live ? next.durationMs : 0; lastEventCount = -1; artifactShown = false; selectedId = null; makeRoster(next.agents); }
     if (wasFollowing && !live && report.status !== "recording") position = next.durationMs;
     following = live; playing = false;
-    byId("project-title").textContent = report.title ?? next.source.protocol?.title ?? "Session expiry investigation";
+    byId("project-title").textContent = next.memoryLab ? "Knowledge Formation" : next.rediscovery ? "Knowledge Reuse"
+      : report.title ?? next.source.protocol?.title ?? "Session expiry investigation";
     byId("project-kicker").textContent = next.control ? "LEARNING TRANSFER / A + B + C" : "SHARED BUILD / FIVE AGENTS";
     if (next.memoryLab) byId("project-kicker").textContent = next.agents.some(agent => agent.control) ? "FIVE INVESTIGATORS / FIVE DALEK CONTROLS" : "DURABLE KNOWLEDGE / FIVE INVESTIGATORS";
     if (next.rediscovery) byId("project-kicker").textContent = "REDISCOVERY / THREE MAIN ARMS + DIAGNOSTIC";
@@ -1281,16 +1325,16 @@ function initializeReplay() {
   byId("run").classList.toggle("hidden", !initial.live); byId("stop").classList.toggle("hidden", !initial.live); byId("go-live").classList.toggle("hidden", !initial.live); byId("download").disabled = true;
   makeRoster((profiles?.roles ?? defaultAgents).map((agent, index) => ({ ...agent, color: agent.color ?? colors[index % colors.length] })));
   if (profiles?.experiment === 3) {
-    byId("project-title").textContent = "Rediscovery"; byId("project-kicker").textContent = "THREE MAIN ARMS / DIRECT-LESSON DIAGNOSTIC";
+    byId("project-title").textContent = "Knowledge Reuse"; byId("project-kicker").textContent = "THREE MAIN ARMS / DIRECT-LESSON DIAGNOSTIC";
     byId("task-description").textContent = draft.problem; byId("run").querySelector("span").textContent = "Run experiment";
     byId("network-title").textContent = "Fresh Investigation Arms"; byId("network-meta").textContent = "Randomized / one session at a time";
     byId("app-frame").closest("section").classList.add("hidden"); byId("rediscovery-results").classList.remove("hidden");
     byId("checks").textContent = `0 / ${draft.rediscoveryProfile === "pilot" ? 495 : 27}`;
   } else if (profiles?.experiment === 2) {
-    byId("project-title").textContent = "Memory vs Daleks"; byId("project-kicker").textContent = "FIVE INVESTIGATORS / FIVE DALEK CONTROLS";
+    byId("project-title").textContent = "Knowledge Formation"; byId("project-kicker").textContent = "FIVE INVESTIGATORS / FIVE DALEK CONTROLS";
     byId("task-description").textContent = draft.problem; byId("run").querySelector("span").textContent = "Run experiment";
     byId("checks").textContent = `0 / ${35 + 70 * (draft.rounds ?? 2)}`;
-    byId("network-title").textContent = "Memory Investigation Relay";
+    byId("network-title").textContent = "Knowledge Formation Relay";
     byId("network-meta").textContent = "5 investigators + 5 Daleks / ready";
     byId("app-frame").closest("section").classList.add("hidden");
     byId("lab2-results").classList.remove("hidden");

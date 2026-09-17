@@ -345,7 +345,7 @@ async function main() {
   }
   const server = selectedLab === "all" ? await createLabHub({ labs, port: Number(values.port ?? 54584) })
     : await createDemoServer({ ...labs[0], port: Number(values.port ?? 54584) });
-  console.log(`MindLeak Swarm Labs: ${server.url}`);
+  console.log(`MindLeak Learning Labs: ${server.url}`);
   let closing = false;
   const close = async () => { if (closing) return; closing = true; try { await server.close(); } finally { if (provider) await provider.close(); } };
   process.once("SIGINT", () => { void close(); }); process.once("SIGTERM", () => { void close(); });

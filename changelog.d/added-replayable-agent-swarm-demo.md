@@ -18,7 +18,7 @@
 - Add Lab 3 Rediscovery with optional memory, a ranked Markdown notebook control,
   direct-lesson diagnostics, frozen transfer/change fixtures, serial randomized
   schedules, complete accounting and separately retained v1/v2 smoke results.
-- Promote a transparent, deduplicated Knowledge Capital index to the headline;
+- Add a transparent, deduplicated Knowledge Capital observed-reuse diagnostic;
   distinguish stored observations, useful chains and later-validated principles.
   Move per-agent token totals into operational details and shorten guide delivery
   without truncating conditions, counterevidence or access to original sources.

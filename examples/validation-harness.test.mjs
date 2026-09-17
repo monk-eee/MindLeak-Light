@@ -160,6 +160,11 @@ test("Lab 2 preserves observations, chains and guide revisions across a real res
     await ledger.accept("iris", candidate.chainId, candidate.revision, cases[1], { passed: true });
     const proof = await ledger.provePersistence("iris");
     const guide = await ledger.exportGuide();
+    const captured = ledger.snapshot();
+    for (const record of [...captured.chains, ...captured.principles]) {
+      assert.equal(record.review, "reviewed", "capture the actual MCP review status");
+      assert.equal(record.requiresReview, false, "capture current dependency review status after restart");
+    }
     assert.equal(proof.passed, true);
     assert.equal(proof.records, 5);
     assert.notEqual(proof.previous, proof.current);
@@ -179,10 +184,10 @@ test("Lab 2 full relay builds one durable guide from five case chains", {
   const { runMemoryLab, memoryLabRoles } = await import("./memory-lab.mjs");
   const { upgradeCases, assessPackage } = await import("./memory-lab-fixture.mjs");
   const { benchmarkSettings } = await import("./benchmark-recall.mjs");
+  const code = await containerConfiguration(process.env.MINDLEAK_VALIDATION_CODE_ENGINE ?? "podman");
   const driver = await openMemoryDriver(process.env.MINDLEAK_LAB2_TEST_BINARY, benchmarkSettings({ ...process.env,
     MINDLEAK_TEST_DATABASE_URL: process.env.MINDLEAK_LAB2_TEST_DATABASE_URL ?? process.env.MINDLEAK_TEST_DATABASE_URL }));
   const cases = upgradeCases();
-  const code = await containerConfiguration(process.env.MINDLEAK_VALIDATION_CODE_ENGINE ?? "podman");
   const actors = Object.fromEntries(memoryLabRoles.map((role, index) => [role.id, { configuration: { model: "test-double" }, async run(task, tools, context) {
     assert.equal(context, "");
     assert.ok(task.startsWith("Memory hierarchy for this task:"));
@@ -1126,9 +1131,9 @@ test("Lab 3 runs optional-memory arms with misses frozen rounds and complete acc
   const { runRediscoveryLab } = await import("./rediscovery-lab.mjs");
   const { rediscoveryFixtureRepair } = await import("./rediscovery-fixtures.mjs");
   const { benchmarkSettings } = await import("./benchmark-recall.mjs");
+  const code = await containerConfiguration(process.env.MINDLEAK_VALIDATION_CODE_ENGINE);
   const driver = await openMemoryDriver(process.env.MINDLEAK_LAB2_TEST_BINARY, benchmarkSettings({ ...process.env,
     MINDLEAK_TEST_DATABASE_URL: process.env.MINDLEAK_LAB2_TEST_DATABASE_URL ?? process.env.MINDLEAK_TEST_DATABASE_URL }));
-  const code = await containerConfiguration(process.env.MINDLEAK_VALIDATION_CODE_ENGINE);
   let comparisonActive = false; let sessionCount = 0; let memoryComparisons = 0;
   const monitored = { ...driver, restart: () => driver.restart(), async call(name, args) {
     assert.ok(!(comparisonActive && name === "write_memory"), "experience must stay frozen while any evaluation arm is running");
@@ -1547,6 +1552,56 @@ test("durable learning graph uses only real lineage and deduplicated recorded gr
   assert.equal(knowledgeGraphData({}).nodes.length, 0);
 });
 
+test("knowledge formation distinguishes source evidence accepted beliefs and later reuse", async () => {
+  const { knowledgeMetrics } = await import("./demo-view.mjs");
+  const chain = (id, fragmentId) => ({ chainId: id, revision: 2, state: "accepted", review: "reviewed", requiresReview: false,
+    document: { kind: "chain", evidence: [{ fragmentId, role: "supports" }], supportedBy: [] } });
+  const report = { kind: "memory_lab", knowledge: {
+    observations: [{ memoryId: "source-a", fragments: [{ fragmentId: "fact-a" }, { fragmentId: "fact-b" }] },
+      { memoryId: "source-b", fragments: [{ fragmentId: "fact-c" }] }],
+    chains: [chain("chain-a", "fact-a"), chain("chain-b", "fact-c")],
+    principles: [{ chainId: "principle", revision: 2, state: "accepted", review: "reviewed", requiresReview: false,
+      document: { kind: "principle", evidence: [], supportedBy: [{ chainId: "chain-a", revision: 2 }, { chainId: "chain-b", revision: 2 }] } }],
+  } };
+  const formation = knowledgeMetrics(report).formation;
+  assert.deepEqual(formation.observations, { stored: 2, supporting: 2 });
+  assert.deepEqual(formation.chains, { stored: 2, accepted: 2, recordedAccepted: 2, candidates: 0, needsReview: 0, reviewUnknown: 0 });
+  assert.deepEqual(formation.principles, { stored: 1, accepted: 1, recordedAccepted: 1, candidates: 0, needsReview: 0, reviewUnknown: 0 });
+  assert.equal(formation.status, "principles_formed");
+  assert.equal(knowledgeMetrics(report).capital.score, null, "formation is not demonstrated later reuse");
+  const duplicate = structuredClone(report);
+  duplicate.knowledge.observations.push(duplicate.knowledge.observations[0]);
+  duplicate.knowledge.chains.push(duplicate.knowledge.chains[0]);
+  assert.deepEqual(knowledgeMetrics(duplicate).formation, formation);
+  const historical = structuredClone(report);
+  for (const record of [...historical.knowledge.chains, ...historical.knowledge.principles]) delete record.review;
+  const legacy = knowledgeMetrics(historical).formation;
+  assert.equal(legacy.chains.recordedAccepted, 2);
+  assert.equal(legacy.chains.accepted, 0);
+  assert.equal(legacy.chains.reviewUnknown, 2);
+  assert.equal(legacy.chains.needsReview, 0, "unavailable review metadata is not a recorded challenge or stale support");
+  assert.equal(legacy.principles.reviewUnknown, 1);
+  const sharedSource = structuredClone(report);
+  sharedSource.knowledge.chains[1].document.evidence[0].fragmentId = "fact-b";
+  assert.equal(knowledgeMetrics(sharedSource).formation.observations.supporting, 1,
+    "two fragments from one episode are one source, not independent corroboration");
+  for (const alter of [
+    source => { source.knowledge.chains[0].state = "candidate"; },
+    source => { source.knowledge.chains[0].review = "challenged"; },
+    source => { source.knowledge.chains[0].requiresReview = true; },
+    source => { source.knowledge.chains[0].revision = 3; },
+    source => { source.knowledge.observations.shift(); },
+    source => { source.knowledge.principles[0].document.supportedBy.pop(); },
+    source => { source.knowledge.principles[0].document.supportedBy[1] = source.knowledge.principles[0].document.supportedBy[0]; },
+  ]) {
+    const invalid = structuredClone(report); alter(invalid);
+    assert.equal(knowledgeMetrics(invalid).formation.principles.accepted, 0);
+    assert.equal(knowledgeMetrics(invalid).formation.principles.needsReview, 1);
+  }
+  assert.equal(knowledgeMetrics({}).formation.status, "awaiting_observations");
+  assert.equal(knowledgeMetrics({ memoryExhibits: [{ memoryId: "source" }] }).formation.status, "observations_captured");
+});
+
 test("knowledge metrics distinguish linked reuse transfer and unmeasured behavioral claims", async () => {
   const { knowledgeMetrics } = await import("./demo-view.mjs");
   const outcome = (agent, passed, applied, extra = {}) => ({ agent, passed, verification: { passed }, guideApplied: applied,
@@ -1568,6 +1623,7 @@ test("knowledge metrics distinguish linked reuse transfer and unmeasured behavio
   const metrics = knowledgeMetrics(report);
   assert.equal(metrics.successfulTasks, 3);
   assert.equal(metrics.evaluatedTasks, 4);
+  assert.equal(metrics.reuse.kind, "source_linked", "historical quotation evidence is not verified behavioral transfer");
   assert.equal(metrics.reuse.tasks, 2);
   assert.equal(metrics.reuse.rate, 2 / 3);
   assert.equal(metrics.transfer.successful, 1, "reusing a preparation case is not transfer");
@@ -1659,6 +1715,15 @@ test("replay is self-contained, safely embeds data and refuses existing output",
   const opened = sandboxApplicationPage("<script>untrustedRecordingMarker()</script>");
   assert.ok(opened.includes('sandbox="allow-scripts allow-forms"'));
   const { parseHTML } = await import("linkedom");
+  const page = parseHTML(html).document;
+  assert.equal(page.title, "MindLeak Learning Lab");
+  assert.match(page.querySelector("#nav-lab1").textContent, /Discover/);
+  assert.match(page.querySelector("#nav-lab2").textContent, /Form/);
+  assert.match(page.querySelector("#nav-lab3").textContent, /Reuse/);
+  const formation = page.querySelector("#capital-template").content;
+  assert.equal(formation.querySelector("h2").textContent, "Knowledge Formation");
+  for (const stage of ["observations", "chains", "principles"]) assert.ok(formation.querySelector(`[data-formation="${stage}"]`));
+  assert.ok(formation.querySelector("details [data-capital=score]"), "weighted index must be secondary to the hierarchy");
   const previewSource = parseHTML(opened).document.querySelector("iframe").getAttribute("src");
   assert.ok(decodeURIComponent(previewSource).includes("form-action &#39;none&#39;"));
   assert.ok(!opened.includes("allow-same-origin"));
@@ -1703,7 +1768,7 @@ test("live demo requires explicit local commands and preserves completed replay 
     const finished = await server.startRun();
     assert.equal(runs, 1);
     assert.equal(finished.status, "completed");
-    assert.ok((await readFile(join(finished.directory, "index.html"), "utf8")).includes("MindLeak Swarm Lab"));
+    assert.ok((await readFile(join(finished.directory, "index.html"), "utf8")).includes("MindLeak Learning Lab"));
     assert.equal(JSON.parse(await readFile(join(finished.directory, "report.json"), "utf8")).realMcpProcess, false);
   } finally { await server.close(); await rm(directory, { recursive: true, force: true }); }
 });

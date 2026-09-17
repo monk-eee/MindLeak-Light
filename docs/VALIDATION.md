@@ -1,4 +1,34 @@
-# MindLeak Validation Harness v1
+# MindLeak Learning Labs and Validation
+
+The product question is **whether agents turn experience into knowledge that
+helps future agents**. Start with the three [learning labs](#swarm-labs): discover
+observations, form evidence-backed Chains of Memory and Principles, then test
+later reuse. Storage, extraction and retrieval checks are the foundation, not a
+substitute for this learning loop.
+
+## Learning Acceptance
+
+| Claim | Required Evidence | Does Not Establish It |
+|---|---|---|
+| Observation captured | Successful receipt, exact original source and complete fragment set | A generated note or unacknowledged tool call |
+| Chain formed | Source-linked claim, justification, conclusion, conditions and actual recorded validation | A candidate, a citation alone or an invented confidence value |
+| Principle formed | Multiple current validated chain revisions, complete known counterevidence, explicit acceptance | Repeated agreement, copied episodes or distinct IDs alone |
+| Later use observed | Knowledge delivered before a changed candidate on a new task, with all immutable checks passing | Retrieval alone, a quotation, exposure after the fix or mandatory read counts |
+| Transfer demonstrated | Verified use on a new case, with source and case-family identity reported | Repeating preparation or counting correlated cases as independent |
+| Comparative improvement | Matched controlled outcomes with misses, failures, preparation and review costs included | More records, a weighted index, a smaller payload or successful execution alone |
+
+Changed-condition and irrelevant cases must test when *not* to apply a principle.
+Review stale support and retain counterexamples rather than forcing every case
+to confirm the lesson. Separate no-experience, searchable-note, and knowledge arms;
+keep direct delivery diagnostic rather than pooling it with optional retrieval.
+Fresh sessions receive neither the discovering agent's conversation nor its edits.
+
+The complete pilot and a separately frozen held-out confirmation are required
+before claiming general learning benefit. Existing smoke runs and exposed fixtures
+do not establish it. Do not change frozen tasks, correctness gates, or scoring to
+make the new pitch win. No new learning and no advantage are valid recorded results.
+
+## Validation Harness
 
 The [runner](../examples/validation-harness.mjs) exercises the real MCP server
 and an optional agent under test. It uses the existing
@@ -31,10 +61,14 @@ same original repository fixture. Only the memory-enabled arm gets memory tools.
 
 ## Swarm Labs
 
+The dashboard is titled **MindLeak Learning Lab**. Its three views are **Discover**
+(Lab 1), **Form** (Lab 2), and **Reuse** (Lab 3). The route names and frozen experiment
+protocols remain stable so saved recordings keep their identity.
+
 One dashboard serves all three experiments on **http://127.0.0.1:54584**:
 `/lab1/` builds Session Desk, `/lab2/` investigates package upgrades, and
 `/lab3/` measures rediscovery against a searchable notebook and a fresh agent.
-Durable Learnings is available from each knowledge lab's navigation;
+The Knowledge view is available from each knowledge lab's navigation;
 `/learnings` is a shortcut to `/lab2/learnings`. Only one experiment can run at
 a time across the dashboard. Standalone lab mode is an explicit CLI option,
 not the default way to navigate between experiments.
@@ -168,24 +202,29 @@ into new prompts. Task families are labelled previously exposed on continuation:
 a rising curve is not held-out evidence or proof of a causal memory advantage.
 Flat, negative, failed and no-new-learning results remain valid study outcomes.
 
-The headline is **Knowledge Capital**, an explicitly weighted observed-reuse index:
-one point per source observation used, five per directly used chain, and ten per
-principle delivered before a verified change on a later task. Each record earns
-points once, not once per read, write, revision or repeated application. Only
-current accepted principle revisions with matching accepted supports qualify.
-Control arms, retrieval without a verified change, and quotation-only claims of
-use earn no points. The formula is visible under **Index Method** on both the
-experiment and Durable Learnings pages.
+### Formation and Reuse
 
-**Observations** shows stored source episodes; the used subset alone contributes
-to points. **Useful Chains** requires direct chain inspection before successful
-work, not merely a parent reference. **Validated Principles** requires the actual
-principle to have been delivered and tested on a later task, not just accepted in
-storage. **Compounding Score** is the percentage change in this index from the
-first to the latest verified checkpoint, not an increase in intelligence. A zero
-baseline shows first evidenced reuse or no evidenced reuse, never an infinite gain.
-Old records lacking the required evidence show an unmeasured score. Historical
-recordings and their original metric definitions remain unchanged.
+The headline is **Knowledge Formation**: unique source observations, recorded
+accepted Chains of Memory, and recorded accepted Principles. Chain acceptance
+requires available referenced observations and a reviewed revision; principles
+also require multiple distinct accepted chains at their pinned current revisions.
+Candidates and accepted records needing review are shown separately. Historical
+recordings that omitted review fields keep their recorded acceptance counts and
+show review as unknown, not a fabricated challenge or verified readiness. New
+captures retain the returned review status; the restart readback also preserves
+dependency status. Unknown or stale support cannot become ready knowledge merely
+because an old receipt says accepted. Supporting observations count source episodes, not fragments; source
+counts are not an independent judgement of corroboration or truth.
+
+The prior **Knowledge Capital** formula remains under the collapsed **Observed
+Reuse Index / v1** diagnostic: one point per used observation, five per directly
+used chain, and ten per principle delivered before a verified change on a later
+task. Each record earns points once, not per read, write, or revision. Control
+arms, retrieval alone, and quotation-only claims earn no points. Index change
+compares the first and latest verified checkpoints; a zero baseline never produces
+an infinite gain. Missing evidence stays unmeasured. This index is neither the
+headline acceptance gate nor a measure of intelligence or compounding benefit.
+Historical recordings and their original metric definitions remain unchanged.
 
 The supporting outcome panels show verified tasks, evidence-linked reuse, new-case
 transfer and correctness curves. Uninstrumented mistake avoidance and hypothesis
@@ -212,7 +251,7 @@ labels playback. Pause and reduced-motion settings stop animation; a finished or
 idle run does not show pretend work in flight. The graph remains the latest saved
 knowledge snapshot, with replay highlights indicating its recorded write events.
 
-### Lab 2: Durable Investigation Guide
+### Lab 2: Form Knowledge
 
 Lab 1 remains the matched two-team build. **Lab 2 keeps the same five
 agents and adds five Dalek controls** for repeated report-export upgrades.
@@ -325,7 +364,7 @@ Fresh study creates a new scope and independent preparation. Multiple rounds wit
 a run, or an explicit continuation from its completed report, reuse the existing
 guide while retaining a separate record of every run's work and costs.
 
-### Lab 3: Rediscovery
+### Lab 3: Reuse Knowledge
 
 Open `/lab3/`. Unlike Lab 2's bounded package-review workflow, Lab 3 uses editable
 unfamiliar code, ordinary repository docs and immutable runtime tests. Five problem

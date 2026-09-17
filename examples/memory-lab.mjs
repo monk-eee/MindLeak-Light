@@ -156,7 +156,8 @@ export function createKnowledgeLedger({ driver, runId, scope, emit, onMemory = (
       if (previous && nodes.get(chainId)?.revision !== previous.expectedRevision) throw new Error("stale_guide_revision");
       const receipt = await write(actor, `Branch-kit guide: ${actor} proposed ${document.kind === "principle" ? "a reusable solution guide" : "an evidence-backed investigation"} for explicit review.`,
         { operation: previous ? "revise" : "propose", chainId, ...(previous ? { expectedRevision: previous.expectedRevision } : {}), document });
-      nodes.set(chainId, { chainId, actor, revision: receipt.revision, state: receipt.state, document: structuredClone(document), memoryId: receipt.memoryId });
+      nodes.set(chainId, { chainId, actor, revision: receipt.revision, state: receipt.state, review: receipt.review,
+        document: structuredClone(document), memoryId: receipt.memoryId });
       if (document.kind === "principle") guideId = chainId;
       publish(); return receipt;
     },
@@ -168,7 +169,7 @@ export function createKnowledgeLedger({ driver, runId, scope, emit, onMemory = (
       const receipt = await write(actor, `Branch-kit guide: ${actor} accepted the candidate after all ${count} frozen ${specification.id} assessment checks passed and its stored sources were reviewed.`,
         { operation: "accept", chainId, expectedRevision, validation: { method: "Check frozen shipped paths, advisory ranges, registry candidates and compatibility policy with semver, then inspect cited observations and any recorded sandbox upgrade probe.",
           result: `${count} assessment checks passed for this synthetic case; a blocked decision preserves unresolved runtime failures. Guide reasoning remains an attributed agent claim.`, source: `synthetic:package-guide/${specification.id}/verified-assessment`, counterEvidenceReviewed } });
-      node.state = receipt.state; node.revision = receipt.revision; node.memoryId = receipt.memoryId;
+      node.state = receipt.state; node.review = receipt.review; node.revision = receipt.revision; node.memoryId = receipt.memoryId;
       publish(); return receipt;
     },
     async inspect(chainId) {
@@ -222,6 +223,8 @@ export function createKnowledgeLedger({ driver, runId, scope, emit, onMemory = (
         const recovered = await call("recall_memory", { chain: { operation: "inspect", chainId: node.chainId }, scope, limit: 1 });
         if (recovered.chain?.chainId !== node.chainId || recovered.chain.revision !== node.revision || recovered.chain.snapshot.state !== node.state
           || !isDeepStrictEqual(recovered.chain.snapshot.document, node.document)) throw new Error("chain_persistence_mismatch");
+        if (node.review !== undefined && recovered.chain.snapshot.review !== node.review) throw new Error("chain_persistence_mismatch");
+        node.review = recovered.chain.snapshot.review; node.requiresReview = recovered.requiresReview;
         checked.push(node.chainId);
       }
       const proof = { actor, checkedAt: new Date().toISOString(), ...transition, checkedIds: checked, records: checked.length, passed: true };

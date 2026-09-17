@@ -1,4 +1,7 @@
-# MindLeak Light
+# MindLeak
+
+Build knowledge formation for agents: source observations, evidence-backed
+Chains of Memory, and reusable Principles. See the [product thesis](RATIONALE.md).
 
 Follow [the repository agent guide](AGENTS.md), including its invariants,
 verification gates, worktree isolation, and permission boundaries.

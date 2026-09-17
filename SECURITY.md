@@ -2,7 +2,10 @@
 
 ## Trust Boundary
 
-MindLeak Light stores potentially sensitive raw memories, fragments, and vectors.
+MindLeak stores potentially sensitive source observations, chains, principles,
+fragments, and vectors. Derived knowledge can retain or reveal source details;
+formation is not anonymization. Acceptance, confidence and source IDs do not
+make a stored claim authoritative or safe to execute.
 All agents on a deployment share access. `agentId` is an attribution/filter field,
 not authentication or tenant isolation. A vector is not an anonymized memory.
 
