@@ -3,8 +3,15 @@
 Choose the package that fits your agent stack. Neither requires a chat or
 embedding model; [models are a recommended optional upgrade](MODELS.md).
 
+**Start here for a local trial:** the [VS Code local guide](LOCAL.md) uses a
+native launcher with Docker/stdio and no client credentials. Its `local` commands
+are unreleased source functionality after v0.4.0; published v0.4.0 native
+archives do not include them. Build this checkout until a release includes the
+launcher. No published image or old executable is upgraded by new settings.
+
 | Package | Best For | You Supply |
 |---|---|---|
+| Local launcher (unreleased) | Trying memory in VS Code; sharing one store among trusted local clients | Native build and Docker Desktop; no manual token |
 | Native binary | Plugging into a desktop or coding agent over stdio | PostgreSQL with pgvector |
 | All-in-one container | One container to run and back up | Docker/Podman, a persistent volume, and an HTTP token |
 | Source Compose stack | Developing MindLeak itself | Git and Docker/Podman Compose |
@@ -21,6 +28,10 @@ or get the full all-in-one image from
 records image verification. Older binaries do not gain features from new settings.
 
 ## Native Binary
+
+For credential-free local use, follow [local setup](LOCAL.md) instead. The
+direct PostgreSQL instructions below are for an existing separately managed
+database and advanced deployments.
 
 Download your platform's archive and its `.sha256` file from
 [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases).
@@ -39,7 +50,8 @@ Download your platform's archive and its `.sha256` file from
    `.\mindleak-light.exe --version` in PowerShell. No Rust, Node, or Python runtime
    is needed to run the executable.
 3. Have PostgreSQL with pgvector available. Set its connection string in the
-   archive's `mcp.example.json`, and replace `command` with the absolute binary
+   archive's `mcp.postgres.example.json` (`mcp.example.json` in published v0.4.0
+   archives), and replace `command` with the absolute binary
    path unless it is already on your client's PATH.
 4. Add that server entry to your MCP client's configuration. VS Code calls the
    top-level key `servers`; Claude Desktop-style clients use `mcpServers`.
@@ -49,6 +61,13 @@ tables and waits for MCP requests; silence in a terminal is normal. See
 [agent integration](INTEGRATION.md) for calls, permissions, and the memory policy.
 Each archive also includes the editable architecture board, four self-contained
 SVG previews, and the architecture guide.
+
+Source packaging now includes credential-free `mcp.example.json` and
+`mcp.vscode.example.json` plus the local guide. Prefer `local setup` or
+`local configure` to generate VS Code configuration with the absolute launcher
+path and immutable container ID rather than manually copying the name-based
+examples. An old executable that rejects `local --help` must be upgraded/built;
+it is not requesting a token or an OAuth registration.
 
 Remote PostgreSQL should use `sslmode=require`; a private CA can be supplied via
 `MINDLEAK_DATABASE_CA_FILE`. Use `sslmode=disable` only for trusted local setups.
@@ -231,6 +250,11 @@ target. Use an explicitly approved scoped operation for that target; never drop
 a corrective link or scope restriction to force a write through.
 
 ## All-in-One Container
+
+For a local trial, [let the launcher manage setup](LOCAL.md). The commands below
+are the advanced authenticated HTTP deployment path. Read
+[token creation, recovery and rotation](INTEGRATION.md#shared-http) before
+sharing with other users or machines.
 
 This variant bundles the MCP binary and PostgreSQL/pgvector in one container.
 The database is reachable only through an internal Unix socket; only MCP's

@@ -18,10 +18,10 @@ anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
-jsonc-parser = { version = "0.26", features = ["serde"] }
+jsonc-parser = { version = "0.26", features = ["serde", "cst"] }
 reqwest.workspace = true
 reqwest-mcp = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

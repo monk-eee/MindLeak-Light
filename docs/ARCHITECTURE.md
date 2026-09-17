@@ -27,6 +27,29 @@ previews include their fonts and scene data, so they can also be opened in
 
 ![System overview: one MCP executable, optional model providers, and three PostgreSQL tables](../assets/architecture-overview.svg)
 
+## Local and Shared Access
+
+Unreleased after v0.4.0, the native executable also provides `local setup`,
+`configure`, `connect`, `status`, and an explicit native macOS/Windows loopback
+HTTP bridge. These are CLI operations, not additional MCP tools. The existing
+three tools, storage abstractions and three-table schema are unchanged. The
+diagrams above show the memory server; this launcher boundary is described here
+and in [ADR-0017](../adr.d/0017-credential-free-local-access.md).
+
+`local.rs` owns container identity, local engine validation, explicit trial
+volume creation and atomic JSONC configuration. Connections require the selected
+existing database and persistent volume. A stopped container's PostgreSQL files
+are checked before startup; no connect fallback creates a database. Fresh trials
+publish no ports and use `--network none`. Their HTTP worker remains authenticated.
+
+`local_http.rs` uses the official SDK to bridge host-loopback HTTP to that stdio
+connection, forwarding request cancellation. An explicit opt-out, native supported
+OS, loopback listener/peer, exact Host and absence of Origin/proxy headers are
+required. Every Linux container build refuses the opt-out before binding, so
+changing Docker host publishing cannot expose an unauthenticated container
+listener. Shared HTTP remains in `http.rs` with bearer authentication, bounded
+bodies and Origin rejection; TLS is required at network ingress.
+
 ## Storage Module Map
 
 The PostgreSQL crate keeps its existing public store/retriever names at the crate

@@ -1,5 +1,7 @@
 mod agent_setup;
 mod config;
+mod local;
+mod local_http;
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -43,12 +45,20 @@ enum Command {
         about = "Install or check project memory instructions for an existing MCP connection"
     )]
     Agent(agent_setup::AgentCommand),
+    #[command(
+        subcommand,
+        about = "Credential-free local Docker access and diagnostics"
+    )]
+    Local(local::LocalCommand),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    if let Some(Command::Agent(command)) = Args::parse().command {
-        return agent_setup::run(command).await;
+    if let Some(command) = Args::parse().command {
+        return match command {
+            Command::Agent(command) => agent_setup::run(command).await,
+            Command::Local(command) => local::run(command).await,
+        };
     }
     match dotenvy::dotenv() {
         Ok(_) => {}
