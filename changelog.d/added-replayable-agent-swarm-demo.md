@@ -18,3 +18,15 @@
 - Add Lab 3 Rediscovery with optional memory, a ranked Markdown notebook control,
   direct-lesson diagnostics, frozen transfer/change fixtures, serial randomized
   schedules, complete accounting and separately retained v1/v2 smoke results.
+- Promote a transparent, deduplicated Knowledge Capital index to the headline;
+  distinguish stored observations, useful chains and later-validated principles.
+  Move per-agent token totals into operational details and shorten guide delivery
+  without truncating conditions, counterevidence or access to original sources.
+- Separate run completion, executed requirements, artifact-bound browser/layout
+  checks and unreviewed quality areas. Preflight Chromium before build inference
+  and preserve both teams' artifacts when acceptance fails.
+- Journal run parameters, events and synthetic evidence incrementally; preserve
+  failed and cancelled runs. Add explicit fresh or continued studies, parent-linked
+  run history and cumulative costs without leaking experience to Dalek controls.
+- Animate real memory requests, acknowledgements and agent work, with an explicit
+  recorded-activity replay action, pause handling and reduced-motion support.

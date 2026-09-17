@@ -31,6 +31,18 @@ export function controlPlan({ pairs = 5, rounds = 1, model = null, agentModels =
     interpretation: "Five matched pairs start concurrently in each round after the guide is frozen. Both arms have identical cases, models, budgets and correctness checks. Memory is read-only until every arm finishes. Later rounds use new values in the same five families, not independent task families. Preparation, between-round learning and memory-processing costs remain visible; repeated exposure is not independent confirmation and no benefit is assumed." };
 }
 
+export function continueMemoryPreparation(parent) {
+  const accepted = parent?.knowledge?.principles?.find(node => node.chainId === parent.guide?.chainId);
+  if (parent?.kind !== "memory_lab" || parent.status !== "completed" || parent.fixtureVersion !== 2 || typeof parent.scope !== "string"
+    || !accepted || accepted.state !== "accepted" || accepted.revision !== parent.guide.revision) throw new Error("completed_learning_parent_required");
+  return { ...structuredClone(parent), runId: randomUUID(), createdAt: new Date().toISOString(), status: "completed", failure: null,
+    preparationReused: true, parentRunId: parent.runId, memoryProtocol, controlExperiment: undefined, comparisons: [], events: [], elapsedMs: 0,
+    agents: parent.agents.filter(actor => !actor.control).map(actor => ({ ...structuredClone(actor), state: "queued", attempts: [], evidenceAttempts: [], guideAttempts: [] })),
+    summary: { ...parent.summary, agents: 5, agentsPassed: 0, inputTokens: 0, outputTokens: 0, toolCalls: 0 },
+    memoryProcessing: { ...parent.memoryProcessing, calls: 0, inputTokens: 0, outputTokens: 0 },
+    finalTests: { passed: true, passedTests: 0, expectedTests: 0 }, memoryExhibits: [], toolExhibits: [] };
+}
+
 const sum = (records, field) => records.every(record => Number.isFinite(record?.[field]) && record[field] >= 0)
   ? records.reduce((total, record) => total + record[field], 0) : null;
 const add = (...values) => values.every(value => Number.isFinite(value) && value >= 0) ? values.reduce((total, value) => total + value, 0) : null;
@@ -103,8 +115,8 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
       const transition = await driver.restart();
       if (transition.previous === transition.current || transition.previousPid && transition.previousPid === transition.currentPid) throw new Error("memory_server_did_not_restart");
       const frozenView = await readGuide(driver, current);
-      const compact = knowledgeBrief({ principles: [frozenView] });
-      const allowedSources = new Set(compact.sourceReferences.map(reference => reference.fragmentId));
+      const allowedSources = new Set([...frozenView.chain.snapshot.document.evidence,
+        ...frozenView.supportingChains.flatMap(support => support.document?.evidence ?? [])].map(reference => reference.fragmentId));
       const knownChains = new Map([[frozenView.chain.chainId, frozenView.chain], ...frozenView.supportingChains.map(record => [record.reference.chainId,
         { chainId: record.reference.chainId, revision: record.reference.revision, snapshot: { document: record.document, state: record.state } }])]);
       const round = { number, frozen: { chainId: frozenView.chain.chainId, revision: frozenView.chain.revision, documentSha256: digest(frozenView), ...transition,

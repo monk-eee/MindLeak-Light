@@ -8,6 +8,7 @@ Want to use MindLeak in an agent rather than work on its source? Start with the
 - Rust via rustup; `rust-toolchain.toml` pins Rust 1.98 with rustfmt and Clippy.
 	The manifest's minimum supported Rust version remains 1.88.
 - Node.js 22+ and the locked example dependencies for the repository's lab tests.
+- Playwright Chromium for the optional browser-backed lab acceptance suite.
 - Git, Make, and pre-commit 3.5+ for hooks (`pipx install pre-commit`).
 - Docker Compose or Podman Compose for PostgreSQL with pgvector.
 
@@ -96,6 +97,15 @@ The JavaScript integration example is optional and isolated from the server:
 `npm ci --prefix examples` installs its dependencies. Run it against a disposable
 test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 `npm --prefix examples run memory`. It writes one sample memory per run.
+
+For Lab 1 artifact and replay browser regressions, install Chromium explicitly with
+`node examples/node_modules/playwright/cli.js install chromium` and set
+`MINDLEAK_LAB_BROWSER=1` before running the JavaScript suite. An existing compatible
+browser can be selected with `MINDLEAK_BROWSER_EXECUTABLE`. CI installs the browser
+and enables these checks in the isolated lab job. See the
+[lab guide](docs/VALIDATION.md#acceptance-and-continued-studies) for acceptance
+scope, retained run evidence and continued studies. An omitted browser suite is
+not a passing browser review.
 
 ### Backup Administration
 

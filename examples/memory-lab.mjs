@@ -17,7 +17,7 @@ const supports = { type: "array", minItems: 2, maxItems: 8, items: { type: "obje
 const documentProperties = { claim: statement, rationale: statement, conclusion: { type: "string", minLength: 1, maxLength: 2048 },
   applicability: statement, assumptions: { type: "array", maxItems: 8, items: { ...statement, maxLength: 1024 } }, evidence: references };
 const documentRequired = Object.keys(documentProperties);
-export const memoryProtocol = { version: 3, name: "hierarchy-first-checkpoints", briefingBytes: 16384,
+export const memoryProtocol = { version: 4, name: "procedure-first-memory-budget", briefingBytes: 16384,
   captureKinds: ["finding", "constraint", "failed_approach", "exception", "decision"], exactDuplicateWrites: "reuse-acknowledged-receipt" };
 export function memoryStartPrompt({ mode = "learning", stage = "assessment", independent = false } = {}) {
   const orientation = [
@@ -61,13 +61,24 @@ export function knowledgeBrief(result) {
         .map(support => ({ chainId: support.reference.chainId, revision: support.reference.revision, document: support.document }));
     for (const source of sources) for (const reference of source.document.evidence ?? []) {
       const key = `${source.chainId}:${source.revision}:${reference.fragmentId}`;
-      sourceReferences.set(key, { chainId: source.chainId, revision: source.revision, fragmentId: reference.fragmentId, role: reference.role });
+      sourceReferences.set(key, { chainId: source.chainId, revision: source.revision, fragmentId: reference.fragmentId, role: reference.role,
+        ...(reference.role === "counterexample" ? { reason: reference.reason } : {}) });
     }
-    return { ...full, supportingChains: full.supportingChains.map(({ reference, state, requiresReview }) => ({ reference, state, requiresReview })) };
+    const { rationale, supportedBy, ...procedure } = full.chain.snapshot.document;
+    return { ...full, chain: { ...full.chain, snapshot: { state: full.chain.snapshot.state,
+      document: { ...procedure, supportedBy: (supportedBy ?? []).map(({ chainId, revision }) => ({ chainId, revision })) } } },
+    supportingChains: full.supportingChains.filter(support => support.state !== "accepted" || support.requiresReview !== false).map(({ reference, state, requiresReview }) => ({
+      reference: { chainId: reference.chainId, revision: reference.revision }, state, requiresReview })) };
   };
-  const brief = { kind: "knowledge", view: "guide-first", principles: principles.map(compact), chains: chains.map(compact),
+  const compactPrinciples = principles.map(compact); const compactChains = chains.map(compact);
+  const allReferences = [...sourceReferences.values()];
+  const supportPreviews = new Map();
+  for (const reference of allReferences) if (reference.role === "supports" && !supportPreviews.has(reference.chainId)) supportPreviews.set(reference.chainId, reference);
+  const preview = [...[...supportPreviews.values()].slice(0, 2), ...allReferences.filter(reference => reference.role === "counterexample")];
+  const brief = { kind: "knowledge", view: "guide-first", principles: compactPrinciples, chains: compactChains,
     observations: principles.length || chains.length ? [] : (result.observations ?? []).slice(0, 2),
-    sourceReferences: [...sourceReferences.values()], fullEvidenceAvailable: true };
+    sourceReferences: preview, sourceReferencesTruncated: preview.length < allReferences.length,
+    sourceReferenceCount: allReferences.length, fullEvidenceAvailable: true };
   if (Buffer.byteLength(JSON.stringify(brief)) > memoryProtocol.briefingBytes) throw new Error("memory_brief_budget");
   return brief;
 }
