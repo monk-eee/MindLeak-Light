@@ -2,8 +2,9 @@ mod agent_setup;
 mod config;
 mod local;
 mod local_http;
+mod migration_canaries;
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -36,6 +37,16 @@ struct Args {
     transport: Transport,
     #[arg(long, env = "MINDLEAK_LISTEN", default_value = "127.0.0.1:8088")]
     listen: SocketAddr,
+    #[arg(
+        long,
+        help = "Complete database migrations and configured canaries, then exit without serving"
+    )]
+    migrate_only: bool,
+    #[arg(
+        long,
+        help = "Private retrieval canary manifest; defaults to nonempty MINDLEAK_MIGRATION_CANARIES"
+    )]
+    migration_canaries: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -69,8 +80,19 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
-        .with_env_filter("warn,mindleak_mcp=info")
+        .with_env_filter(
+            "warn,mindleak_light=info,mindleak_mcp=info,mindleak_storage_postgres::migrations=info",
+        )
         .init();
+    let canary_path = args.migration_canaries.or_else(|| {
+        std::env::var_os("MINDLEAK_MIGRATION_CANARIES")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    });
+    let canaries = canary_path
+        .as_deref()
+        .map(migration_canaries::CanarySuite::load)
+        .transpose()?;
     let config = config::Config::from_env()?;
     let model_client = || {
         reqwest::Client::builder()
@@ -79,7 +101,7 @@ async fn main() -> Result<()> {
             .redirect(reqwest::redirect::Policy::none())
             .build()
     };
-    let store = PostgresMemoryStore::connect(
+    let store = PostgresMemoryStore::connect_with_migration_options(
         &config.database_url,
         config
             .embeddings
@@ -87,6 +109,7 @@ async fn main() -> Result<()> {
             .map(|embedding| (embedding.provider.model.as_str(), embedding.dimensions)),
         config.pool_size,
         config.database_ca.as_deref(),
+        config.migrations,
     )
     .await?;
     let embedder: Option<Arc<dyn TextEmbedder>> = match config.embeddings {
@@ -136,6 +159,13 @@ async fn main() -> Result<()> {
         embedder,
         retriever,
     ));
+    if let Some(canaries) = canaries {
+        canaries.verify(server.clone()).await?;
+    }
+    if args.migrate_only {
+        tracing::info!("migration and configured verification complete; no listener started");
+        return Ok(());
+    }
     match args.transport {
         Transport::Stdio => {
             server.serve(stdio()).await?.waiting().await?;

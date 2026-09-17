@@ -1,11 +1,13 @@
 mod connection;
 mod documents;
 mod lifecycle;
+mod migrations;
 mod persistence;
 mod queries;
 mod relationships;
 mod retrieval;
 
+pub use migrations::MigrationOptions;
 pub use retrieval::{HybridMemoryRetriever, KeywordMemoryRetriever, VectorMemoryRetriever};
 
 use deadpool_postgres::Pool;

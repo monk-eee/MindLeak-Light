@@ -171,6 +171,10 @@ does not authorize tool use or prove that an agent invoked memory.
 
 ### Released-Baseline Gate
 
+For populated-database upgrade, failure/resume, and pre-readiness checks, see
+the [bounded migration guide](docs/MIGRATIONS.md). Its explicit capacity drill is
+not part of routine `make ci`; the regular failure and canary regressions are.
+
 The required PostgreSQL CI job also runs
 [regression-check.mjs](scripts/regression-check.mjs) against the published native
 release pinned in [regression-baseline.json](scripts/regression-baseline.json).
