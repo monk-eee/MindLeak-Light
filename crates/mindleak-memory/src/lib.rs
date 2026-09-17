@@ -1,4 +1,6 @@
+mod chains;
 mod domain;
+mod formation;
 mod lifecycle;
 mod service;
 
@@ -9,14 +11,28 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub use chains::{
+    ChainCommand, ChainDocument, ChainEvidence, ChainEvidenceRole, ChainEvidenceView, ChainFilter,
+    ChainInspection, ChainMatch, ChainQuery, ChainReview, ChainRevision, ChainSearchResponse,
+    ChainSnapshot, ChainState, ChainSupport, ChainSupportView, ChainValidation, ChainWriteRequest,
+    ChainWriteResult, KnowledgeKind, PreparedChain, ReportedConfidence, MAX_CHAIN_EVIDENCE,
+    MAX_CHAIN_RESULTS,
+};
 pub use domain::{
     DomainCursor, DomainIdentity, DomainInspection, DomainQuery, DomainRecord, DomainWrite,
     EdgeProvenance,
 };
+pub use formation::{
+    FormationCitation, FormationContext, FormationInput, FormationPreview, FormationProvenance,
+    KnowledgeFormation, KnowledgeFormer, MAX_FORMATION_CANDIDATES,
+};
 pub use lifecycle::{
     EvidenceStatus, FactLifecycle, FactState, MemoryContext, MemoryTier, RecallFilter,
 };
-pub use service::MemoryService;
+pub use service::{
+    KnowledgeExport, KnowledgeExportFormat, KnowledgeMatch, KnowledgeQuery, KnowledgeReview,
+    KnowledgeReviewPage, KnowledgeSearchResponse, MemoryService,
+};
 
 pub const MAX_MEMORY_BYTES: usize = 32_768;
 pub const MAX_FRAGMENT_BYTES: usize = 4096;
@@ -400,6 +416,41 @@ pub trait TextEmbedder: Send + Sync {
 
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
+    async fn hydrate_knowledge(
+        &self,
+        _selected: &[ChainMatch],
+        _filter: &ChainFilter,
+    ) -> Result<Vec<KnowledgeMatch>> {
+        Err(InvalidInput("this memory store does not support knowledge retrieval".into()).into())
+    }
+    async fn review_knowledge(
+        &self,
+        _target: Option<Uuid>,
+        _filter: &ChainFilter,
+        _after: Option<Uuid>,
+        _limit: usize,
+    ) -> Result<KnowledgeReviewPage> {
+        Err(InvalidInput("this memory store does not support knowledge review".into()).into())
+    }
+    async fn lookup_chain_write(
+        &self,
+        _request: &ChainWriteRequest,
+    ) -> Result<Option<ChainWriteResult>> {
+        Err(InvalidInput("this memory store does not support chains".into()).into())
+    }
+    async fn save_chain(&self, _chain: &PreparedChain) -> Result<ChainWriteResult> {
+        Err(InvalidInput("this memory store does not support chains".into()).into())
+    }
+    async fn inspect_chain(
+        &self,
+        _chain_id: Uuid,
+        _revision: Option<u32>,
+        _after_revision: Option<u32>,
+        _filter: &ChainFilter,
+        _limit: usize,
+    ) -> Result<Option<ChainInspection>> {
+        Err(InvalidInput("this memory store does not support chains".into()).into())
+    }
     async fn lookup_write(&self, request: &WriteRequest) -> Result<Option<WriteMemoryResult>>;
     async fn save(&self, memory: &PreparedMemory) -> Result<WriteMemoryResult>;
     async fn inspect_fragment(
@@ -425,6 +476,18 @@ pub trait MemoryStore: Send + Sync {
 
 #[async_trait]
 pub trait MemoryRetriever: Send + Sync {
+    fn chain_strategy(&self) -> &'static str {
+        "keyword"
+    }
+
+    async fn recall_chains(
+        &self,
+        _query: &str,
+        _filter: &ChainFilter,
+        _limit: usize,
+    ) -> Result<Vec<ChainMatch>> {
+        Err(InvalidInput("this retriever does not support chain search".into()).into())
+    }
     async fn recall(
         &self,
         query: &str,

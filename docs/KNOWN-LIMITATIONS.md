@@ -1,5 +1,13 @@
 # Known Limitations
 
+- The unreleased knowledge workflow supports model-assisted candidate formation,
+  chains, principles, semantic retrieval, dependency review and export, not
+  independently verified truth or autonomous acceptance. Evidence and lineage are
+  bounded, source identity is not independence, and citations prove presence, not
+  reasoning validity. No doctrine engine, background consolidation or measured
+  learning/compression benefit is claimed. See [the complete boundaries](CHAINS.md#bounds-and-deliberate-limits).
+  Legacy clients can retain their calls, but old server binaries must not use a
+  database containing chains because they do not recognize derived records.
 - One shared trust domain. `agentId` is caller-supplied provenance, not identity
   or tenant isolation. Anyone holding the HTTP token can access all memories.
 - Unreleased domain relationships are immutable attributed claims, not a mutable

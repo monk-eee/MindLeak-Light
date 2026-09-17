@@ -1,4 +1,51 @@
-# Recall Quality Experiment: 2026-09-16
+# Benchmark Results
+
+## Knowledge Workflow: 2026-09-17
+
+Last real-model run completed **05:54:38 UTC on September 17**. It used the
+optimized integrated source, local Ollama 0.32.9, Nomic embeddings and GLM 4.7
+Flash with explicit `reasoning_effort:none`. Six synthetic subjects supplied
+18 queries, repeated three times across ordinary and knowledge modes: 108 calls
+per run. This is an exposed diagnostic, not an independent quality estimate.
+
+| Knowledge Retrieval | Top-Level Recall@5 | Evidence-Bundle Recall | Missing-Detail Rejection | Warm p95 |
+|---|---|---|---|---|
+| Keyword | 50% | 50% | 6/6 | 58.0 / 57.6 ms |
+| Hybrid, unfiltered Nomic | 33.3% | 100% | 0/6 | 135.6 / 124.0 ms |
+
+Hybrid found the relevant principle first on all 12 positive queries. Its pinned
+supporting chains arrived inside the evidence bundle, not as top-level hits.
+Unfiltered semantic search still returned candidates for all six missing-detail
+questions. That is a remaining relevance limitation, not a successful answer.
+Maximum payloads were 12,047 bytes (keyword) and 31,139 bytes (hybrid); neither
+measurement is a token-saving estimate. Shared local load was not controlled.
+
+All 60 lifecycle/export checks passed. The model run added four successful
+read-only formation checks: two chain and two principle previews, each with one
+candidate and three checked citations. Calls took roughly 57 to 71 seconds. These
+checks establish valid structure, source identity and exact citation presence,
+not independently judged reasoning correctness or generalization quality.
+
+The first GLM run completed only one of four previews. A focused repeat identified
+principle output with fewer than two supporting chains: the post-validator rejected
+it, but the provider schema had not expressed that rule. The corrected schema
+constrains kind, support counts and selected IDs, and omits redundant history from
+model context. The later four-preview run passed. Both runs remain recorded;
+this is a local correction, not a controlled claim of prompt-quality improvement.
+
+Experiment identity:
+
+- Fixture: `knowledge-workflow-v1`, SHA-256 `bd51c2560c9942dee5ee8060abf24de4ef595dbba759d27a1b2ebe4e8cbafb50`.
+- Final binary: `80591c62456e5fe6c348118d1fc4e28d81d46141577bc23a8e9ffc6c3da746d3`.
+- Nomic digest: `0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f`.
+- GLM digest: `4475827791a269b02c8ec49b1c3bc1abb5846bacf3fae015b75d33986322d8f6`.
+- Local reports: `knowledge-benchmark-keyword-final.json`, `knowledge-benchmark-hybrid-formation-final.json` and the retained initial `knowledge-benchmark-hybrid-formation.json`, under the task's ignored `target` directory. Each fingerprints the binary, fixture, harness sources and configuration.
+
+Run instructions are in [validation](VALIDATION.md#check-chains-and-principles).
+Existing legacy results below are unchanged. No confidence, compression or agent
+learning benefit is inferred from the new protocol checks.
+
+## Recall Quality: 2026-09-16
 
 These are historical local diagnostic measurements, not production accuracy
 estimates. See the [benchmark guide](BENCHMARKS.md) for the current procedure. The

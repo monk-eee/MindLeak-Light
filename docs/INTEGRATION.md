@@ -356,14 +356,17 @@ context. Do not bypass client approvals to make the policy appear automatic.
 
 ## Tool Contract
 
-**Unreleased domain extension:** `write_memory.domain` stores an identified entity
-or directed source edge, separately from `facts` lifecycle operations.
-`recall_memory.domain` provides identity-only inspection or bounded predicate/direction
-queries, mutually exclusive with `query` and `fragmentId`. Both entity and edge imports
-retain exact source episodes and stable retry identities. See
-[domain relationships and the verified importer](DOMAIN-RELATIONSHIPS.md) for the
-contract, performance bounds and source accounting. Discover the actual server schema;
-published v0.5.0 does not accept these fields.
+Discover the actual server schema before using extensions. Published v0.5.0
+does not provide these unreleased modes:
+
+- [Domain records](DOMAIN-RELATIONSHIPS.md): `write_memory.domain` stores identified
+  entities or edges; `recall_memory.domain` reads bounded direct relationships.
+- [Knowledge formation](CHAINS.md): `chain` writes and inspects chains/principles;
+  `knowledge` searches, reviews dependencies and exports; `formation` previews
+  model-assisted candidates without storing or accepting them.
+
+Choose one mode per call. Existing calls and defaults remain unchanged; derived
+knowledge never enters ordinary observation recall.
 
 | Tool | Arguments | Successful Result |
 |---|---|---|

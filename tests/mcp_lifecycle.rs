@@ -30,6 +30,75 @@ fn recipe(recipes: &Value, name: &str, bindings: &HashMap<&str, Value>) -> CallT
         .with_arguments(arguments.as_object().unwrap().clone())
 }
 
+#[test]
+fn optional_knowledge_recipes_preserve_typed_arguments_and_scope() {
+    let manifest: Value = serde_json::from_str(include_str!(
+        "../.agents/skills/mindleak-memory/references/tool-recipes.json"
+    ))
+    .unwrap();
+    assert!(manifest["knowledgeAvailability"]
+        .as_str()
+        .unwrap()
+        .contains("schema"));
+    let calls = manifest["knowledgeCalls"].as_object().unwrap();
+    assert_eq!(calls.len(), 13);
+    let bindings = HashMap::from([
+        ("$AGENT_ID", json!("recipe-agent")),
+        ("$SCOPE", json!("synthetic:knowledge-recipes")),
+        ("$SESSION_ID", json!("actual-test-session")),
+        ("$REQUEST_ID", json!(Uuid::new_v4())),
+        ("$CHAIN_ID", json!(Uuid::new_v4())),
+        ("$FRAGMENT_ID", json!(Uuid::new_v4())),
+        (
+            "$FACT_TEXT",
+            json!("Synthetic recorded knowledge decision."),
+        ),
+        ("$QUERY", json!("controlled task")),
+        ("$EXPECTED_REVISION", json!(2)),
+        (
+            "$CHAIN_DOCUMENT",
+            json!({"claim":"Scoped claim","rationale":"Controlled comparison","conclusion":"Scoped result","applicability":"This fixture only","evidence":[{"fragmentId":Uuid::new_v4(),"role":"supports","reason":"Controlled observation."}]}),
+        ),
+        (
+            "$CHAIN_SUPPORTS",
+            json!([{ "chainId":Uuid::new_v4(),"revision":2,"reason":"Reviewed comparison." },{ "chainId":Uuid::new_v4(),"revision":2,"reason":"Another reviewed comparison." }]),
+        ),
+        (
+            "$COUNTEREVIDENCE",
+            json!([{ "fragmentId":Uuid::new_v4(),"role":"counterexample","reason":"Recorded exception." }]),
+        ),
+        (
+            "$VALIDATION",
+            json!({"method":"Check fixture","result":"Conditional acceptance","source":"synthetic:validation","counterEvidenceReviewed":[]}),
+        ),
+    ]);
+    let recipes = json!({"calls":calls});
+    for name in calls.keys() {
+        let request = recipe(&recipes, name, &bindings);
+        let arguments = Value::Object(request.arguments.unwrap());
+        let scoped = arguments["scope"] == bindings["$SCOPE"]
+            || arguments["context"]["scope"] == bindings["$SCOPE"]
+            || arguments["formation"]["scope"] == bindings["$SCOPE"];
+        assert!(scoped, "recipe {name} lost its scope");
+        let valid = match request.name.as_ref() {
+            "write_memory" => {
+                serde_json::from_value::<mindleak_mcp::WriteMemoryInput>(arguments).is_ok()
+            }
+            "recall_memory" => {
+                serde_json::from_value::<mindleak_mcp::RecallMemoryInput>(arguments).is_ok()
+            }
+            "decompose_memory" => {
+                serde_json::from_value::<mindleak_mcp::DecomposeMemoryInput>(arguments).is_ok()
+            }
+            _ => false,
+        };
+        assert!(
+            valid,
+            "recipe {name} does not match the advertised input type"
+        );
+    }
+}
+
 #[tokio::test]
 async fn agent_setup_installs_and_checks_real_stdio_without_writes() {
     let directory = tempfile::tempdir().unwrap();
@@ -138,7 +207,7 @@ async fn companion_recipes_support_fresh_client_handoff_and_correction() {
         "../.agents/skills/mindleak-memory/references/tool-recipes.json"
     ))
     .unwrap();
-    assert_eq!(recipes["skillVersion"], "1.1.0");
+    assert_eq!(recipes["skillVersion"], "1.2.0");
     let scope = format!("companion-{}", Uuid::new_v4());
     let writer = format!("companion-writer-{}", Uuid::new_v4());
     let mut bindings = HashMap::from([

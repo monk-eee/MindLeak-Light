@@ -162,6 +162,7 @@ async fn main() -> Result<()> {
     let store = if server_args.database_read_only {
         anyhow::ensure!(
             config.decomposition.is_none()
+                && config.formation.is_none()
                 && config.embeddings.is_none()
                 && config.relevance.is_none(),
             "read-only verification requires model-free settings"
@@ -226,12 +227,14 @@ async fn main() -> Result<()> {
             .with_reasoning_effort(config.relevance_reasoning_effort)?,
         );
     }
-    let server = MemoryMcp::new(MemoryService::new(
-        Arc::new(store.clone()),
-        decomposer,
-        embedder,
-        retriever,
-    ));
+    let mut memory = MemoryService::new(Arc::new(store.clone()), decomposer, embedder, retriever);
+    if let Some(model) = config.formation {
+        memory = memory.with_knowledge_former(Arc::new(
+            OpenAiDecomposer::new(model_client()?, model.endpoint, model.model, model.api_key)
+                .with_reasoning_effort(config.formation_reasoning_effort)?,
+        ));
+    }
+    let server = MemoryMcp::new(memory);
     if let Some(canaries) = canaries {
         canaries.verify(server.clone()).await?;
     }

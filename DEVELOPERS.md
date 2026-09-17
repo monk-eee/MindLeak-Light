@@ -29,7 +29,8 @@ configure authenticated HTTP as described in [integration](docs/INTEGRATION.md#s
 Shared configuration preserves MindLeak's `MINDLEAK_LLM_URL`, `MINDLEAK_MODEL`,
 `MINDLEAK_LLM_API_KEY`, `MINDLEAK_EMBED_URL`, `MINDLEAK_EMBED_MODEL`, and
 `MINDLEAK_EMBED_API_KEY`. They are only used when `MINDLEAK_DECOMPOSITION=openai`
-or `MINDLEAK_RETRIEVAL=vector`/`hybrid` explicitly enables the corresponding provider.
+or `MINDLEAK_FORMATION=openai` or `MINDLEAK_RETRIEVAL=vector`/`hybrid` explicitly
+enables the corresponding provider. Formation can run with sentence decomposition.
 Enabled providers require an API base including `/v1`, a model ID, and for
 embeddings, `MINDLEAK_EMBED_DIMENSIONS`. The optional
 `MINDLEAK_RECALL_MIN_SIMILARITY` is a calibrated cosine floor, not confidence.
@@ -152,6 +153,20 @@ only safe metadata and results; do not retain raw headers, memory text or client
 secret storage in CI artifacts.
 
 ### Companion Skill
+
+The unreleased [Chains of Memory](docs/CHAINS.md) contract is additive to the
+existing memory API. Domain rules live in
+[chains.rs](crates/mindleak-memory/src/chains.rs), persistence and inspection in
+[the PostgreSQL chain module](crates/mindleak-storage-postgres/src/chains.rs).
+Run `cargo test -p mindleak-storage-postgres --features postgres-tests --test postgres chains::`
+and `cargo test -p mindleak-mcp --features postgres-tests --test mcp mcp_chains::`
+against a disposable `_test` database. Preserve legacy serialization, normal
+keyword/vector/hybrid behavior, keyed receipts, and source data. A successful
+chain test is not an independent evaluation of model reasoning quality. The
+full MCP workflow covers formation previews, validated chain-to-principle lineage,
+hybrid knowledge retrieval, counterexamples, dependency review, revisions and
+JSON/Markdown projection using deterministic provider doubles. Verify actual
+model quality separately before claiming improved learning or compression.
 
 The canonical agent workflow lives in
 [the skill bundle](.agents/skills/mindleak-memory/SKILL.md), with one

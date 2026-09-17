@@ -21,6 +21,7 @@ export async function openMemoryDriver(binary, settings) {
   let session;
   let restarts = 0;
   let server;
+  let capabilities;
   await writeFile(executable, bytes, { mode: 0o700, flag: "wx" });
   await writeFile(join(directory, ".env"), "", { mode: 0o600 });
   async function connect() {
@@ -32,6 +33,9 @@ export async function openMemoryDriver(binary, settings) {
       await client.connect(transport, { timeout: 30000 });
       server = client.getServerVersion();
       const { tools } = await client.listTools();
+      const properties = name => tools.find(tool => tool.name === name)?.inputSchema?.properties ?? {};
+      capabilities = { knowledge: Boolean(properties("recall_memory").knowledge), chains: Boolean(properties("write_memory").chain),
+        formation: Boolean(properties("decompose_memory").formation) };
       if (!tools.find(tool => tool.name === "recall_memory")?.inputSchema?.properties?.fragmentId
         || !tools.find(tool => tool.name === "write_memory")?.inputSchema?.properties?.requestId) {
         throw new Error("harness_requires_source_inspection_and_retry_safe_writes");
@@ -49,14 +53,23 @@ export async function openMemoryDriver(binary, settings) {
     binarySha256: digest(bytes), realProcess: true,
     configuration: settings.configuration,
     get server() { return server; },
+    get capabilities() { return capabilities; },
     get session() { return session; },
     get restarts() { return restarts; },
     async call(name, arguments_) {
       const started = performance.now();
       let response;
       try { response = await client.callTool({ name, arguments: arguments_ }, undefined, { timeout: 660000 }); }
-      catch { throw new Error("mcp_tool_failed"); }
-      if (response?.isError || response?.structuredContent === undefined) throw new Error("mcp_invalid_result");
+      catch { throw Object.assign(new Error("mcp_tool_failed"), { code: "mcp_protocol_failure", elapsedMs: performance.now() - started }); }
+      if (response?.isError || response?.structuredContent === undefined) {
+        const text = response?.content?.filter(block => block.type === "text").map(block => block.text).join(" ") ?? "";
+        const reasons = [[/model request failed/, "provider_request_failed"], [/model returned an HTTP error/, "provider_http_error"],
+          [/model returned an invalid response/, "invalid_provider_response"], [/did not finish normally/, "truncated_provider_output"],
+          [/citation|source quote/, "citation_validation_failed"], [/budget|exceeds|too many/, "input_or_output_budget"],
+          [/formation|principle support|chain requires/, "formation_validation_failed"]];
+        const code = reasons.find(([pattern]) => pattern.test(text))?.[1] ?? "mcp_invalid_result";
+        throw Object.assign(new Error("mcp_invalid_result"), { code, elapsedMs: performance.now() - started });
+      }
       return { data: response.structuredContent, elapsedMs: performance.now() - started,
         resultBytes: Buffer.byteLength(JSON.stringify(response.structuredContent)), session };
     },

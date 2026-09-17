@@ -34,7 +34,7 @@ impl PostgresMemoryStore {
                     fragments.text, 1.0 - (fragments.embedding <=> $1) AS score, {} \
              FROM public.fragments AS fragments \
              JOIN public.memories AS memories ON memories.id = fragments.memory_id \
-             WHERE fragments.embedding IS NOT NULL AND ($2::text IS NULL OR memories.agent_id = $2) \
+             WHERE memories.chain_id IS NULL AND fragments.embedding IS NOT NULL AND ($2::text IS NULL OR memories.agent_id = $2) \
                     AND ($4::double precision IS NULL OR 1.0 - (fragments.embedding <=> $1) >= $4) \
                       AND ($5::text IS NULL OR memories.context->>'scope' = $5) \
                       AND ($6::text IS NULL OR fragments.tier = $6) \
@@ -66,7 +66,7 @@ impl PostgresMemoryStore {
              FROM public.fragments AS fragments \
              JOIN public.memories AS memories ON memories.id = fragments.memory_id \
              CROSS JOIN (SELECT {KEYWORD_QUERY} AS query) AS parsed \
-             WHERE fragments.search_vector @@ query \
+             WHERE memories.chain_id IS NULL AND fragments.search_vector @@ query \
                AND ($3::text IS NULL OR memories.agent_id = $3) \
                              AND ($5::text IS NULL OR memories.context->>'scope' = $5) \
                              AND ($6::text IS NULL OR fragments.tier = $6) \

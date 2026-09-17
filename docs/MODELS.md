@@ -12,6 +12,7 @@ can keep using Claude or GPT as your agent and use LM Studio for memory processi
 | Decomposition | Split sentences and list items; preserve wording | Chat model extracts independent facts |
 | Recall | Indexed PostgreSQL keyword search | Embedding model with vector or hybrid recall |
 | Relevance filtering | Return ranked candidates without a selection model | Chat model selects existing fragments that may answer the query |
+| Knowledge formation (unreleased) | Explicit caller-authored chains and principles | Chat model previews source-grounded candidates; never accepts them |
 
 Decomposition and embeddings are independent. Chat extraction with keyword recall is valid;
 sentence decomposition with vector recall needs an embedding model but no chat
@@ -19,6 +20,30 @@ model. With relevance filtering off, enabling both normally adds one chat reques
 and one batched embedding request per write, and one embedding request per recall.
 The optional relevance stage is independent and adds a recall-time chat request
 when candidates are available.
+
+## Knowledge Formation
+
+The unreleased [knowledge workflow](CHAINS.md) independently accepts
+`MINDLEAK_FORMATION=openai` (default `off`). It uses `MINDLEAK_LLM_URL`,
+`MINDLEAK_MODEL`, optional `MINDLEAK_LLM_API_KEY` and
+`MINDLEAK_LLM_REASONING_EFFORT`, without changing sentence decomposition.
+Formation sends selected stored observations or validated chain revisions to
+that provider, only on explicit `decompose_memory.formation` calls. Exact source
+citations and structure are checked; the conclusion is not thereby proven.
+Provider failure, truncation or invented citations fail the preview without a
+fallback or any persistence. Candidate documents retain model/prompt/source
+provenance when saved. Both Compose files forward the independent opt-in; a
+source build containing these schemas is required, not the published v0.5.0 image.
+
+Explicit knowledge search uses the configured keyword/vector/hybrid strategy
+and optional relevance selector. Derived-document vectors occupy the existing
+database embedding space, separate from raw-episode fragment vectors. A
+knowledge revision adds one embedding request for its structured document;
+ordinary write costs and response shapes are unchanged. Unembedded knowledge
+remains keyword-searchable; no vectors are fabricated or backfilled implicitly.
+Knowledge relevance selects at most 10 candidates with a 128 KiB input budget;
+reduce `MINDLEAK_RELEVANCE_CANDIDATES` for large documents. Inspection, export
+and dependency review call no models.
 
 ## What Decomposition Guarantees
 

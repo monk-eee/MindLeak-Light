@@ -1,7 +1,8 @@
 {
   "schemaVersion": 1,
-  "skillVersion": "1.1.0",
+  "skillVersion": "1.2.0",
   "minimumServerVersion": "0.4.0",
+  "knowledgeAvailability": "Unreleased after 0.5.0: use knowledgeCalls only when the actual server schema advertises chain, knowledge and formation. The minimum server version above applies to ordinary calls. Formation additionally requires an operator-enabled model.",
   "purpose": "Synthetic call templates for the companion workflow and its contract tests. Replace the example content with verified task evidence. Do not ingest these demonstration facts into production.",
   "placeholders": {
     "$AGENT_ID": "Stable contribution identity of the actual writer; different agents use their own identities.",
@@ -11,7 +12,13 @@
     "$CORRECTION_TEXT": "A verified replacement fact for the unscoped target; the directive text must match decomposition exactly.",
     "$SESSION_ID": "The actual stable session ID; do not invent sessions to manufacture feedback.",
     "$REQUEST_ID": "A UUID generated once per logical write and retained with its exact arguments for retries.",
-    "$FRAGMENT_ID": "The verified target ID returned by search or a successful write, never guessed. A general correction requires an unscoped target."
+    "$FRAGMENT_ID": "The verified target ID returned by search or a successful write, never guessed. A general correction requires an unscoped target.",
+    "$CHAIN_ID": "A retained new UUID for a proposal, or an inspected existing chain/principle ID for other operations.",
+    "$EXPECTED_REVISION": "The current positive integer revision from inspection; preserve its numeric JSON type.",
+    "$CHAIN_DOCUMENT": "A complete validated candidate document object, including evidence, applicability, assumptions and any formation provenance; never substitute an unparsed JSON string.",
+    "$CHAIN_SUPPORTS": "An array of 2..8 inspected accepted chainId/revision/reason objects, all in the same optional scope.",
+    "$COUNTEREVIDENCE": "An array of new counterexample fragmentId/role/reason objects from actual inspected observations.",
+    "$VALIDATION": "An actual validation object with method, result, source and every declared counterEvidenceReviewed UUID; a model preview is not validation."
   },
   "calls": {
     "search": {
@@ -62,6 +69,60 @@
     "document_search": {
       "name": "recall_memory",
       "arguments": {"query": "Solstice timeout", "scope": "$SCOPE", "limit": 5, "matchMode": "all", "diagnostics": true, "contextLimit": 1, "groupDuplicates": true}
+    }
+  },
+  "knowledgeCalls": {
+    "form_chain": {
+      "name": "decompose_memory",
+      "arguments": {"text": "$QUERY", "formation": {"kind": "chain", "fragmentIds": ["$FRAGMENT_ID"], "scope": "$SCOPE"}}
+    },
+    "form_principle": {
+      "name": "decompose_memory",
+      "arguments": {"text": "$QUERY", "formation": {"kind": "principle", "chains": "$CHAIN_SUPPORTS", "scope": "$SCOPE"}}
+    },
+    "propose": {
+      "name": "write_memory",
+      "arguments": {"agentId": "$AGENT_ID", "requestId": "$REQUEST_ID", "text": "$FACT_TEXT", "context": {"scope": "$SCOPE", "sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/knowledge"}, "chain": {"operation": "propose", "chainId": "$CHAIN_ID", "document": "$CHAIN_DOCUMENT"}}
+    },
+    "accept": {
+      "name": "write_memory",
+      "arguments": {"agentId": "$AGENT_ID", "requestId": "$REQUEST_ID", "text": "$FACT_TEXT", "context": {"scope": "$SCOPE", "sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/knowledge"}, "chain": {"operation": "accept", "chainId": "$CHAIN_ID", "expectedRevision": "$EXPECTED_REVISION", "validation": "$VALIDATION"}}
+    },
+    "challenge": {
+      "name": "write_memory",
+      "arguments": {"agentId": "$AGENT_ID", "requestId": "$REQUEST_ID", "text": "$FACT_TEXT", "context": {"scope": "$SCOPE", "sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/knowledge"}, "chain": {"operation": "challenge", "chainId": "$CHAIN_ID", "expectedRevision": "$EXPECTED_REVISION", "evidence": "$COUNTEREVIDENCE"}}
+    },
+    "revise": {
+      "name": "write_memory",
+      "arguments": {"agentId": "$AGENT_ID", "requestId": "$REQUEST_ID", "text": "$FACT_TEXT", "context": {"scope": "$SCOPE", "sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/knowledge"}, "chain": {"operation": "revise", "chainId": "$CHAIN_ID", "expectedRevision": "$EXPECTED_REVISION", "document": "$CHAIN_DOCUMENT"}}
+    },
+    "retire": {
+      "name": "write_memory",
+      "arguments": {"agentId": "$AGENT_ID", "requestId": "$REQUEST_ID", "text": "$FACT_TEXT", "context": {"scope": "$SCOPE", "sessionId": "$SESSION_ID", "source": "synthetic:skill-contract/knowledge"}, "chain": {"operation": "retire", "chainId": "$CHAIN_ID", "expectedRevision": "$EXPECTED_REVISION"}}
+    },
+    "search": {
+      "name": "recall_memory",
+      "arguments": {"knowledge": {"operation": "search", "query": "$QUERY"}, "scope": "$SCOPE", "limit": 5}
+    },
+    "chain_search": {
+      "name": "recall_memory",
+      "arguments": {"chain": {"operation": "search", "query": "$QUERY"}, "scope": "$SCOPE", "limit": 5}
+    },
+    "inspect": {
+      "name": "recall_memory",
+      "arguments": {"chain": {"operation": "inspect", "chainId": "$CHAIN_ID"}, "scope": "$SCOPE", "limit": 5}
+    },
+    "review": {
+      "name": "recall_memory",
+      "arguments": {"knowledge": {"operation": "review"}, "scope": "$SCOPE", "limit": 5}
+    },
+    "dependents": {
+      "name": "recall_memory",
+      "arguments": {"knowledge": {"operation": "dependents", "chainId": "$CHAIN_ID"}, "scope": "$SCOPE", "limit": 5}
+    },
+    "export": {
+      "name": "recall_memory",
+      "arguments": {"knowledge": {"operation": "export", "chainId": "$CHAIN_ID", "format": "markdown"}, "scope": "$SCOPE", "limit": 5}
     }
   },
   "generalCalls": {

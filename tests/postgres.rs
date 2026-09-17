@@ -16,6 +16,7 @@ use tokio_postgres::{Client, NoTls};
 use url::Url;
 use uuid::Uuid;
 
+mod chains;
 mod domain;
 mod lifecycle;
 
@@ -1916,8 +1917,11 @@ async fn batched_upgrade_matches_original_vectors_order_and_preserves_all_source
     let mismatches: i64 = database.query_one(
         "SELECT
          (SELECT count(*) FROM public.memories JOIN original_memories USING (id)
-            WHERE to_jsonb(memories) - 'request_id' - 'request_payload' - 'write_result' - 'domain_entity' <> record
-               OR domain_entity IS NOT NULL) +
+                WHERE to_jsonb(memories) - ARRAY['request_id', 'request_payload', 'write_result', 'domain_entity',
+                     'chain_id', 'chain_revision', 'chain_current', 'chain_snapshot', 'chain_operation',
+                     'chain_previous_id', 'chain_claim_key', 'chain_search', 'chain_embedding'] <> record
+                    OR domain_entity IS NOT NULL OR num_nonnulls(chain_id, chain_revision, chain_current,
+                     chain_snapshot, chain_operation, chain_previous_id, chain_claim_key, chain_search, chain_embedding) <> 0) +
          (SELECT count(*) FROM public.fragments JOIN original_fragments USING (id)
           WHERE to_jsonb(fragments) - 'search_vector' - 'fragment_index' <> record) +
             (SELECT count(*) FROM ((SELECT to_jsonb(relationships) - ARRAY['edge_memory_id', 'source_entity',

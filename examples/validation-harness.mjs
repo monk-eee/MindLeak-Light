@@ -10,6 +10,9 @@ import { agentSettings, createAgent, publicExecution } from "./validation-agent.
 import { agentTools, containerConfiguration, createCodingWorkspace, openMemoryDriver, renderScaleCharts, scopedMemory } from "./validation-runtime.mjs";
 import { answerSchemaFor, categories, codingFixture, digest, evaluateAnswer, evaluatePoisoning, generateScenarios, handoffSchema, pairedMetrics, retrievalMetrics, scaleCharts, verifyCodingPreparation } from "./validation-scenarios.mjs";
 import { longitudinalBinding, runLongitudinal } from "./validation-longitudinal.mjs";
+import { knowledgeFixtureIdentity, runKnowledgeValidation } from "./validation-knowledge.mjs";
+
+const optionalCategories = ["knowledge_workflow"];
 
 const mean = values => values.length ? values.reduce((sum, value) => sum + Number(value), 0) / values.length : null;
 const measured = values => values.filter(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
@@ -98,7 +101,7 @@ function transferStages(source, target, preparation, scenario, outcome) {
 export async function runValidation({ driver, plan = generateScenarios(), agent = null, code = null,
   trials = 1, selected = categories, onProgress = () => {}, workspaceFactory = createCodingWorkspace } = {}) {
   if (!Number.isInteger(trials) || trials < 1 || trials > 10 || !Array.isArray(selected)
-    || !selected.length || selected.some(category => !categories.includes(category)) || new Set(selected).size !== selected.length) {
+    || !selected.length || selected.some(category => ![...categories, ...optionalCategories].includes(category)) || new Set(selected).size !== selected.length) {
     throw new Error("invalid_validation_selection");
   }
   const runId = randomUUID();
@@ -199,6 +202,9 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
     const scenario = plan.scenarios[category];
     try {
       switch (category) {
+        case "knowledge_workflow":
+          results[category] = await runKnowledgeValidation(driver, { onProgress });
+          break;
         case "atomic_extraction": {
           const preview = await driver.call("decompose_memory", { text: scenario.text });
           const score = scoreDecomposition(scenario, preview.data.results);
@@ -329,7 +335,8 @@ export async function runValidation({ driver, plan = generateScenarios(), agent 
     scenarioManifest: { id: plan.id, sha256: digest(plan), seed: plan.seed, selected, sizes: plan.sizes,
       answerContractsSha256: digest(["simple_recall", "agent_handoff", "poisoning_resistance", "contradiction_handling", "context_compression", "coding_workflow", "rediscovery_demo", "multi_day_learning"].map(category => answerSchemaFor(category))),
       handoffContractsSha256: digest(["coding_workflow", "rediscovery_demo"].map(kind => handoffSchema(kind))),
-      codingFixtureSha256: Object.fromEntries(["coding_workflow", "rediscovery_demo"].map(kind => [kind, digest(codingFixture(kind))])) },
+      codingFixtureSha256: Object.fromEntries(["coding_workflow", "rediscovery_demo"].map(kind => [kind, digest(codingFixture(kind))])),
+      ...(selected.includes("knowledge_workflow") ? { knowledgeFixture: knowledgeFixtureIdentity } : {}) },
     server: driver.server, binarySha256: driver.binarySha256, realMcpProcess: driver.realProcess,
     agent: agent?.configuration ?? null, codeContainer: code ? { engine: code.engine, imageId: code.image } : null,
     runtime: { node: process.version, platform: process.platform, architecture: process.arch, availableParallelism: availableParallelism() },
@@ -371,15 +378,18 @@ async function main() {
     "longitudinal-state": { type: "string" }, day: { type: "string" },
     "chart-dir": { type: "string" },
     decomposition: { type: "string" }, retrieval: { type: "string" }, relevance: { type: "string" },
+    formation: { type: "string" }, "formation-reasoning-effort": { type: "string" },
+    "decomposition-reasoning-effort": { type: "string" }, "relevance-reasoning-effort": { type: "string" },
     "min-similarity": { type: "string" }, "relevance-candidates": { type: "string" },
   } });
   if (values.help) {
     console.log(JSON.stringify({ name: "MindLeak Validation Harness v1", commands: {
       plan: "node examples/validation-harness.mjs --plan",
       modelFree: "MINDLEAK_TEST_DATABASE_URL=..._test node examples/validation-harness.mjs --binary target/debug/mindleak-light",
+      knowledge: "--category knowledge_workflow --formation off|openai (explicit unreleased schemas; formation reports model output separately)",
       agents: "Set MINDLEAK_VALIDATION_AGENT_URL and MINDLEAK_VALIDATION_AGENT_MODEL, then add --agent --code-engine podman",
       longitudinal: "--longitudinal-state PRIVATE_PATH --day 1|2|30 (requires actual elapsed time; retains synthetic memory between invocations)",
-    }, categories, defaultSizes: [100, 500, 1000], controls: ["--seed UINT32", "--sizes 100,500,1000", "--category NAME (repeatable)",
+    }, categories, optionalCategories, defaultSizes: [100, 500, 1000], controls: ["--seed UINT32", "--sizes 100,500,1000", "--category NAME (repeatable)",
       "--trials 1..10", "--retrieval keyword|vector|hybrid", "--decomposition sentences|openai", "--relevance off|openai",
       "--agent-max-steps 1..32", "--agent-timeout-ms 100..300000", "--agent-max-output-tokens 128..16384", "--agent-reasoning-effort none|low|medium|high|max", "--code-image IMAGE", "--chart-dir NEW_DIRECTORY", "--input-usd-per-million RATE --output-usd-per-million RATE"],
       privacy: "Local synthetic data only; no uploads, production database, provider bodies, or secret exports." }, null, 2));
@@ -388,7 +398,8 @@ async function main() {
   const plan = generateScenarios({ seed: Number(values.seed ?? 20260916), sizes: values.sizes?.split(",").map(Number) ?? [100, 500, 1000] });
   if (values.plan) { console.log(JSON.stringify(plan, null, 2)); return; }
   const selected = values.category ?? categories;
-  if (selected.some(category => !categories.includes(category)) || new Set(selected).size !== selected.length) throw new Error("invalid_category");
+  if (selected.some(category => ![...categories, ...optionalCategories].includes(category)) || new Set(selected).size !== selected.length) throw new Error("invalid_category");
+  if (values.formation !== undefined && !selected.includes("knowledge_workflow")) throw new Error("formation_requires_knowledge_workflow");
   const trials = Number(values.trials ?? 1);
   if (!Number.isInteger(trials) || trials < 1 || trials > 10) throw new Error("invalid_trials");
   const settings = benchmarkSettings(process.env, values);
@@ -408,6 +419,7 @@ async function main() {
   const code = values["code-engine"] ? await containerConfiguration(values["code-engine"], values["code-image"]) : null;
   const binary = values.binary ?? fileURLToPath(new URL(`../target/debug/mindleak-light${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
   const sources = ["validation-harness.mjs", "validation-scenarios.mjs", "validation-runtime.mjs", "validation-agent.mjs", "validation-longitudinal.mjs", "benchmark-recall.mjs"];
+  if (selected.includes("knowledge_workflow")) sources.push("validation-knowledge.mjs", "fixtures/knowledge-v1.json");
   const sourceHashes = async () => Object.fromEntries(await Promise.all(sources.map(async path => [path, digest(await readFile(new URL(path, import.meta.url)))])));
   const harnessSources = await sourceHashes();
   const driver = await openMemoryDriver(binary, settings);
@@ -418,6 +430,7 @@ async function main() {
       : await runValidation({ driver, plan, agent, code, trials, selected,
         onProgress: event => console.error(JSON.stringify(event)) });
     report.configuration = settings.configuration;
+    report.reasoning = settings.reasoning;
   } finally { await driver.close(); }
   report.harnessSources = harnessSources;
   report.sourceFilesUnchangedDuringRun = digest(harnessSources) === digest(await sourceHashes());

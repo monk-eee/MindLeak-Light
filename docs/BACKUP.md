@@ -150,6 +150,28 @@ not switch clients or remove the working database. Compatibility requires PG16
 and the **same engine checksum**, not merely a version. Unknown/cross-architecture
 engine combinations fail closed.
 
+### Knowledge and Schema Changes
+
+Backups include all columns in `memories`, `fragments` and `relationships`, not
+a fixed list of old fields. Chain/principle snapshots, document vectors, pinned
+support revisions, counterevidence and retry receipts therefore travel with the
+database. Schema fingerprints include columns, constraints, indexes and triggers.
+
+Restore verification uses separate ordinary-source and knowledge canaries.
+Derived fragments are excluded from ordinary source inspection. Model settings,
+including formation, are forced off; verification never migrates or modifies the
+restored database. It compares fingerprints before and after MCP readback.
+
+Before an upgrade, keep a verified backup and its matching engine. Restore that
+backup into a new database for rollback. Do not run a pre-knowledge server on a
+database containing chains. A verified old backup is a recovery point, not
+permission to perform an in-place downgrade.
+
+The encrypted roundtrip regression includes accepted chains, a principle,
+inherited counterevidence and non-null document vectors. It verifies exact
+data/schema preservation and knowledge readback after restoration. This local
+check does not close the separate Windows scheduler or Azure acceptance gates.
+
 Retention is the union of last/daily/weekly/monthly buckets, not an exact count.
 Apply requires the latest matching backup/restore receipt, two validated complete
 recovery points, and a fresh plan check. Confirmed deletions are recorded before
