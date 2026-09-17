@@ -118,8 +118,9 @@ project's own instructions; native menu discovery still depends on its supported
 
 Add the short [activation block](../.agents/skills/mindleak-memory/references/agent-policy.md)
 to the always-on instructions the client actually loads. Preserve existing
-rules, define a stable shared project scope, and give each contributor a truthful
-stable `agentId`. Reopen the client session after installing new skill locations.
+rules, choose general memory or a stable shared project scope, and give each
+contributor a truthful stable `agentId`. General memory requires no scope label.
+Reopen the client session after installing new skill locations.
 Check the skill listing; invoke `mindleak-memory` explicitly for the first check
 using the client's picker (`/mindleak-memory` in VS Code or Claude Code,
 `/skills` or `$mindleak-memory` in Codex). If native discovery is unsupported,
@@ -131,6 +132,122 @@ MCP, or enforce a lookup on every task. Follow the
 [fresh-session acceptance checklist](INTEGRATION.md#verify-the-agent-behaviour)
 before claiming a client works automatically. Do not edit global profiles or
 other projects as a side effect of this repository's setup.
+
+### Automatic Project Setup
+
+**Unreleased:** `agent setup` and `agent check` require a binary built from this
+source, not the already-published v0.4.0 binary. Run them on the client machine,
+not inside the database container. The selected server can remain on v0.4.0.
+
+First configure the intended MCP connection in your project. For general shared
+memory without a project filter, preview installation with:
+
+```sh
+mindleak-light agent setup --client vscode --server mindleak-light --general --workspace . --dry-run
+```
+
+For project-filtered memory, choose a stable scope instead:
+
+```sh
+mindleak-light agent setup --client vscode --server mindleak-light --scope repo:your-org/your-project --workspace . --dry-run
+```
+
+Remove `--dry-run` to install. Add `--connect` to verify the selected server before
+writing the files; `--dry-run` never connects and cannot be combined with it.
+From a source checkout, build with `cargo build --locked -p mindleak-mcp` and use
+the resulting `target/debug/mindleak-light` executable (or `.exe` on Windows).
+
+| `--client` | Existing Project Connection | Installed Instructions |
+|---|---|---|
+| `vscode` | `.vscode/mcp.json`, under `servers` | `.github/copilot-instructions.md` |
+| `claude` | `.mcp.json`, under `mcpServers` | `CLAUDE.md` |
+| `codex` | `.codex/config.toml`, under `mcp_servers` | `AGENTS.md` |
+
+Use the exact configured server name, not a tool's client-specific prefix.
+This first version reads project configuration only, not global profiles or a
+client's merged runtime configuration. JSONC comments and TOML are parsed without
+rewriting the connection file. Trust the project and enable the tools in the
+client normally; the installer does not change approval settings.
+
+Choose exactly one of `--general` or `--scope`; omitting both is an error.
+General mode tells agents to omit `context.scope` on writes and the `scope`
+filter on recall. **General recall searches across all scopes**, not only facts
+saved without scope. It still applies normal relevance and lifecycle filters.
+Project mode includes its exact scope on writes and recall; it does not also
+include unscoped facts. Neither mode moves or relabels existing memories, creates
+a new store, or grants access to other deployments.
+
+The files still install in the selected workspace, even in general mode. Other
+workspaces and clients need their own setup pointing at the same intended store.
+Reuse the chosen mode across cooperating clients; in project mode, reuse its
+scope too. Scope and server labels accept 1..256 ASCII letters, digits, `.`, `_`,
+`:`, `/`, `@`, and `-`; do not use credentials or a machine-specific checkout path.
+Scope is not authorization and does not prove that two connections share a database.
+
+The command installs the complete bundled skill in the client-specific directory
+shown above and inserts a marked MindLeak block into the instruction file.
+Text outside the block and existing line endings are preserved. Installer state
+in `.mindleak/agent-setup.json` records the explicit mode, optional scope,
+connection identity hashes, and owned-content hashes, not credentials. General
+mode is stored as `general: true` and `scope: null`; a missing scope is never
+interpreted as consent to broaden an existing installation. Older scoped state
+remains scoped. Keep state with the installed files for safe repeat updates.
+
+Rerunning the same command makes no duplicate blocks. It refuses an implicit
+mode/scope/server change, conflicting skill content, malformed markers, or symlinked
+destinations. Review conflicts explicitly; it does not overwrite them with a
+force option. Copies in different client locations must be updated by running
+setup for each installed client. Global customizations are never changed.
+
+Check an existing installation without contacting its server:
+
+```sh
+mindleak-light agent check --client vscode --workspace .
+```
+
+To check the connection too, add `--connect`. This explicitly contacts the HTTP
+endpoint or **launches the configured stdio command**; review and trust that
+command first. The official MCP SDK checks server identity and the three tools'
+required fields, then closes the connection. It calls no memory tools and makes
+no model requests itself. A configured stdio program can perform its own startup
+work, including migrations; this command is not a sandbox. The connection check
+has a 15-second handshake/discovery budget and a separate bounded close phase.
+Use HTTPS for non-loopback HTTP endpoints; redirects are not followed.
+
+Client-only secret inputs such as `${input:token}` cannot be read from the CLI.
+For HTTP bearer authentication, provide the value through your environment or
+secret manager, then name the variable, not the token:
+
+```sh
+mindleak-light agent check --client vscode --workspace . --connect --token-env MINDLEAK_HTTP_TOKEN
+```
+
+The token is never written into the policy or installer state. Existing literal
+headers, `${env:NAME}`/`${NAME}` variables, and Codex's `bearer_token_env_var`
+are also supported. The probe does not load `.env`, VS Code `envFile`, saved
+client inputs, or OAuth sessions; supply the equivalent environment explicitly
+or check those connections in the actual client. There is no development-token
+fallback and unresolved variables fail before connection.
+
+The JSON report includes `mode` (`general` or `scoped`) and `scope` (`null` in
+general mode). It distinguishes `instructionsInstalled`, `serverConfigured`, and
+`connection.status` (`not_checked`, `verified`, or `failed`). `clientPermissions`
+remains `not_checked`; `agentBehaviour` remains `not_measured`. A successful SDK
+connection cannot establish client tool permissions, native skill discovery,
+database health, or automatic agent use. Restart the client session and use the
+[fresh-session acceptance checklist](INTEGRATION.md#verify-the-agent-behaviour).
+
+Files are replaced atomically one at a time, with installer state written last;
+the whole installation is not a filesystem transaction. An interrupted run can
+leave a partial installation. Review `--dry-run` before retrying. If
+`.mindleak/agent-setup.lock` remains after a crash, confirm no installer is active
+before removing that empty lock directory. Never remove a database volume as
+part of instruction repair.
+
+Provenance and evidence rules apply in both modes. Unscoped facts can link to
+other unscoped facts, but a general write cannot supersede or reinforce a scoped
+target. Use an explicitly approved scoped operation for that target; never drop
+a corrective link or scope restriction to force a write through.
 
 ## All-in-One Container
 

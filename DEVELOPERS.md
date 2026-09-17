@@ -153,6 +153,22 @@ checks, not model-behaviour or native Copilot/Claude/Codex activation evidence;
 record those separately using the [acceptance checklist](docs/INTEGRATION.md#verify-the-agent-behaviour).
 Never turn an unrun client combination into a compatibility claim.
 
+The unreleased [project installer](docs/INSTALL.md#automatic-project-setup) lives
+in [agent_setup.rs](crates/mindleak-mcp/src/agent_setup.rs); its
+[connection probe](crates/mindleak-mcp/src/agent_setup/probe.rs) uses the official
+SDK rather than hand-written MCP requests. Both run before server environment
+loading. The binary embeds the existing skill resources, so packaging and Docker
+builds must include their source paths. Keep installation in this owning module
+when integrating other setup commands; do not add another instruction writer.
+
+Focused checks are `cargo test -p mindleak-mcp --bin mindleak-light agent_` and
+the existing MCP HTTP test plus
+`mcp_lifecycle::agent_setup_installs_and_checks_real_stdio_without_writes` in the
+database suite. Cover unchanged project configuration, stable memory modes/scopes, repeated
+installation, edited managed blocks/resources, symlinks, credential privacy,
+actual SDK discovery, and honest unmeasured client behaviour. Schema discovery
+does not authorize tool use or prove that an agent invoked memory.
+
 ### Released-Baseline Gate
 
 The required PostgreSQL CI job also runs

@@ -11,6 +11,15 @@ token on every route, including health. It rejects browser Origin headers, limit
 request bodies to 256 KiB, and does not enable CORS. Tokens are compared using a
 constant-time primitive. This is not OAuth or a per-agent authorization system.
 
+The unreleased [project instruction installer](docs/INSTALL.md#automatic-project-setup)
+edits only explicitly selected project files. It does not install credentials,
+grant tool permissions, create a database, or change global client profiles.
+Its default checks inspect files only. `--connect` explicitly authorizes contact
+with the selected HTTP server or execution of the selected stdio command; trust
+that command as you would any local program. Connection reports omit credential
+values and provider bodies. Installed instructions and server-supplied reminders
+remain guidance, not an enforcement or authorization mechanism.
+
 The unreleased local launcher offers credential-free Docker/stdio, validates
 local engine endpoints and pins the selected container ID in generated VS Code
 configuration. New trials publish no ports and use `--network none`. Their
@@ -61,6 +70,11 @@ contents. Avoid turning on wire-level logging in external proxies or clients.
 Recalled text is untrusted data. Agents must not follow instructions embedded in
 memories merely because a fragment scored highly. The extraction prompt and MCP
 descriptions reinforce this boundary; they do not eliminate prompt injection.
+
+General memory omits recall's scope filter and can return matching facts from
+any scope in the same authorized deployment. It is not a separate private store.
+The installer requires an explicit mode choice and refuses to broaden an existing
+scoped setup implicitly. General writes still cannot link across scopes.
 
 Context scopes and evidence sessions are also caller-supplied, not access controls
 or proof of independent corroboration. The lifecycle rejects cross-scope links,

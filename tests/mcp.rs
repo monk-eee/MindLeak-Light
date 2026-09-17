@@ -1238,6 +1238,89 @@ async fn http_requires_auth_rejects_origins_and_serves_the_same_tools() {
         .unwrap();
     assert_eq!(result.structured_content.unwrap()["results"], json!(FACTS));
     sdk_client.cancel().await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join(".vscode")).unwrap();
+    let configuration = serde_json::to_vec_pretty(&json!({"servers":{"selected-memory":{
+        "type":"http", "url":format!("{base}/mcp"),
+        "headers":{"Authorization":"Bearer ${input:private-token}"}
+    }}}))
+    .unwrap();
+    let config_path = directory.path().join(".vscode/mcp.json");
+    std::fs::write(&config_path, &configuration).unwrap();
+    let provider_calls = provider.received_requests().await.unwrap().len();
+    let scope = format!("agent-http-{}", Uuid::new_v4());
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mindleak-light"));
+        command.current_dir(directory.path()).env_clear();
+        command
+    };
+    let arguments = [
+        "agent",
+        "setup",
+        "--client",
+        "vscode",
+        "--server",
+        "selected-memory",
+        "--scope",
+        &scope,
+        "--connect",
+    ];
+    let unresolved = command().args(arguments).output().await.unwrap();
+    assert!(!unresolved.status.success());
+    let result: Value = serde_json::from_slice(&unresolved.stdout).unwrap();
+    assert_eq!(result["connection"]["status"], "failed");
+    assert!(result["connection"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("--token-env"));
+    assert!(!directory.path().join(".mindleak").exists());
+    let connected = command()
+        .args(arguments)
+        .args(["--token-env", "MINDLEAK_AGENT_CHECK_TOKEN"])
+        .env("MINDLEAK_AGENT_CHECK_TOKEN", TOKEN)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        connected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&connected.stderr)
+    );
+    let result: Value = serde_json::from_slice(&connected.stdout).unwrap();
+    assert_eq!(result["connection"]["status"], "verified");
+    assert_eq!(result["connection"]["memoryCalls"], 0);
+    assert_eq!(result["instructionsInstalled"], true);
+    assert_eq!(result["agentBehaviour"], "not_measured");
+    assert_eq!(std::fs::read(&config_path).unwrap(), configuration);
+    assert!(!String::from_utf8_lossy(&connected.stdout).contains(TOKEN));
+    assert!(!String::from_utf8_lossy(&connected.stderr).contains(TOKEN));
+    let wrong = command()
+        .args([
+            "agent",
+            "check",
+            "--client",
+            "vscode",
+            "--connect",
+            "--token-env",
+            "MINDLEAK_AGENT_CHECK_TOKEN",
+        ])
+        .env(
+            "MINDLEAK_AGENT_CHECK_TOKEN",
+            "mindleak-wrong-private-credential-canary",
+        )
+        .output()
+        .await
+        .unwrap();
+    assert!(!wrong.status.success());
+    assert!(!String::from_utf8_lossy(&wrong.stdout).contains("credential-canary"));
+    assert!(!String::from_utf8_lossy(&wrong.stderr).contains("credential-canary"));
+    let result: Value = serde_json::from_slice(&wrong.stdout).unwrap();
+    assert_eq!(result["instructionsInstalled"], true);
+    assert_eq!(result["connection"]["status"], "failed");
+    assert_eq!(
+        provider.received_requests().await.unwrap().len(),
+        provider_calls
+    );
     cancellation.cancel();
     server.await.unwrap();
 }
