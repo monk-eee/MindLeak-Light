@@ -55,6 +55,10 @@ impl KnowledgeFormer for OpenAiDecomposer {
         &self.model
     }
 
+    fn capabilities(&self) -> mindleak_memory::ProcessingCapabilities {
+        mindleak_memory::MemoryDecomposer::capabilities(self)
+    }
+
     async fn form(&self, sources: &FormationContext) -> Result<KnowledgeFormation> {
         sources.validate()?;
         let mut schema = serde_json::to_value(schemars::schema_for!(KnowledgeFormation))?;
@@ -163,6 +167,9 @@ mod tests {
             "test".into(),
             String::new(),
         );
+        let capabilities = KnowledgeFormer::capabilities(&provider);
+        assert_eq!(capabilities.mode, "openai");
+        assert_eq!(capabilities.model.as_deref(), Some("test"));
         assert!(provider.form(&sources).await.unwrap().documents.is_empty());
     }
 }

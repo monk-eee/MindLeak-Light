@@ -61,6 +61,81 @@ fn action(previous: &PreparedChain, chain: ChainCommand) -> PreparedChain {
 }
 
 #[tokio::test]
+async fn explicit_knowledge_matching_preserves_default_punctuation_and_reports_capabilities() {
+    let (store, _) = setup().await;
+    let observation = memory(&format!("knowledge-matching-{}", Uuid::new_v4()));
+    store.save(&observation).await.unwrap();
+    let mut proposed = propose(&observation);
+    let ChainCommand::Propose { document, .. } = &mut proposed.request.chain else {
+        unreachable!()
+    };
+    document.claim = format!(
+        "Report export keeps branch-kit upgrades within approved policy for {}",
+        observation.agent_id
+    );
+    let receipt = store.save_chain(&proposed).await.unwrap();
+    let retriever = KeywordMemoryRetriever::new(store.clone());
+    let mut filter = ChainFilter {
+        agent_id: Some(observation.agent_id),
+        include_candidates: true,
+        ..Default::default()
+    };
+    let hits = retriever
+        .recall_chains("report export", &filter, 5)
+        .await
+        .unwrap();
+    assert_eq!(hits[0].chain.chain_id, receipt.chain_id);
+    assert!(retriever
+        .recall_chains("report-export", &filter, 5)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(retriever
+        .recall_chains("report export API", &filter, 5)
+        .await
+        .unwrap()
+        .is_empty());
+    filter.match_mode = mindleak_memory::KeywordMatchMode::Any;
+    let explicit = retriever
+        .recall_chains("report-export API", &filter, 5)
+        .await
+        .unwrap();
+    assert_eq!(
+        explicit.len(),
+        1,
+        "explicit any-term matching must use its requested parser"
+    );
+    assert_eq!(explicit[0].chain.chain_id, receipt.chain_id);
+    filter.match_mode = mindleak_memory::KeywordMatchMode::All;
+    assert!(retriever
+        .recall_chains("report export API", &filter, 5)
+        .await
+        .unwrap()
+        .is_empty());
+    let capability = retriever.capabilities();
+    assert_eq!(capability.strategy, "keyword");
+    assert!(capability.embedding_model.is_none());
+    assert_eq!(capability.match_modes.len(), 3);
+    let vector =
+        VectorMemoryRetriever::new(store.clone(), Arc::new(CountingQueryEmbedder::default()));
+    assert_eq!(vector.capabilities().strategy, "vector");
+    assert_eq!(
+        vector.capabilities().embedding_model.as_deref(),
+        Some("test-model")
+    );
+    assert!(
+        vector
+            .recall_chains("report export", &filter, 5)
+            .await
+            .is_err(),
+        "vector-only search must refuse literal keyword controls"
+    );
+    let hybrid = HybridMemoryRetriever::new(store, Arc::new(CountingQueryEmbedder::default()));
+    assert_eq!(hybrid.capabilities().strategy, "hybrid");
+    assert_eq!(hybrid.capabilities().match_modes.len(), 3);
+}
+
+#[tokio::test]
 async fn backup_canaries_separate_observations_from_derived_knowledge() {
     let (store, database) = setup().await;
     let observation = memory(&format!("backup-knowledge-canary-{}", Uuid::new_v4()));

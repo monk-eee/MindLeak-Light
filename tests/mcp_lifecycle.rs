@@ -42,6 +42,10 @@ fn optional_knowledge_recipes_preserve_typed_arguments_and_scope() {
         .contains("schema"));
     let calls = manifest["knowledgeCalls"].as_object().unwrap();
     assert_eq!(calls.len(), 13);
+    let learning = manifest["learningCalls"].as_object().unwrap();
+    assert_eq!(learning.len(), 2);
+    let mut calls = calls.clone();
+    calls.extend(learning.clone());
     let bindings = HashMap::from([
         ("$AGENT_ID", json!("recipe-agent")),
         ("$SCOPE", json!("synthetic:knowledge-recipes")),
@@ -79,7 +83,11 @@ fn optional_knowledge_recipes_preserve_typed_arguments_and_scope() {
         let scoped = arguments["scope"] == bindings["$SCOPE"]
             || arguments["context"]["scope"] == bindings["$SCOPE"]
             || arguments["formation"]["scope"] == bindings["$SCOPE"];
-        assert!(scoped, "recipe {name} lost its scope");
+        if name == "capabilities" {
+            assert_eq!(arguments, json!({"knowledge":{"operation":"capabilities"}}));
+        } else {
+            assert!(scoped, "recipe {name} lost its scope");
+        }
         let valid = match request.name.as_ref() {
             "write_memory" => {
                 serde_json::from_value::<mindleak_mcp::WriteMemoryInput>(arguments).is_ok()
@@ -207,7 +215,7 @@ async fn companion_recipes_support_fresh_client_handoff_and_correction() {
         "../.agents/skills/mindleak-memory/references/tool-recipes.json"
     ))
     .unwrap();
-    assert_eq!(recipes["skillVersion"], "1.2.0");
+    assert_eq!(recipes["skillVersion"], "1.3.0");
     let scope = format!("companion-{}", Uuid::new_v4());
     let writer = format!("companion-writer-{}", Uuid::new_v4());
     let mut bindings = HashMap::from([
@@ -242,6 +250,31 @@ async fn companion_recipes_support_fresh_client_handoff_and_correction() {
                 .iter()
                 .any(|tool| tool.name.as_ref() == request["name"].as_str().unwrap()));
         }
+        let learning = json!({"calls":recipes["learningCalls"]});
+        let mut learning_bindings = bindings.clone();
+        learning_bindings.insert("$QUERY", json!("Solstice timeout"));
+        let capabilities = client
+            .call_tool(recipe(&learning, "capabilities", &learning_bindings))
+            .await
+            .unwrap();
+        assert_ne!(capabilities.is_error, Some(true));
+        assert_eq!(
+            capabilities.structured_content.unwrap()["learning"]["agentAuthoredChains"],
+            true
+        );
+        let compact = client
+            .call_tool(recipe(&learning, "compact_search", &learning_bindings))
+            .await
+            .unwrap();
+        assert_ne!(compact.is_error, Some(true));
+        let compact = compact.structured_content.unwrap();
+        assert_eq!(compact["view"], "compact");
+        assert!(compact.get("diagnostics").is_none() && compact.get("costDiagnostics").is_none());
+        assert!(compact["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|fact| fact["scope"] == scope));
         if phase == 0 {
             let (connection, task) =
                 tokio_postgres::connect(&database_url(), tokio_postgres::NoTls)

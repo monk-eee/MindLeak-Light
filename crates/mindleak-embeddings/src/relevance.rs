@@ -77,6 +77,12 @@ impl OpenAiRelevanceRetriever {
 
 #[async_trait]
 impl MemoryRetriever for OpenAiRelevanceRetriever {
+    fn capabilities(&self) -> mindleak_memory::RetrievalCapabilities {
+        let mut capabilities = self.candidates.capabilities();
+        capabilities.relevance_model = Some(self.model.clone());
+        capabilities
+    }
+
     fn chain_strategy(&self) -> &'static str {
         self.candidates.chain_strategy()
     }
@@ -224,6 +230,7 @@ impl MemoryRetriever for OpenAiRelevanceRetriever {
 
 impl OpenAiRelevanceRetriever {
     async fn select(&self, input: String, texts: &[&str]) -> Result<HashSet<usize>> {
+        let started = std::time::Instant::now();
         let mut body = json!({
             "model": self.model,
             "stream": false,
@@ -311,6 +318,12 @@ impl OpenAiRelevanceRetriever {
                 "relevance evidence is not an exact candidate quotation"
             );
         }
+        mindleak_memory::record_provider_call(mindleak_memory::ProviderCall {
+            operation: "relevance",
+            model: self.model.clone(),
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            usage: mindleak_memory::ProviderUsage::from_response(&response.usage),
+        });
         Ok(selected)
     }
 }
@@ -318,6 +331,8 @@ impl OpenAiRelevanceRetriever {
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: serde_json::Value,
 }
 
 #[derive(Deserialize)]

@@ -1,8 +1,9 @@
 {
   "schemaVersion": 1,
-  "skillVersion": "1.2.0",
+  "skillVersion": "1.3.0",
   "minimumServerVersion": "0.4.0",
   "knowledgeAvailability": "Available from 0.6.0: use knowledgeCalls only when the actual server schema advertises chain, knowledge and formation. The minimum server version above applies to ordinary calls. Formation additionally requires an operator-enabled model.",
+  "learningAvailability": "Unreleased, targeting 0.7.0: learningCalls require the advertised knowledge capabilities operation and compact search view. Published 0.6.0 does not support them. Agent-authored knowledgeCalls still work without a formation model; capabilities grants no permissions.",
   "purpose": "Synthetic call templates for the companion workflow and its contract tests. Replace the example content with verified task evidence. Do not ingest these demonstration facts into production.",
   "placeholders": {
     "$AGENT_ID": "Stable contribution identity of the actual writer; different agents use their own identities.",
@@ -123,6 +124,16 @@
     "export": {
       "name": "recall_memory",
       "arguments": {"knowledge": {"operation": "export", "chainId": "$CHAIN_ID", "format": "markdown"}, "scope": "$SCOPE", "limit": 5}
+    }
+  },
+  "learningCalls": {
+    "capabilities": {
+      "name": "recall_memory",
+      "arguments": {"knowledge": {"operation": "capabilities"}}
+    },
+    "compact_search": {
+      "name": "recall_memory",
+      "arguments": {"knowledge": {"operation": "search", "query": "$QUERY", "view": "compact"}, "scope": "$SCOPE", "limit": 5}
     }
   },
   "generalCalls": {
