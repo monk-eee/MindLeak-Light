@@ -19,6 +19,7 @@ fn private(path: &Path) {
         let script = "$ErrorActionPreference='Stop'; $path=$env:ML_PRIVATE_FIXTURE; $me=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; if((Get-Item -LiteralPath $path).PSIsContainer){$acl=[System.Security.AccessControl.DirectorySecurity]::new();$rule=[System.Security.AccessControl.FileSystemAccessRule]::new($me,'FullControl','ContainerInherit,ObjectInherit','None','Allow')}else{$acl=[System.Security.AccessControl.FileSecurity]::new();$rule=[System.Security.AccessControl.FileSystemAccessRule]::new($me,'FullControl','Allow')}; $acl.SetOwner($me);$acl.SetAccessRuleProtection($true,$false);$acl.AddAccessRule($rule);Set-Acl -LiteralPath $path -AclObject $acl";
         let output = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env_remove("PSModulePath")
             .env("ML_PRIVATE_FIXTURE", dunce::simplified(path))
             .output()
             .unwrap();
