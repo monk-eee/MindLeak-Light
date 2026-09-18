@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "skillVersion": "1.4.0",
+  "skillVersion": "1.4.1",
   "minimumServerVersion": "0.4.0",
   "knowledgeAvailability": "Available from 0.6.0: use knowledgeCalls only when the actual server schema advertises chain, knowledge and formation. The minimum server version above applies to ordinary calls. Formation additionally requires an operator-enabled model.",
   "learningAvailability": "Unreleased, targeting 0.7.0: learningCalls require the advertised knowledge capabilities operation and compact search view. Published 0.6.0 does not support them. Agent-authored knowledgeCalls still work without a formation model; capabilities grants no permissions.",
