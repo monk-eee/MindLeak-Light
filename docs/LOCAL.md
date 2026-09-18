@@ -1,5 +1,10 @@
 # Local MindLeak with VS Code
 
+Run MindLeak locally to form and share evidence-backed knowledge between agents.
+The write/recall check below verifies the connection; continue with the
+[learning policy](../README.md#give-your-agent-a-memory-policy) and
+[first chain workflow](../README.md#form-and-reuse-knowledge) after it succeeds.
+
 The supported trial path is Docker/stdio. Your operating-system account's access
 to Docker is the local trust boundary. No token generation, token copying,
 secret-store configuration or OAuth registration is required.

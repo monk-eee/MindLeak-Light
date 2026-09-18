@@ -1,14 +1,42 @@
-# Architecture
+# Knowledge Formation Architecture
 
-One executable exposes three MCP tools over one PostgreSQL database. Models are
-optional. The default preserves source text and uses sentence/list decomposition
-with keyword recall.
+MindLeak turns agent experience into reusable knowledge:
+
+**Observations -> evidence-backed Chains of Memory -> validated Principles -> later reuse.**
+
+The authoring agent captures sources, proposes conditional beliefs, runs its
+validation, and records the outcome. The server preserves evidence, validates
+references and revisions, and retrieves the resulting knowledge for future agents.
+Explicit challenge and revision close the loop when experience changes a belief.
+There is no automatic acceptance or learning side effect from retrieval.
+
+One executable exposes three MCP tools over one PostgreSQL database. Agent-authored
+knowledge needs no helper model. The underlying observation path preserves source
+text with sentence/list decomposition and keyword recall by default.
 
 This guide describes v0.6.0: knowledge formation, domain records, bounded migrations
-and administrative backups. Those additions are not in older v0.5.0 packages.
+and administrative backups, plus explicitly marked unreleased work targeting v0.7.0.
+The v0.6.0 additions are not in older v0.5.0 packages.
 See [installation](INSTALL.md) for release availability. The existing memory-engine
 diagrams are editable in the [architecture board](../assets/architecture.excalidraw);
-the optional knowledge flow is shown separately below.
+the knowledge-formation flow is described first below. See the
+[product thesis](../RATIONALE.md) and [ADR-0024](../adr.d/0024-knowledge-formation-product.md).
+
+## Knowledge Comes First
+
+| Stage | Owner | Durable Result |
+|---|---|---|
+| Observe | Agent using `write_memory` | Exact source episode and fragment IDs |
+| Form | Agent, optionally assisted by `decompose_memory.formation` | Candidate chain with source-backed justification and limits |
+| Validate | Agent runs actual checks, then records `chain.operation: accept` | Attributed validation and an accepted revision |
+| Generalize | Agent proposes and validates a principle | Pinned supporting chains, distinct source lineage, preserved exceptions |
+| Reuse | Fresh agent uses `recall_memory.knowledge` | Read-only principles, chains, and observations with applicability |
+| Learn Again | Agent records new outcomes and explicit challenge/revision | Changed beliefs and review-required dependents without lost history |
+
+The hierarchy is bounded and source-linked, not recursive graph inference.
+Application-level policy chooses this workflow; ordinary wire defaults do not
+change. Formation integrity, demonstrated later use, and measured comparative
+improvement have separate [verification criteria](VALIDATION.md#learning-acceptance).
 
 ![System overview: one MCP executable, optional model providers, and three PostgreSQL tables](../assets/architecture-overview.svg)
 
@@ -85,6 +113,11 @@ accuracy of extracted prose. See [retry safety](../adr.d/0011-idempotent-memory-
 
 ## Knowledge Formation
 
+Knowledge formation is the product's central workflow. The core preserves
+observations, conditional conclusions and revisions; real agent formation, later
+reuse and measured benefit are distinct evaluation claims. A formation model is
+an optional assistant to the authoring agent.
+
 1. Preserve observations and their exact sources.
 2. Preview candidate chains, optionally using a configured model.
 3. Check evidence, run validation and explicitly accept a chain revision.
@@ -102,7 +135,30 @@ prevents cycles without recursive graph reasoning.
 observations still available. Knowledge and its references share a final read-only
 snapshot after provider work; observations use their normal separate snapshot.
 Changed support sets `requiresReview` without rewriting historical acceptance.
-Revisions retain direct and inherited counterexamples.
+Revisions retain direct and inherited counterexamples, including those added to
+prior supports after pinning. Revision transactions lock old and new supporting
+heads in stable order; missing prior heads cannot be treated as absent evidence.
+
+Unreleased v0.7.0 controls add a deterministic `compact` projection with a 32 KiB
+JSON cap. It keeps complete conditions, counterexample IDs/reasons and factual
+review reasons; full evidence stays behind exact inspection. Capability discovery
+reads the configured abstractions without model/database work, separating agent
+authoring from optional extraction, formation and semantic retrieval. Knowledge
+search reuses ordinary keyword parsing with explicit modes and no broadening.
+Projection precedes the chosen view's aggregate byte check. Search hydration skips
+inspection-only raw source/history; full inspection keeps its own existing cap.
+
+Agent-guided evidence checkpoints expose capture moments and a format through
+capabilities, MCP instructions and the companion skill. Capture templates use
+ordinary atomic writes and the existing source-summary search index. They add no
+server triggers, scheduler, table, permissions or automatic feedback. Agents decide
+whether new verified evidence warrants capture, correction or no write.
+
+Optional search cost diagnostics collect request-local embedding/relevance calls,
+provider-reported usage, elapsed retrieval time and structured response bytes.
+Unknown usage stays null; query-cache hits do not duplicate provider work. No
+telemetry table, persistent counter, model rewrite or read-time learning effect is
+introduced. See [ADR-0023](../adr.d/0023-agent-learning-context.md).
 
 Export is a bounded JSON/Markdown projection, not a model rewrite or server file
 write. Ordinary memory calls remain unchanged and exclude derived episodes.
@@ -216,6 +272,7 @@ engine and key with the recovery plan. See [backup operations](BACKUP.md).
 | Knowledge results / direct supports | 10 / 8 |
 | Formation input / output candidates | 128 KiB / 3 |
 | Expanded context / complete payload | 32 KiB / 512 KiB |
+| Compact knowledge payload (unreleased) | 32 KiB including diagnostics |
 
 Bounds are serialized UTF-8 bytes, not tokens. Truncation flags retain references
 and identify omitted details. These bounds do not establish large-corpus capacity.

@@ -21,6 +21,33 @@ const nativeBaselineAvailable = Object.hasOwn(
   `${process.platform}-${process.arch}`,
 );
 
+test("knowledge-first onboarding introduces the hierarchy before setup", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  assert.match(readme, /^# MindLeak$/m);
+  assert.match(readme, /Agents Don't Need More Memory\.[\s\S]*They Need To Learn\./);
+  const introduction = readme.slice(0, readme.indexOf("## Quickstart"));
+  assert.match(introduction, /knowledge formation (system )?for agents/i);
+  assert.match(introduction, /Observations[\s\S]*Chains of Memory[\s\S]*Principles/);
+  assert.match(introduction, /evidence-backed/i);
+  assert.match(introduction, /future agents can reuse/i);
+  assert.ok(!introduction.includes("100,000"), "hypothetical compression counts must not appear as measured results");
+});
+
+test("lab integration prerequisites fail without retaining MCP children", {
+  skip: !process.env.MINDLEAK_LAB2_TEST_BINARY && "Set MINDLEAK_LAB2_TEST_BINARY for the owned child-process probe.",
+}, async () => {
+  const environment = { ...process.env, MINDLEAK_VALIDATION_CODE_ENGINE: "unavailable" };
+  delete environment.NODE_TEST_CONTEXT;
+  const result = await captureBenchmark(["--test", "--test-name-pattern=Lab 2 full relay|Lab 3 runs optional-memory",
+    fileURLToPath(new URL("../examples/validation-harness.test.mjs", import.meta.url))], {
+    timeout: 15000, env: environment,
+  });
+  assert.equal(result.error, undefined, "failed setup must exit normally, not require a timeout to kill leaked servers");
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout + result.stderr, /code_engine_must_be_podman_or_docker/);
+  assert.match(result.stdout, /(?:tests 2|1\.\.2)/);
+});
+
 function fixture(context) {
   const directory = mkdtempSync(join(tmpdir(), "mindleak-light-records-"));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -585,7 +612,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   assert.match(frontmatter, /^name: mindleak-memory$/m);
   const description = JSON.parse(/^description: (".*")$/m.exec(frontmatter)?.[1] ?? "null");
   assert.ok(typeof description === "string" && description.length <= 1024 && description.includes("agents"));
-  assert.match(frontmatter, /version: "1\.2\.1"/);
+  assert.match(frontmatter, /version: "1\.4\.1"/);
   assert.doesNotMatch(frontmatter, /^(?:allowed-tools|hooks|context|agent|model):/m);
   assert.doesNotMatch(skill, /^!`|^```!/m);
   assert.ok(skill.split("\n").length < 250, "keep the on-demand workflow compact");
@@ -597,9 +624,27 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   }
   const recipes = JSON.parse(readFileSync(join(directory, "references/tool-recipes.json"), "utf8"));
   assert.equal(recipes.schemaVersion, 1);
-  assert.equal(recipes.skillVersion, "1.2.1");
+  assert.equal(recipes.skillVersion, "1.4.1");
   for (const term of ["formation", "principle", "requiresReview", "counterEvidenceReviewed", "supportedBy"]) assert.ok(skill.includes(term));
   assert.equal(recipes.minimumServerVersion, "0.4.0");
+  assert.match(recipes.learningAvailability, /Unreleased.*0\.7\.0.*schema|Unreleased.*0\.7\.0.*advertised/);
+  assert.deepEqual(Object.keys(recipes.learningCalls).sort(), ["capabilities", "compact_search"]);
+  assert.deepEqual(recipes.learningCalls.capabilities.arguments, {knowledge: {operation: "capabilities"}});
+  assert.deepEqual(recipes.learningCalls.compact_search.arguments, {
+    knowledge: {operation: "search", query: "$QUERY", view: "compact"}, scope: "$SCOPE", limit: 5,
+  });
+  for (const recipe of Object.values(recipes.learningCalls)) assert.equal(recipe.name, "recall_memory");
+  assert.deepEqual(Object.keys(recipes.captureCalls).sort(), ["general", "project"]);
+  for (const [mode, recipe] of Object.entries(recipes.captureCalls)) {
+    assert.equal(recipe.name, "write_memory");
+    assert.deepEqual(recipe.arguments, {
+      agentId: "$AGENT_ID", requestId: "$REQUEST_ID", text: "$FACT_TEXT",
+      context: {...(mode === "project" ? {scope: "$SCOPE"} : {}), sessionId: "$SESSION_ID", source: "$SOURCE", summary: "$RETRIEVAL_CUES"},
+    });
+  }
+  for (const term of ["Evidence Checkpoints", "before handoff", "captureCalls.project", "retrieval cues", "No quota"]) {
+    assert.ok(skill.includes(term), `missing checkpoint boundary: ${term}`);
+  }
   assert.ok(skill.includes("General recall searches across all scopes"));
   assert.ok(skill.includes("Two unscoped facts may be linked"));
   for (const recipe of Object.values(recipes.generalCalls)) {
@@ -630,13 +675,13 @@ test("memory activation closes the capture and reuse loop without requiring note
   const directory = fileURLToPath(new URL("../.agents/skills/mindleak-memory/", import.meta.url));
   const policy = readFileSync(join(directory, "references/agent-policy.md"), "utf8");
   const skill = readFileSync(join(directory, "SKILL.md"), "utf8");
-  for (const phrase of ["memory checkpoint", "verified result, failure, exception, or decision", "what is new", "no new learning", "After applying a lesson"]) {
+  for (const phrase of ["Evidence Checkpoints", "verified result, failure, exception, or decision", "new reusable evidence", "no new learning", "Record later application outcomes"]) {
     assert.ok(policy.includes(phrase), `missing memory activation trigger: ${phrase}`);
   }
-  for (const phrase of ["Progressive Retrieval", "Checkpoint Outcomes", "applicability", "revision", "original requestId", "no note quota"]) {
+  for (const phrase of ["Inspect chains and source observations as needed", "Capture At Evidence Checkpoints", "applicability", "revision", "resend that exact request with the same ID", "No quota", "acknowledged IDs or an unresolved write", "keep memory frozen until paired arms finish"]) {
     assert.ok(skill.includes(phrase), `missing concrete memory practice: ${phrase}`);
   }
-  for (const phrase of ["observations", "chains", "principles", "Before implementation", "explicitly enabled knowledge workflow", "Repeated runs alone"]) {
+  for (const phrase of ["observations", "Chains of Memory", "Principles", "Use applicable principles", "Validate before accepting", "Repeated runs alone"]) {
     assert.ok(policy.includes(phrase), `missing task-start knowledge orientation: ${phrase}`);
   }
   for (const phrase of ["Memory use is optional", "active retrieval mode", "one focused refinement"]) {
@@ -652,6 +697,9 @@ test("agent instructions and onboarding use the same companion activation policy
   const policy = readFileSync(join(root, ".agents/skills/mindleak-memory/references/agent-policy.md"), "utf8");
   const block = /```text\n([\s\S]*?)\n```/.exec(policy)?.[1];
   assert.ok(block);
+  for (const concept of ["knowledge formation", "observations", "Chains of Memory", "Principles", "Validate before accepting", "counterevidence", "no new learning"]) {
+    assert.ok(block.includes(concept), `missing knowledge workflow: ${concept}`);
+  }
   for (const file of ["README.md", "docs/INTEGRATION.md"]) {
     const text = readFileSync(join(root, file), "utf8");
     assert.ok(text.includes(`\x60\x60\x60text\n${block}\n\x60\x60\x60`), `${file} has a stale activation policy`);
@@ -822,7 +870,7 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   const release = join(directory, "target", target, "release");
   mkdirSync(release, { recursive: true });
   writeFileSync(join(release, "mindleak-light"), "test executable\n");
-  for (const name of ["README.md", "LICENSE", "SECURITY.md"]) writeFileSync(join(directory, name), name);
+  for (const name of ["README.md", "LICENSE", "SECURITY.md", "RATIONALE.md"]) writeFileSync(join(directory, name), name);
   const branding = [
     "mindleak_logo.png", "mindleak_128x128.png", "architecture.excalidraw",
     "architecture-overview.svg", "architecture-write.svg", "architecture-recall.svg",
@@ -831,11 +879,12 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   mkdirSync(join(directory, "assets"));
   for (const name of branding) writeFileSync(join(directory, "assets", name), `test image: ${name}\n`);
   mkdirSync(join(directory, "docs"));
-  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md", "BACKUP.md", "DOMAIN-RELATIONSHIPS.md", "MIGRATIONS.md", "CHAINS.md"];
+  const guides = ["INSTALL.md", "INTEGRATION.md", "MODELS.md", "LIFECYCLE.md", "ARCHITECTURE.md", "LOCAL.md", "BACKUP.md", "DOMAIN-RELATIONSHIPS.md", "MIGRATIONS.md", "CHAINS.md",
+    "VALIDATION.md", "BENCHMARKS.md", "BENCHMARK-RESULTS.md", "KNOWN-LIMITATIONS.md", "REVIEW-STATUS.md"];
   for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
-  const backupRecords = ["adr.d/0021-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md"];
+  const backupRecords = ["adr.d/0021-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md", "adr.d/0024-knowledge-formation-product.md"];
   for (const name of backupRecords) {
     mkdirSync(dirname(join(directory, name)), { recursive: true });
     writeFileSync(join(directory, name), `# ${name}\n`);
@@ -850,6 +899,8 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   const contents = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" });
   assert.match(contents, /mindleak-light/);
   assert.match(contents, /LICENSE/);
+  assert.ok(contents.includes("RATIONALE.md"), "native users need the product thesis alongside setup");
+  assert.deepEqual(execFileSync("tar", ["-xOf", archive, "./RATIONALE.md"]), readFileSync(join(directory, "RATIONALE.md")));
   for (const name of branding) {
     assert.ok(contents.includes(`assets/${name}`), `release archive is missing ${name}`);
     const packaged = execFileSync("tar", ["-xOf", archive, `./assets/${name}`]);

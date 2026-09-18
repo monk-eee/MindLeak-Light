@@ -1,8 +1,10 @@
 #[path = "knowledge.rs"]
 mod knowledge;
 pub use knowledge::{
-    KnowledgeExport, KnowledgeExportFormat, KnowledgeMatch, KnowledgeQuery, KnowledgeReview,
-    KnowledgeReviewPage, KnowledgeSearchResponse,
+    CompactCounterevidence, CompactKnowledge, CompactKnowledgeResponse, CompactObservation,
+    CompactSupport, KnowledgeExport, KnowledgeExportFormat, KnowledgeMatch, KnowledgeQuery,
+    KnowledgeReview, KnowledgeReviewPage, KnowledgeSearchOptions, KnowledgeSearchResponse,
+    KnowledgeView, KnowledgeViewResponse, MAX_COMPACT_KNOWLEDGE_BYTES,
 };
 
 use std::{
@@ -418,6 +420,47 @@ impl MemoryService {
             .into());
         }
         Ok(results)
+    }
+
+    pub async fn search_chains(
+        &self,
+        query: &str,
+        filter: &ChainFilter,
+        limit: usize,
+        diagnostics: bool,
+        costs: bool,
+    ) -> Result<crate::SearchReport<ChainSearchResponse>> {
+        let started = std::time::Instant::now();
+        let (response, usage) =
+            crate::diagnostics::capture_usage(costs, self.recall_chains(query, filter, limit))
+                .await;
+        let response = response?;
+        let diagnostics = if diagnostics {
+            Some(
+                self.retriever
+                    .query_diagnostics(
+                        query,
+                        &RecallFilter {
+                            match_mode: filter.match_mode,
+                            agent_id: filter.agent_id.clone(),
+                            scope: filter.scope.clone(),
+                            ..Default::default()
+                        },
+                    )
+                    .await?,
+            )
+        } else {
+            None
+        };
+        crate::SearchReport::finish(
+            response,
+            diagnostics,
+            started.elapsed().as_secs_f64() * 1000.0,
+            usage,
+            costs,
+            self.retriever.capabilities().provider_calls_instrumented,
+            MAX_RECALL_RESULT_BYTES,
+        )
     }
 
     fn validate_chain_filter(&self, filter: &ChainFilter, limit: usize) -> Result<()> {

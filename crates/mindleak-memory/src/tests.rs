@@ -31,6 +31,36 @@ impl Backend {
 }
 
 #[async_trait]
+impl KnowledgeFormer for Backend {
+    fn model(&self) -> &str {
+        "custom-former"
+    }
+
+    async fn form(&self, _: &FormationContext) -> Result<KnowledgeFormation> {
+        unreachable!("capability discovery must not invoke formation")
+    }
+}
+
+#[test]
+fn capability_discovery_is_local_and_custom_backends_remain_unknown() {
+    let backend = Arc::new(Backend::default());
+    let capabilities = backend
+        .service()
+        .with_knowledge_former(backend.clone())
+        .knowledge_capabilities();
+    assert_eq!(capabilities.formation.mode, "custom");
+    assert_eq!(
+        capabilities.formation.model.as_deref(),
+        Some("custom-former")
+    );
+    assert_eq!(capabilities.decomposition.mode, "custom");
+    assert_eq!(capabilities.retrieval.strategy, "custom");
+    assert!(!capabilities.retrieval.provider_calls_instrumented);
+    assert!(backend.events.lock().unwrap().is_empty());
+    assert!(backend.saved.lock().unwrap().is_empty());
+}
+
+#[async_trait]
 impl MemoryDecomposer for Backend {
     async fn decompose(&self, _text: &str) -> Result<Vec<String>> {
         self.events.lock().unwrap().push("decompose");

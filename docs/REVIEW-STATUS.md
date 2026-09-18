@@ -1,5 +1,16 @@
 # Hardening Review Status
 
+## Knowledge Formation Review
+
+The current product direction is [knowledge formation for agents](../RATIONALE.md).
+Its source/revision guarantees are covered by the [knowledge contract](CHAINS.md)
+and [learning acceptance criteria](VALIDATION.md#learning-acceptance). Accepted
+records, later verified reuse, and controlled improvement are separate review
+questions. The complete held-out benefit evaluation remains open; the historical
+hardening review below is not evidence that agents improve automatically.
+
+## Historical Engine Review
+
 This records the disposition of the 21-item review and the subsequent conceptual
 critique. It describes the hardening in v0.3.0 and the follow-up repairs in v0.4.0.
 The integration combines recall-contract PR #13 (`716029c`), modular-storage PR

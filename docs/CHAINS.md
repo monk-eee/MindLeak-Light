@@ -1,4 +1,8 @@
-# Knowledge Formation: Chains and Principles
+# Knowledge Formation for Agents
+
+**Observations capture experience. Chains of Memory justify beliefs. Principles
+turn validated beliefs into reusable expertise.** Future agents can inspect and
+apply that knowledge without inheriting an earlier conversation.
 
 **Available in v0.6.0, opt-in:** a Chain of Memory is a versioned claim with a recorded
 justification, evidence, applicability, counterexamples, and validation history.
@@ -11,6 +15,52 @@ Original observations remain immutable source episodes and fragments. A chain
 references those fragments rather than replacing them. The calling agent or
 human authors the claim and its concise, auditable rationale; that is not an
 export of a model's private reasoning process.
+
+## Agent Learning
+
+Knowledge formation is MindLeak's central workflow, not a synonym for retaining
+more context. Agent-authored chains already need no formation model. A useful
+chain records a reusable decision, its conditions,
+the observations supporting it, and where it failed. It is not another task log.
+
+Start with a verified observation; look for an existing chain before proposing
+one. Validate the conclusion explicitly. A later agent checks applicability and
+uses the conclusion to choose targeted current checks. New contrary evidence
+justifies a challenge or revision, with counterexamples preserved. A principle
+generalizes accepted chains only where their shared conditions justify it.
+
+The learning policy selects this workflow on a capable approved connection;
+the ordinary MCP defaults remain unchanged. See the [product thesis](../RATIONALE.md)
+and [learning acceptance criteria](VALIDATION.md#learning-acceptance).
+Evaluate formation, correct later reuse/revision, and measured benefit separately.
+More stored notes, agreement or revisions alone does not establish learning.
+The compact/capability/diagnostic additions below are **unreleased work targeting
+v0.7.0**, not features of the published v0.6.0 binaries. Discover the actual schema.
+
+### Evidence Checkpoints
+
+The companion skill's capture workflow aims to prevent useful discoveries being
+lost between solving a problem and ending a session. Notice candidate lessons
+while working, verify them, then decide at a verified fix, failure, changed
+assumption or handoff whether there is new evidence worth keeping. A checkpoint
+can end with no write; it is not a quota.
+
+Reuse equivalent evidence already inspected in the task. The
+[capture recipes](../.agents/skills/mindleak-memory/references/tool-recipes.json)
+use ordinary `write_memory`: qualified conditions, outcome, next action and actual
+verification in `text`; the real reference in `context.source`; short topic/error
+or identifier cues in `context.summary`. This makes a later search possible using
+words the next agent knows, not a private run ID. Choose the configured project or
+general mode, keep a retry key, and verify a new capture is findable once. A miss
+does not justify a duplicate write. Use explicit correction/challenge/revision
+operations when updating an existing belief.
+
+Capability metadata exposes `learning.checkpointMode: agent_guided`,
+`checkpointTriggers` and `captureFormat`; the MCP handshake supplies the same
+guidance. No hook, monitor, model call or write runs automatically. Capture recipes
+use the existing v0.4.0+ contract; the updated skill and capability metadata are
+unreleased. Fresh-client tests prove storage, retrieval and retry behavior, not
+that an agent will follow the guidance or that more captures improve task results.
 
 ## Compatibility
 
@@ -218,6 +268,14 @@ if the new chain is accepted. Update the pinned revision explicitly and validate
 the revised principle again. Challenges can still be recorded against stale
 principles; invalid support cannot be used to accept them.
 
+The unreleased fixes check counterexamples in both the pinned revisions and the
+current heads of prior supports, including challenges recorded after pinning.
+Old and new supporting heads are locked in a stable order during revision. A
+missing prior head fails safely instead of implying no later counterevidence.
+Inspect a changed support's current head as well as its pinned revision before
+revising; the pinned document does not contain later challenges. Directly retained
+counterexamples must be included in the new acceptance's explicit review.
+
 `state` (`candidate`, `accepted`, `retired`) and `review` (`unreviewed`,
 `reviewed`, `challenged`) are independent. An accepted chain can become
 challenged. Revising it returns it to candidate status. Older revisions are
@@ -231,6 +289,93 @@ probability, ranking score, or acceptance condition. Omitting it is preferable
 to inventing precision.
 
 ## Retrieve Knowledge Explicitly
+
+### Compact Learning Context
+
+For the unreleased v0.7.0 controls, first check that the advertised schema supports
+capability discovery. This call uses local configuration only, with no database
+or model work and no search filters or limit:
+
+```json
+{"knowledge": {"operation": "capabilities"}}
+```
+
+`learning` reports agent-authored chains/principles and explicit validation.
+Its checkpoint fields guide capture decisions; they are not automated triggers.
+`formation` describes the optional preview provider, not whether an agent can
+author a chain. `decomposition` is separate again. `retrieval` reports the actual
+keyword/vector/hybrid strategy, supported `matchModes`, query diagnostics,
+embedding model/dimensions, similarity floor, relevance model and whether provider
+requests are instrumented. An extraction or formation model does not enable
+semantic search. Custom providers remain `custom` unless they describe themselves.
+Capabilities are not authorization or a provider health check.
+
+Use one compact knowledge search for reusable conclusions and independent
+observations, rather than automatically issuing a second ordinary search:
+
+```json
+{
+  "knowledge": {"operation": "search", "query": "report export", "view": "compact"},
+  "limit": 3
+}
+```
+
+Each principle/chain keeps its complete `conclusion`, `applicability`, `assumptions`,
+direct and inherited `counterevidence` IDs/reasons, author, scope, exact revision,
+state/review, `requiresReview` and original scores. `supportingChains` keeps pinned
+and current revisions, availability and review state without repeating full
+documents. Identical counterexample IDs are grouped, retaining distinct reasons.
+Independent observations keep their text, IDs, author, scope, score and lifecycle
+state/evidence status. No model rewrites or summarizes these fields.
+
+`reviewReasons` identifies recorded challenges/unreviewed status, changed or
+unavailable supporting chains, and unavailable, inactive or disputed supporting
+observations. An unknown current revision is unavailable, not assumed changed.
+`evidenceDetailsAvailable: false` means not every reference could be resolved;
+the references and recorded counterexample reasons remain. Even when available,
+expanding all source details can require separate bounded inspections.
+
+Inspect `chainId` with `revision` for full justification, validation, source and
+history; inspect ordinary `fragmentId` references for exact observations. Compact
+responses are capped at **32 KiB of serialized UTF-8 JSON**, including requested
+diagnostics. Overflow fails: lower `limit` or inspect individual records. Conditions
+and counterevidence are never shortened or silently dropped to meet the cap.
+The compact limit is applied after projection; an unused full response does not
+impose its 512 KiB cap. Search hydration does not read raw source or revision
+history that only inspection returns. Selected-result and evidence-expansion
+bounds, snapshot checks and relevance filters remain unchanged. Full search and
+explicit inspection retain their existing budgets.
+
+### Explicit Search Controls
+
+The new controls belong inside `knowledge` or `chain` when `operation: search`:
+
+- `matchMode: websearch` remains the default, preserving phrases, `OR` and
+  exclusions. English terms are ANDed; punctuation can introduce compound terms.
+  For example, `report-export` can miss a document containing `report export`,
+  and an absent extra term such as `API` can exclude it.
+- `matchMode: all` or `any` explicitly chooses literal English term matching.
+  `any` admits alternatives; it is not an automatic fallback or relevance claim.
+  Vector-only search rejects these modes before calling the embedding provider.
+- `diagnostics: true` adds the active strategy, actual PostgreSQL `parsedQuery`
+  and normalized `terms`, plus whether relevance selection is enabled. Vector
+  diagnostics have no keyword query. There is no silent query broadening.
+- `costDiagnostics: true` adds `retrievalMs`, exact structured `responseBytes`,
+  `providerRequestCount` and `providerCalls` with operation/model/timing and reported
+  input/output/total/cached-input token counts. Missing or invalid counts are null,
+  never estimated. A known cache hit has zero new embedding requests; concurrent
+  callers count a shared request only in the initializing call, not in every waiter.
+
+Timing includes retrieval, hydration and requested query diagnostics, excluding
+MCP transport. Bytes include the diagnostic object itself but exclude the MCP
+envelope and duplicate text content. Measure the original server JSON (also in
+MCP text content), not a client's reserialization: floating-point parsing can
+change numeric encodings and their lengths. These are successful-search measurements,
+not total agent, formation, failed-request or monetary costs. Provider errors still
+fail the operation. Diagnostics are opt-in, request-local and not persisted or
+logged; they do not change scores, acceptance, evidence or query selection.
+
+### Full Results and Inspection
 
 For principles-first retrieval, call:
 
@@ -359,7 +504,9 @@ accepted chain revisions. Claim, conclusion, and
 applicability are each limited to 2048 bytes; rationale is 4096 bytes; individual
 assumptions/reasons are 1024 bytes. The serialized document is at most 32 KiB.
 Search and history limits are 1..10; complete responses remain capped at 512 KiB.
-Lower the history/search limit if the response would exceed that cap.
+The optional compact view has a separate 32 KiB cap. Lower the history/search
+limit if the response would exceed its cap. Omitted view and diagnostics preserve
+the existing full response shape.
 
 Formation sources and knowledge relevance inputs are each capped at 128 KiB;
 formation returns at most three candidate documents. Source detail expansion

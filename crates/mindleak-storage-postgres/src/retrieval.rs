@@ -107,6 +107,19 @@ impl VectorMemoryRetriever {
 
 #[async_trait]
 impl MemoryRetriever for VectorMemoryRetriever {
+    fn capabilities(&self) -> mindleak_memory::RetrievalCapabilities {
+        mindleak_memory::RetrievalCapabilities {
+            strategy: "vector",
+            match_modes: vec![KeywordMatchMode::Websearch],
+            query_diagnostics: true,
+            embedding_model: self.store.space.as_ref().map(|space| space.model.clone()),
+            embedding_dimensions: self.store.space.as_ref().map(|space| space.dimensions),
+            minimum_similarity: self.min_similarity,
+            relevance_model: None,
+            provider_calls_instrumented: self.embedder.records_usage(),
+        }
+    }
+
     fn chain_strategy(&self) -> &'static str {
         "vector"
     }
@@ -116,6 +129,16 @@ impl MemoryRetriever for VectorMemoryRetriever {
         filter: &ChainFilter,
         limit: usize,
     ) -> Result<Vec<ChainMatch>> {
+        if filter.match_mode != KeywordMatchMode::Websearch {
+            return Err(InvalidInput(
+                "matchMode only applies to keyword or hybrid knowledge search".into(),
+            )
+            .into());
+        }
+        ensure!(
+            (1..=mindleak_memory::MAX_CHAIN_RESULTS).contains(&limit),
+            "invalid knowledge recall limit"
+        );
         validate_text(query, "query", MAX_MEMORY_BYTES)?;
         let space = self
             .store
@@ -187,6 +210,17 @@ impl HybridMemoryRetriever {
 
 #[async_trait]
 impl MemoryRetriever for HybridMemoryRetriever {
+    fn capabilities(&self) -> mindleak_memory::RetrievalCapabilities {
+        let mut capabilities = self.vector.capabilities();
+        capabilities.strategy = "hybrid";
+        capabilities.match_modes = vec![
+            KeywordMatchMode::Websearch,
+            KeywordMatchMode::All,
+            KeywordMatchMode::Any,
+        ];
+        capabilities
+    }
+
     fn chain_strategy(&self) -> &'static str {
         "hybrid"
     }
@@ -288,6 +322,20 @@ impl KeywordMemoryRetriever {
 
 #[async_trait]
 impl MemoryRetriever for KeywordMemoryRetriever {
+    fn capabilities(&self) -> mindleak_memory::RetrievalCapabilities {
+        mindleak_memory::RetrievalCapabilities {
+            strategy: "keyword",
+            match_modes: vec![
+                KeywordMatchMode::Websearch,
+                KeywordMatchMode::All,
+                KeywordMatchMode::Any,
+            ],
+            query_diagnostics: true,
+            provider_calls_instrumented: true,
+            ..Default::default()
+        }
+    }
+
     async fn recall_chains(
         &self,
         query: &str,

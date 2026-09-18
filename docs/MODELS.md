@@ -1,4 +1,9 @@
-# Add a Model
+# Optional Models for Knowledge Formation
+
+The agent is the author and validator. A server-side model is an optional
+assistant for extraction, candidate formation, or retrieval, not what turns
+MindLeak's learning workflow on. Agents can form evidence-backed chains and
+principles directly through the [knowledge contract](CHAINS.md).
 
 The [quickstart](../README.md#quickstart) works without one. Models are recommended
 when you want facts extracted from dense prose or recall based on meaning rather
@@ -7,12 +12,12 @@ than shared words. They are an upgrade, not a setup prerequisite.
 MindLeak's optional models are separate from the model running your agent. You
 can keep using Claude or GPT as your agent and use LM Studio for memory processing.
 
-| Feature | Off, the Default | Optional Upgrade |
+| Stage | Without a Server-Side Model | Optional Upgrade |
 |---|---|---|
+| Knowledge formation (v0.6.0) | Explicit agent-authored chains and principles | Chat model previews source-grounded candidates; never accepts them |
 | Decomposition | Split sentences and list items; preserve wording | Chat model extracts independent facts |
 | Recall | Indexed PostgreSQL keyword search | Embedding model with vector or hybrid recall |
 | Relevance filtering | Return ranked candidates without a selection model | Chat model selects existing fragments that may answer the query |
-| Knowledge formation (v0.6.0) | Explicit caller-authored chains and principles | Chat model previews source-grounded candidates; never accepts them |
 
 Decomposition and embeddings are independent. Chat extraction with keyword recall is valid;
 sentence decomposition with vector recall needs an embedding model but no chat

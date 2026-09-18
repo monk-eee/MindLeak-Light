@@ -1,5 +1,18 @@
 # Known Limitations
 
+The product is knowledge formation for agents. These boundaries distinguish
+that workflow from independently verified truth, model training, or demonstrated
+future-agent improvement. See [learning acceptance](VALIDATION.md#learning-acceptance)
+for the evidence required to make each claim.
+
+- Knowledge density is a product goal, not a storage-compression guarantee.
+  Original observations and immutable revisions remain stored. Accepted records,
+  different source IDs and the lab's weighted reuse index do not establish
+  independent corroboration, semantic generalization or compounding improvement.
+- The full reuse pilot and separately held-out confirmation have not been run.
+  Lab 2's source-linked quotations and Lab 3's direct-delivery diagnostic are
+  different evidence from optional retrieval causing a better agent outcome.
+
 - The v0.6.0 knowledge workflow supports model-assisted candidate formation,
   chains, principles, semantic retrieval, dependency review and export, not
   independently verified truth or autonomous acceptance. Evidence and lineage are

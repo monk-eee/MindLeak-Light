@@ -4,6 +4,7 @@ COMPOSE ?= docker compose
 
 setup:
 	cargo fetch --locked
+	npm ci --prefix examples --ignore-scripts
 	pre-commit install --install-hooks
 
 build:

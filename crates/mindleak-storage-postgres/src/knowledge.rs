@@ -28,7 +28,7 @@ impl PostgresMemoryStore {
                 Some(matched.chain.revision),
                 None,
                 filter,
-                1,
+                None,
             )
             .await?
             else {

@@ -103,6 +103,19 @@ fn knowledge_retrieval_review_and_export_are_explicit_read_modes() {
     }
 }
 
+#[test]
+fn knowledge_search_controls_are_explicit_and_legacy_inputs_remain_valid() {
+    for input in [
+        json!({"query":"report export", "limit":5}),
+        json!({"knowledge":{"operation":"search","query":"report export"}}),
+        json!({"knowledge":{"operation":"search","query":"report-export","view":"compact","matchMode":"all","diagnostics":true,"costDiagnostics":true}}),
+        json!({"chain":{"operation":"search","query":"report export","matchMode":"any","diagnostics":true,"costDiagnostics":true}}),
+        json!({"knowledge":{"operation":"capabilities"}}),
+    ] {
+        assert!(serde_json::from_value::<RecallMemoryInput>(input).is_ok());
+    }
+}
+
 #[derive(Default)]
 struct Backend {
     started: CancellationToken,
@@ -207,6 +220,10 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
     let info = client.peer_info().unwrap();
     let instructions = info.instructions.as_deref().unwrap();
     for phrase in [
+        "Knowledge formation for agents",
+        "Observations are evidence",
+        "Chains of Memory",
+        "Principles",
         "Before substantial work",
         "limit 5",
         "explicit general mode",
@@ -214,12 +231,18 @@ async fn mcp_handshake_tools_and_all_three_calls_match_the_contract() {
         "verified reusable",
         "Never store secrets",
         "approvals",
-        "principles provide reusable procedures",
-        "At task start",
         "Repeated runs alone",
         "Memory use is optional",
         "active retrieval mode",
         "one focused refinement",
+        "agents can author chains directly",
+        "knowledge.operation=capabilities",
+        "view=compact",
+        "Recall never accepts or reinforces knowledge",
+        "evidence checkpoints",
+        "before handoff",
+        "no write quota",
+        "retrieval cues in context.summary",
     ] {
         assert!(
             instructions.contains(phrase),
