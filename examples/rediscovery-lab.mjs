@@ -502,8 +502,9 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
       { signal, onEvent: event => emit({ ...event, agent: "mindleak", round: round.number, phaseScope: "review" }) }); }
     catch { execution = { status: "provider_error", inputTokens: null, outputTokens: null, toolCalls: null, trace: [], responses: [] }; }
     const elapsedMs = performance.now() - reviewStarted;
+    const completed = execution.status === "completed" && execution.answer?.completed === true;
     const cost = { ...publicExecution(execution), actualCostUsd: null, elapsedMs, memoryRecordingMs, sharedElapsedMs: elapsedMs - memoryRecordingMs,
-      outcome: execution.status !== "completed" ? "review_incomplete" : retained.some(record => !record.existing) ? "learning_retained" : "no_new_learning",
+      completed, outcome: !completed ? "review_incomplete" : retained.some(record => !record.existing) ? "learning_retained" : "no_new_learning",
       retainedLessonIds: retained.map(record => ({ id: record.id, revision: record.revision })), experienceErrors: readTools.errors };
     emit({ type: "rediscovery_review_finished", agent: "mindleak", round: round.number, outcome: cost.outcome, retained: retained.length });
     return cost;
@@ -549,6 +550,15 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
     failure = ["frozen_experience_changed", "memory_server_did_not_restart", "observation_persistence_mismatch"].includes(error.message) ? error.message : "rediscovery_execution_failed";
     emit({ type: "run_error", reason: failure });
   } finally { unsubscribe?.(); }
+  const reviews = [preparationReview, ...rounds.map(round => round.learning)].filter(Boolean);
+  const scheduledReviews = plan.preparationReviewSessions + plan.followups.length;
+  const completedReviews = reviews.filter(review => review.completed).length;
+  const learningReviews = { status: completedReviews === scheduledReviews ? "completed" : "incomplete", scheduled: scheduledReviews,
+    completed: completedReviews, incomplete: scheduledReviews - completedReviews };
+  if (!failure && !signal?.aborted && learningReviews.status === "incomplete") {
+    failure = "learning_review_incomplete";
+    emit({ type: "run_error", reason: failure });
+  }
   const memoryProcessing = { workload: "memory", modelClass: "slm", model: driver.configuration?.decompositionModel ?? null,
     mode: driver.configuration?.decomposition ?? "sentences", calls: memoryUsage.length, inputTokens: costSum(memoryUsage, "inputTokens"), outputTokens: costSum(memoryUsage, "outputTokens"), actualCostUsd: null };
   const preparationCosts = [...preparation, ...(preparationReview ? [preparationReview] : [])];
@@ -560,7 +570,7 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
     passedTests: [...preparation, ...outcomes].reduce((total, outcome) => total + (outcome.finalTests?.passedTests ?? 0), 0) };
   emit({ type: "tests", agent: "system", phase: "final", ...finalTests }); emit({ type: "run_finished", status });
   return { reportVersion: 1, kind: "rediscovery_lab", experiment: 3, title: "Rediscovery", problem: rediscoveryProblem, runId, createdAt, status, failure,
-    plan, scope: store.scope, preparation, preparationReview, outcomes, rounds, metrics, memoryProcessing, events, memoryExhibits, toolExhibits, knowledge: store.snapshot(),
+    plan, scope: store.scope, preparation, preparationReview, outcomes, rounds, learningReviews, metrics, memoryProcessing, events, memoryExhibits, toolExhibits, knowledge: store.snapshot(),
     candidates: Object.fromEntries([...caseEvidence].map(([id, evidence]) => [id, evidence.candidateFiles])),
     elapsedMs: performance.now() - started, finalTests, fixtureSha256: plan.frozenInputsSha256, binarySha256: driver.binarySha256, realMcpProcess: driver.realProcess,
     realModel: agent.configuration.provider !== "test", server: driver.server, agent: agent.configuration, codeContainer: code,

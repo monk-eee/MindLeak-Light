@@ -1313,6 +1313,46 @@ test("Lab 3 runs optional-memory arms with misses frozen rounds and complete acc
   } finally { await driver.close(); }
 });
 
+test("Lab 3 cannot complete when a required learning review is unfinished", async () => {
+  const { runRediscoveryLab } = await import("./rediscovery-lab.mjs");
+  for (const reviewResult of [
+    { status: "incomplete", answer: null, failure: { code: "runtime_idle_before_final_answer" } },
+    { status: "completed", answer: { completed: false } },
+    { status: "completed", answer: { completed: true } },
+  ]) {
+    let processNumber = 0;
+    let repair;
+    const driver = { capabilities: { knowledge: true, chains: true }, configuration: { decomposition: "sentences", retrieval: "keyword" },
+      async restart() { const previous = processNumber; processNumber += 1; return { previous, current: processNumber }; },
+      async call() { assert.fail("this status-only fixture must not invent stored knowledge"); } };
+    const agent = { configuration: { model: "test-double", provider: "test" }, async run(task, tools) {
+      const reviewing = tools.some(tool => tool.definition.function.name === "inspect_task_result");
+      if (!reviewing) repair();
+      return { sessionId: randomUUID(), status: "completed", answer: { completed: true }, trace: [], responses: [],
+        inputTokens: 10, outputTokens: 2, toolCalls: 0, elapsedMs: 1, ...(reviewing ? reviewResult : {}) };
+    } };
+    const report = await runRediscoveryLab({ driver, agent, code: { engine: "test" }, profile: "smoke",
+      workspaceFactory: async (_name, _code, fixture) => {
+        let repaired = false;
+        repair = () => { repaired = true; };
+        return { async read(path) { return fixture.files[path]; }, async close() {}, async test() {
+          return { passed: repaired, tests: 3, expectedTests: 3, passedTests: repaired ? 3 : 0, sourceSha256: repaired ? "verified-candidate" : "failing-baseline" };
+        } };
+      } });
+    const completed = reviewResult.status === "completed" && reviewResult.answer.completed;
+    assert.equal(report.finalTests.passed, true);
+    assert.equal(report.metrics.arms.mindleak.correct, 2);
+    assert.equal(report.metrics.arms.mindleak.knowledgeReuse.successful, 0);
+    assert.equal(report.status, completed ? "completed" : "partial");
+    assert.equal(report.failure, completed ? null : "learning_review_incomplete");
+    assert.deepEqual(report.learningReviews, { status: completed ? "completed" : "incomplete", scheduled: 3, completed: completed ? 3 : 0, incomplete: completed ? 0 : 3 });
+    assert.ok([report.preparationReview, ...report.rounds.map(round => round.learning)].every(review =>
+      review.outcome === (completed ? "no_new_learning" : "review_incomplete")));
+    assert.equal(report.events.at(-1).status, report.status);
+    assert.equal(report.events.filter(event => event.type === "run_finished").length, 1);
+  }
+});
+
 test("Lab 1 artifact acceptance records real browser checks for each exact build", {
   skip: !process.env.MINDLEAK_LAB_BROWSER,
 }, async () => {
@@ -2219,13 +2259,15 @@ test("frontier adapter exposes only demo tools and counts exact advertised model
 });
 
 test("frontier adapter distinguishes unfinished tool work and explicit runtime stops", async () => {
-  for (const reason of ["idle_tools", "cancelled", "budget"]) {
+  for (const reason of ["idle_tools", "cancelled", "budget", "step_limit"]) {
     const events = [];
+    let sends = 0;
     const provider = { models: [{ id: "gpt-6-astra" }], client: {
       async createSession() {
         let handler;
         return { on(callback) { handler = callback; return () => {}; }, async abort() {}, async disconnect() {},
           async sendAndWait() {
+            sends += 1;
             handler({ type: "assistant.turn_start", data: { turnId: "1" } });
             handler({ id: "usage", type: "assistant.usage", data: { model: "gpt-6-astra", inputTokens: 10, outputTokens: 5, finishReason: "tool_calls" } });
             if (reason === "budget") handler({ type: "session_limits_exhausted.requested", data: { maxAiCredits: 30, usedAiCredits: 30 } });
@@ -2234,12 +2276,90 @@ test("frontier adapter distinguishes unfinished tool work and explicit runtime s
           } };
       }, async deleteSession() {},
     } };
-    const result = await createCopilotAgent(provider).run("synthetic task", [], "", answerSchemaFor("rediscovery_demo"), { onEvent: event => events.push(event) });
+    const result = await createCopilotAgent(provider, { maxSteps: reason === "step_limit" ? 1 : 20 }).run("synthetic task", [], "", answerSchemaFor("rediscovery_demo"), { onEvent: event => events.push(event) });
     assert.equal(result.status, reason === "cancelled" ? "cancelled" : reason === "budget" ? "budget_exceeded" : "incomplete");
     assert.equal(result.answer, null);
     assert.equal(result.responses.length, 1);
+    assert.equal(sends, reason === "idle_tools" ? 2 : 1);
+    assert.equal(result.generation.toolOnlyIdleResumes, reason === "idle_tools" ? 1 : 0);
     assert.ok(events.some(event => event.type === "session_stopped"));
   }
+});
+
+test("frontier adapter resumes tool-only idle in the same session without replaying acknowledged work", async () => {
+  const events = [];
+  const sends = [];
+  let sessions = 0;
+  let writes = 0;
+  let deleted;
+  const provider = { models: [{ id: "gpt-6-astra" }], client: {
+    async createSession(configuration) {
+      sessions += 1;
+      let handler;
+      return { on(callback) { handler = callback; return () => {}; }, async abort() {}, async disconnect() {},
+        async sendAndWait(message, timeout) {
+          sends.push({ message, timeout });
+          const first = sends.length === 1;
+          handler({ type: "assistant.turn_start", data: { turnId: String(sends.length) } });
+          if (first) {
+            const receipt = await configuration.tools[0].handler({}, { toolCallId: "acknowledged-write" });
+            assert.equal(receipt.resultType, "success");
+          }
+          handler({ id: `usage-${sends.length}`, type: "assistant.usage", data: { model: "gpt-6-astra",
+            inputTokens: first ? 10 : 20, outputTokens: first ? 4 : 6, finishReason: first ? "tool_calls" : "stop" } });
+          handler({ type: "session.idle", data: {} });
+          return first ? undefined : { data: { content: '{"completed":true}' } };
+        } };
+    }, async deleteSession(id) { deleted = id; },
+  } };
+  const tools = [{ definition: { function: { name: "write_memory", description: "Store verified synthetic evidence",
+    parameters: { type: "object", additionalProperties: false, properties: {}, required: [] } } },
+    async invoke() { writes += 1; return { memoryId: "acknowledged-memory", fragments: [] }; } }];
+  const result = await createCopilotAgent(provider, { maxSteps: 2, timeoutMs: 1000 }).run("private-review-task", tools, "",
+    answerSchemaFor("rediscovery_demo"), { onEvent: event => events.push(event) });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.answer, { completed: true });
+  assert.equal(result.failure, null);
+  assert.equal(sessions, 1);
+  assert.equal(deleted, result.sessionId);
+  assert.equal(writes, 1);
+  assert.equal(result.toolCalls, 1);
+  assert.equal(result.turns, 2);
+  assert.equal(result.responses.length, 2);
+  assert.equal(result.inputTokens, 30);
+  assert.equal(result.outputTokens, 10);
+  assert.equal(result.generation.toolOnlyIdleResumes, 1);
+  assert.equal(sends.length, 2);
+  assert.ok(sends[1].timeout > 0 && sends[1].timeout < sends[0].timeout);
+  assert.ok(sends[0].timeout <= 1000);
+  assert.notEqual(sends[1].message.prompt, sends[0].message.prompt);
+  assert.equal(events.filter(event => event.type === "session_resumed").length, 1);
+  assert.ok(!JSON.stringify(events).includes("private-review-task"));
+});
+
+test("frontier adapter does not renew the deadline after queued tool work finishes", async () => {
+  let sends = 0;
+  const provider = { models: [{ id: "gpt-6-astra" }], client: {
+    async createSession(configuration) {
+      let handler;
+      return { on(callback) { handler = callback; return () => {}; }, async abort() {}, async disconnect() {},
+        async sendAndWait() {
+          sends += 1;
+          handler({ type: "assistant.turn_start", data: { turnId: "1" } });
+          void configuration.tools[0].handler({});
+          handler({ id: "usage", type: "assistant.usage", data: { model: "gpt-6-astra", inputTokens: 10, outputTokens: 5, finishReason: "tool_calls" } });
+          handler({ type: "session.idle", data: {} });
+        } };
+    }, async deleteSession() {},
+  } };
+  const tools = [{ definition: { function: { name: "probe", description: "Finish queued work", parameters: { type: "object", properties: {}, required: [] } } },
+    async invoke() { await new Promise(resolve => setTimeout(resolve, 120)); return { ok: true }; } }];
+  const result = await createCopilotAgent(provider, { timeoutMs: 100 }).run("synthetic task", tools, "", answerSchemaFor("rediscovery_demo"));
+  assert.equal(sends, 1);
+  assert.equal(result.status, "incomplete");
+  assert.equal(result.generation.toolOnlyIdleResumes, 0);
+  assert.equal(result.trace.length, 1);
+  assert.equal(result.trace[0].ok, true);
 });
 
 test("frontier runtime cleanup reaps its owned child after interrupted graceful shutdown", async () => {
