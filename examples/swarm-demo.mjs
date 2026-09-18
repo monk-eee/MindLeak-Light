@@ -27,7 +27,7 @@ export function selectDemoParameters(profiles, input = {}) {
     || !Number.isInteger(parameters.concurrency) || parameters.concurrency < 1 || parameters.concurrency > 5
     || !Number.isInteger(parameters.attempts) || parameters.attempts < 1 || parameters.attempts > 3
     || !Number.isInteger(parameters.rounds) || parameters.rounds < 1 || parameters.rounds > 3
-    || !["smoke", "pilot"].includes(parameters.rediscoveryProfile) || !Number.isSafeInteger(parameters.querySeed) || parameters.querySeed < 0 || parameters.querySeed > 0xffffffff
+    || !["smoke", "learning", "pilot"].includes(parameters.rediscoveryProfile) || !Number.isSafeInteger(parameters.querySeed) || parameters.querySeed < 0 || parameters.querySeed > 0xffffffff
     || parameters.continueFrom !== null && (typeof parameters.continueFrom !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(parameters.continueFrom))
     || !parameters.agentModels || typeof parameters.agentModels !== "object" || Array.isArray(parameters.agentModels)
     || Object.keys(parameters.agentModels).some(id => !swarmRoles.some(role => role.id === id))) throw new Error("invalid_demo_parameters");
@@ -77,14 +77,18 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
     active = run;
     const memoryLab = profiles?.experiment === 2;
     const rediscovery = profiles?.experiment === 3;
+    const planned = rediscovery ? rediscoveryPlan({ profile: parameters.rediscoveryProfile, seed: parameters.querySeed }) : null;
+    const newFamilies = planned ? new Set(planned.sessions.map(session => session.family).filter(family => !parent?.knowledge?.lessons?.some(lesson => lesson.family === family))).size : 0;
     const roles = rediscovery ? rediscoveryArms : [...(memoryLab ? memoryLabRoles : swarmRoles), ...controlRoles];
     report = { reportVersion: 1, kind: rediscovery ? "rediscovery_lab" : memoryLab ? "memory_lab" : "swarm_build", experiment: rediscovery ? 3 : memoryLab ? 2 : 1,
-      title: rediscovery ? "Rediscovery" : memoryLab ? "Memory vs Daleks" : "Session Desk / Memory vs Daleks", expectedTests: rediscovery ? (parameters.rediscoveryProfile === "smoke" ? parent ? 24 : 27 : parent ? 480 : 495) : memoryLab ? (parent ? 0 : 35) + parameters.rounds * 70 : 36, runId: randomUUID(), createdAt: new Date().toISOString(),
+      title: rediscovery ? "Rediscovery" : memoryLab ? "Memory vs Daleks" : "Session Desk / Memory vs Daleks", expectedTests: rediscovery ? (newFamilies + planned.sessions.length) * 3 : memoryLab ? (parent ? 0 : 35) + parameters.rounds * 70 : 36, runId: randomUUID(), createdAt: new Date().toISOString(),
       status: "recording", agents: roles.map(({ task, ...role }) => ({ ...role, state: "queued", model: parameters.agentModels[role.pairedWith ?? role.id] ?? model })), events: [], elapsedMs: 0,
       problem: parameters.problem, parameters, memoryExhibits: [], toolExhibits: [],
-      study: parent?.study ?? null,
+      knowledgeBaseline: Object.fromEntries([["observations", "memoryId"], ["chains", "chainId"], ["principles", "chainId"]].map(([kind, key]) => [kind,
+        (parent?.knowledge?.[kind] ?? (kind === "observations" ? parent?.memoryExhibits : []) ?? []).map(record => ({ id: record[key], revision: record.revision, state: record.state }))])),
       memoryProcessing: { model: parameters.memoryModel === "off" ? null : parameters.memoryModel, mode: parameters.memoryModel === "off" ? "sentences" : "openai" },
       agent: { model }, realMcpProcess: true };
+    report.study = studyProgress(report, parent);
     broadcast("snapshot", snapshot());
     run.promise = (async () => {
       let journal;
@@ -103,7 +107,7 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
           experiment: report.experiment, parameters }, null, 2), { flag: "wx", mode: 0o600 });
         const completed = await runBuild({ signal: controller.signal, parameters, parent, onPlan: async plan => {
           await writeFile(join(artifactDirectory, "frozen-plan.json"), JSON.stringify(plan, null, 2), { flag: "wx", mode: 0o600 });
-          report.plan = plan; broadcast("snapshot", snapshot());
+          report.plan = plan; report.expectedTests = (plan.preparationTasks + plan.sessions.length) * 3; broadcast("snapshot", snapshot());
         }, onEvent: event => {
           if (event.type === "run_started") report.runId = event.runId;
           report.events.push(event);
@@ -114,6 +118,7 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
         onToolDetail: detail => { appendEvidence("tool-detail", detail); report.toolExhibits.push(detail); broadcast("tool-detail", detail); },
         onKnowledge: knowledge => { appendEvidence("knowledge", knowledge); report.knowledge = { ...report.knowledge, ...knowledge }; if (knowledge.guide) report.guide = knowledge.guide; broadcast("knowledge", knowledge); } });
         completed.parameters = parameters;
+        completed.knowledgeBaseline = report.knowledgeBaseline;
         completed.verification = labCompletion(completed);
         completed.study = studyProgress(completed, parent);
         report = completed;
@@ -143,6 +148,7 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
           for (const lesson of report.knowledge.lessons) await writeFile(join(artifactDirectory, "notebook", `${lesson.id}.md`), lesson.markdown, { flag: "wx", mode: 0o600 });
         }
         if (report.guide?.markdown) await writeFile(join(artifactDirectory, "solution-guide.md"), report.guide.markdown, { flag: "wx", mode: 0o600 });
+        if (report.guides?.length) await writeFile(join(artifactDirectory, "principles.md"), report.guides.map(guide => guide.markdown).join("\n\n"), { flag: "wx", mode: 0o600 });
         await writeDemoReplay(report, artifactDirectory, { reserved: true });
         lastRun = { directory: artifactDirectory, status: report.status, runId: report.runId, summary: report.summary };
       } catch (error) {
@@ -262,7 +268,7 @@ async function main() {
     lab: { type: "string" }, rounds: { type: "string" }, "lab-one-recording": { type: "string" }, "lab-two-recording": { type: "string" }, "lab-three-recording": { type: "string" },
     "rediscovery-profile": { type: "string" }, "query-seed": { type: "string" }, plan: { type: "boolean" },
     "lab-one-url": { type: "string" }, "lab-two-url": { type: "string" } } });
-  if (values.help) { console.log("Set MINDLEAK_TEST_DATABASE_URL and use your Copilot login. Run node examples/swarm-demo.mjs --binary PATH --code-engine podman --port 54584 --output-dir target/swarm-labs. One dashboard serves /lab1, /lab2, /lab3 and /learnings. Labs 1 and 2 include five matched Dalek controls with no MindLeak access. Lab 3 compares fresh, notebook and MindLeak arms with a separate direct-lesson diagnostic; --rediscovery-profile smoke|pilot defaults to smoke (6 main + 2 diagnostic), while pilot schedules 120 main + 40 diagnostic sessions. --plan prints the frozen Lab 3 plan without inference or database access. --rounds 1..3 controls Lab 2. --lab 1|2|3 selects a standalone lab; --run starts Lab 2 in the shared dashboard. Use --lab-one-recording, --lab-two-recording and --lab-three-recording to reopen saved reports. Lab 1/2 models default to three GPT-6 Astra and two Claude Opus 5 with matched Daleks; all Lab 3 arms use one selected model. Memory extraction defaults to local glm-4.7-flash:latest. Only 127.0.0.1 is bound; learning outcomes lead the page and recorded costs remain available."); return; }
+  if (values.help) { console.log("Set MINDLEAK_TEST_DATABASE_URL and use your Copilot login. Run node examples/swarm-demo.mjs --binary PATH --code-engine podman --port 54584 --output-dir target/swarm-labs. One dashboard serves /lab1, /lab2, /lab3 and /learnings. Labs 1 and 2 include five matched Dalek controls with no MindLeak access. Lab 3 compares fresh, notebook and MindLeak arms with a separate direct-lesson diagnostic; --rediscovery-profile smoke|learning|pilot defaults to learning (five families, 30 main + 10 diagnostic), smoke covers one family (6 main + 2 diagnostic), and pilot schedules 120 main + 40 diagnostic sessions. --plan prints the frozen Lab 3 plan without inference or database access. --rounds 1..3 controls Lab 2. --lab 1|2|3 selects a standalone lab; --run starts Lab 2 in the shared dashboard. Use --lab-one-recording, --lab-two-recording and --lab-three-recording to reopen saved reports. Lab 1/2 models default to three GPT-6 Astra and two Claude Opus 5 with matched Daleks; all Lab 3 arms use one selected model. Memory extraction defaults to local glm-4.7-flash:latest. Only 127.0.0.1 is bound; learning outcomes lead the page and recorded costs remain available."); return; }
   if (values.plan) { console.log(JSON.stringify(rediscoveryPlan({ profile: values["rediscovery-profile"] ?? "pilot", seed: Number(values["query-seed"] ?? 20260917), model: values["agent-model"] ?? "gpt-6-astra" }), null, 2)); return; }
   benchmarkSettings(process.env, {});
   const selectedLab = values.lab ?? "all";
@@ -284,7 +290,7 @@ async function main() {
     navigation: { lab1: values["lab-one-url"] ?? "/lab1/", lab2: values["lab-two-url"] ?? "/lab2/" },
     memory: [{ id: memoryModel, name: memoryModel, provider: "local", modelClass: "slm" }, { id: "off", name: "Model-free", provider: "none" }],
     defaults: { problem: lab === 3 ? rediscoveryProblem : lab === 2 ? memoryLabProblem : swarmProblem, concurrency: Number(values.concurrency ?? (lab >= 2 ? 1 : 2)), attempts: lab === 3 ? 1 : Number(values.attempts ?? 2), rounds: Number(values.rounds ?? (lab === 2 ? 2 : 1)), memoryModel,
-      rediscoveryProfile: values["rediscovery-profile"] ?? "smoke", querySeed: Number(values["query-seed"] ?? 20260917),
+      rediscoveryProfile: values["rediscovery-profile"] ?? "learning", querySeed: Number(values["query-seed"] ?? 20260917),
       agentModels: Object.fromEntries(swarmRoles.map((role, index) => [role.id, values["agent-model"] ?? (provider ? index < 3 ? "gpt-6-astra" : "claude-opus-5" : available[0].id)])) } };
   selectDemoParameters(profiles);
   let initialReport = null;

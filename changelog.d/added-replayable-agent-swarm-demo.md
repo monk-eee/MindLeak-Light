@@ -30,3 +30,11 @@
   run history and cumulative costs without leaking experience to Dalek controls.
 - Animate real memory requests, acknowledgements and agent work, with an explicit
   recorded-activity replay action, pause handling and reduced-motion support.
+- Put a live learning stage ahead of static summaries: working agents, elapsed
+  operations, growing lineage, actual progress counters and earned milestones.
+  Automatically play labelled saved replays without inference; retain pause,
+  loop and reduced-motion controls in both experiment and knowledge views.
+- Remove the single-principle constraints in Labs 2 and 3. Retain distinct
+  principles, explicit revisions, reusable evidence and the full frozen retrieval
+  collection across runs. Add a bounded five-family Learning profile and visible
+  fresh/continued study controls; preserve old protocol records and control isolation.

@@ -330,7 +330,7 @@ export function normalizeRecording(report) {
     expectedTests: control ? (control.trials?.length ?? 1) * 15 : report.finalTests?.expectedTests ?? report.expectedTests ?? report.baselineTests?.expectedTests ?? (memoryLab ? 40 : 18) };
 }
 
-export function memoryActivity(recording, position, enabled = true) {
+export function memoryActivity(recording, position, enabled = true, playbackRate = 1) {
   const idle = { active: false, reading: 0, writing: 0, forming: 0, processing: 0, flows: [], pulses: [] };
   if (!enabled) return idle;
   const excluded = new Set((recording.agents ?? []).filter(agent => agent.control || agent.connectToMemory === false).map(agent => agent.id));
@@ -351,7 +351,7 @@ export function memoryActivity(recording, position, enabled = true) {
     if (event.type === "tool_finished") pending.delete(event.toolCallId);
     if (event.type === "session_stopped" && event.sessionId) for (const [id, flow] of pending) if (flow.sessionId === event.sessionId) pending.delete(id);
     if (event.type === "agent_state" && ["passed", "failed", "cancelled", "blocked"].includes(event.state)) for (const [id, flow] of pending) if (flow.agent === event.agent) pending.delete(id);
-    if (position - event.atMs < 2200 && ["memory_saved", "knowledge_written", "memory_delivered", "experience_access"].includes(event.type)) {
+    if (position - event.atMs < 2200 * Math.max(1, playbackRate) && ["memory_saved", "knowledge_written", "memory_delivered", "experience_access"].includes(event.type)) {
       const kind = event.type === "memory_delivered" || event.type === "experience_access" ? "read" : event.kind ?? "observation";
       const id = event.memoryId ?? event.chainId ?? `${event.type}:${event.id ?? event.atMs}`;
       pulses.set(id, { id, agent: event.agent, kind, nodeId: event.nodeId ?? event.chainId ?? event.memoryId, atMs: event.atMs });
@@ -438,6 +438,58 @@ export function replayState(recording, position) {
   return state;
 }
 
+export function runActivity(recording, position, state = replayState(recording, position)) {
+  const firstWrites = new Map(); const latestWrites = new Map(); const tasks = new Map(); const reused = new Set();
+  const pending = new Map();
+  for (const event of recording.events) {
+    const nodeId = event.type === "knowledge_written" ? event.nodeId : event.type === "memory_saved" && (!event.kind || event.kind === "observation") ? event.memoryId : null;
+    if (nodeId && !firstWrites.has(nodeId)) firstWrites.set(nodeId, event.atMs);
+    if (event.atMs > position) continue;
+    if (nodeId) latestWrites.set(nodeId, event);
+    if (event.type === "tool_started") pending.set(event.toolCallId, event);
+    if (event.type === "tool_finished") pending.delete(event.toolCallId);
+    if (event.type === "run_finished") pending.clear();
+    if (event.type === "rediscovery_task_finished") {
+      tasks.set(event.caseId, Boolean(event.correct));
+      if (event.agent === "mindleak" && event.correct && event.reuseObserved && !event.diagnostic) reused.add(event.caseId);
+    }
+    if (event.type === "assessment_finished") tasks.set(`preparation:${event.agent}:${event.caseId}`, Boolean(event.passed));
+    if (event.type === "control_arm_finished") tasks.set(`control:${event.round}:${event.caseId}:${event.condition}`, Boolean(event.passed));
+    if (recording.report.kind === "swarm_build" && event.type === "agent_state" && ["passed", "failed"].includes(event.state)) tasks.set(event.agent, event.state === "passed");
+  }
+  const stored = recording.report.knowledge ?? {};
+  const knowledge = { ...stored };
+  const gained = {}; const inherited = {};
+  for (const [kind, key] of [["observations", "memoryId"], ["chains", "chainId"], ["principles", "chainId"]]) {
+    const baseline = new Map((recording.report.knowledgeBaseline?.[kind] ?? []).map(record => [record.id, record]));
+    const source = stored[kind] ?? (kind === "observations" ? recording.report.memoryExhibits?.filter(record => !record.kind || record.kind === "observation") : []) ?? [];
+    const unique = [...new Map(source.map(record => [record[key], record])).values()];
+    knowledge[kind] = unique.filter(record => baseline.has(record[key]) || !firstWrites.has(record[key]) || firstWrites.get(record[key]) <= position).map(record => {
+      const latest = latestWrites.get(record[key]);
+      const evidence = latest ?? baseline.get(record[key]);
+      return evidence ? { ...record, ...(evidence.state ? { state: evidence.state } : {}), ...(evidence.revision ? { revision: evidence.revision } : {}) } : record;
+    });
+    gained[kind] = knowledge[kind].filter(record => firstWrites.has(record[key]) && !baseline.has(record[key])).length;
+    inherited[kind] = knowledge[kind].length - gained[kind];
+  }
+  const expectedTests = Math.max(recording.expectedTests ?? 0,
+    (recording.events.find(event => event.type === "run_started")?.expectedTests ?? 0) + (recording.events.find(event => event.type === "control_started")?.expectedTests ?? 0));
+  const scheduledTasks = recording.rediscovery ? (recording.report.plan?.preparationTasks ?? 0) + (recording.report.plan?.sessions?.length ?? 0)
+    : recording.memoryLab ? expectedTests > 0 && expectedTests % 7 === 0 ? expectedTests / 7 : null : recording.agents.length;
+  const memory = memoryActivity(recording, position);
+  const active = recording.agents.filter(agent => state.agents[agent.id]?.state === "running");
+  const finished = state.visibleEvents.at(-1)?.type === "run_finished";
+  const phase = finished ? "finished" : memory.forming ? "forming" : memory.writing ? "capturing" : memory.reading ? "retrieving"
+    : memory.processing ? "extracting" : pending.size ? "working" : active.length ? "thinking" : "ready";
+  return { knowledge, gained, inherited, actions: state.toolCalls, completedTasks: tasks.size,
+    successfulTasks: [...tasks.values()].filter(Boolean).length, scheduledTasks, reusedTasks: reused.size,
+    acceptedPrinciples: knowledge.principles.filter(record => record.state === "accepted").length,
+    phase, activeAgents: active, currentTools: [...pending.values()], memory,
+    milestones: state.visibleEvents.filter(event => event.type === "knowledge_written" || event.type === "persistence_verified"
+      || event.type === "rediscovery_task_finished" || event.type === "control_arm_finished" || event.type === "assessment_finished" || event.type === "candidate_changed"
+      || event.type === "tool_finished").slice(-6).reverse() };
+}
+
 export function formatElapsed(milliseconds) {
   const tenths = Math.max(0, Math.floor(milliseconds / 100));
   return `${String(Math.floor(tenths / 600)).padStart(2, "0")}:${String(Math.floor(tenths / 10) % 60).padStart(2, "0")}.${tenths % 10}`;
@@ -482,6 +534,12 @@ function initializeReplay() {
   let studyKey = "";
   let continueLearning = false;
   let activityKey = "";
+  let stageFeedKey = "";
+  let activityProjection = null;
+  let lastRenderAt = 0;
+  let timelineKey = "";
+  const stageAgents = new Map();
+  let displayedGraphIds = new Set();
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   let inspectedNodeId = null;
   const icon = name => { const value = element("i"); value.dataset.lucide = name; return value; };
@@ -506,6 +564,12 @@ function initializeReplay() {
   const knowledgeActions = element("div", "network-heading-actions");
   knowledgeActions.append(byId("knowledge-hero-status")); knowledgeHero.querySelector(".section-head").append(knowledgeActions);
   const playback = document.querySelector(".playback");
+  byId("stage-graph").append(knowledgeHero);
+  byId("stage-activity").append(byId("memory-activity"));
+  byId("stage-playback").append(playback);
+  byId("stage-controls").prepend(byId("replay-activity"));
+  byId("stage-run-controls").append(document.querySelector(".study-mode"), byId("rediscovery-profile-control"));
+  byId("stage-run-controls").classList.toggle("hidden", !initial.live);
   for (const id of ["capital-panel", "knowledge-capital-panel"]) byId(id).append(byId("capital-template").content.cloneNode(true));
   const options = (select, models, value) => {
     select.replaceChildren();
@@ -541,7 +605,7 @@ function initializeReplay() {
     byId("attempts-input").parentElement.firstChild.textContent = profiles.experiment === 2 ? "ATTEMPTS PER PHASE" : "ATTEMPTS PER AGENT";
     if (profiles.experiment !== 2) byId("concurrency-input").parentElement.firstChild.textContent = "CONCURRENT PER TEAM";
     byId("rediscovery-profile-control").classList.toggle("hidden", profiles.experiment !== 3);
-    byId("rediscovery-profile-select").value = draft.rediscoveryProfile ?? "smoke";
+    byId("rediscovery-profile-select").value = draft.rediscoveryProfile ?? "learning";
     byId("rediscovery-profile-select").disabled = runActive || !initial.live;
     if (profiles.experiment === 3) {
       byId("problem-input").disabled = true; byId("concurrency-input").disabled = true; byId("attempts-input").disabled = true;
@@ -563,6 +627,8 @@ function initializeReplay() {
     byId("study-fresh").checked = !continueLearning;
     byId("study-continue").checked = continueLearning;
     byId("study-continue").title = available ? `Retain experience from run ${report.runId}; start fresh agent sessions and source workspaces` : "A completed run with retained experience is required";
+    if (continueLearning) byId("run").querySelector("span").textContent = "Continue learning";
+    else byId("run").querySelector("span").textContent = recording?.memoryLab || recording?.rediscovery || profiles?.experiment >= 2 ? "Run experiment" : "Run build";
   }
   function navigateView() {
     const lab = recording?.rediscovery || profiles?.experiment === 3 ? 3 : recording?.memoryLab || profiles?.experiment === 2 ? 2 : 1;
@@ -570,13 +636,9 @@ function initializeReplay() {
     byId("experiment-page").classList.toggle("hidden", learning);
     byId("knowledge-page").classList.toggle("hidden", !learning);
     if (learning) {
-      knowledgeActions.append(byId("replay-activity"));
-      knowledgeHero.querySelector(".section-head").after(byId("memory-activity"));
-      knowledgeHero.append(playback);
+      byId("knowledge-page").querySelector(".knowledge-heading").after(byId("live-stage"));
     } else {
-      networkActions.append(byId("replay-activity"));
-      networkSection.querySelector(".network-scroll").before(byId("memory-activity"));
-      byId("timeline").before(playback);
+      byId("knowledge-outcomes").before(byId("live-stage"));
     }
     activityKey = "";
     byId("lab-brand").textContent = `LEARNING LAB / 0${lab}`;
@@ -594,7 +656,7 @@ function initializeReplay() {
     if (learning) renderKnowledge();
   }
   function renderKnowledge() {
-    const knowledge = recording?.report.knowledge ?? {};
+    const knowledge = activityProjection?.knowledge ?? recording?.report.knowledge ?? {};
     const observations = knowledge.observations ?? [];
     const chains = knowledge.chains ?? [];
     const principles = knowledge.principles ?? [];
@@ -643,7 +705,8 @@ function initializeReplay() {
       ? `Export r${guide.revision} / current r${head.revision} ${head.state}`
       : `Revision ${guide.revision} / ${guide.chainId.slice(0, 8)}`
       : knowledge.lessons?.length ? knowledge.lessons.map(lesson => `${lesson.title} / accepted r${lesson.revision}`).join("; ") : "Not yet accepted";
-    byId("guide-document").textContent = guide?.markdown ?? knowledge.lessons?.map(lesson => lesson.markdown).join("\n\n") ?? "The agents have not exported a guide yet.";
+    const guides = knowledge.guides ?? recording?.report.guides;
+    byId("guide-document").textContent = guides?.length ? guides.map(item => item.markdown).join("\n\n") : guide?.markdown ?? knowledge.lessons?.map(lesson => lesson.markdown).join("\n\n") ?? "The agents have not exported a guide yet.";
     byId("download-guide").disabled = !guide && !knowledge.lessons?.length; byId("download-knowledge").disabled = !observations.length;
     byId("storage-operation-count").textContent = `${operations.length} acknowledged writes`;
     const ledger = byId("storage-ledger-body"); ledger.replaceChildren();
@@ -671,8 +734,8 @@ function initializeReplay() {
   }
   function renderKnowledgeHero(knowledge, inspect) {
     activityKey = "";
-    const graph = knowledgeGraphData(recording?.report ?? { knowledge });
-    const metrics = knowledgeMetrics(recording?.report ?? { knowledge });
+    const graph = knowledgeGraphData({ ...recording?.report, knowledge, events: recording?.events.filter(event => event.atMs <= position) ?? [] });
+    const metrics = knowledgeMetrics({ ...recording?.report, knowledge });
     const chart = byId("knowledge-hero-graph"); chart.replaceChildren();
     const svg = (tag, attributes, text) => { const node = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value)); if (text !== undefined) node.textContent = text; return node; };
     const colorsByKind = { observation: "#008655", chain: "#145ee0", principle: "#a16b00" };
@@ -685,13 +748,14 @@ function initializeReplay() {
       path.append(svg("title", {}, `${edge.role}${edge.referenceRevision ? ` / pinned revision ${edge.referenceRevision}` : ""}`)); chart.append(path);
     }
     for (const node of graph.nodes) {
-      const group = svg("g", { class: "knowledge-hero-node", role: "button", tabindex: 0, "aria-label": `${node.kind}: ${node.label}`, "data-node-id": node.id });
-      group.append(svg("circle", { cx: node.x, cy: node.y, r: { observation: 5, chain: 9, principle: 14 }[node.kind], fill: colorsByKind[node.kind], stroke: "#172333", "stroke-width": node.state === "candidate" ? 1 : 2 }),
+      const group = svg("g", { class: "knowledge-hero-node", role: "button", tabindex: 0, "aria-label": `${node.kind}: ${node.label}`, "data-node-id": node.id, "data-arriving": !displayedGraphIds.has(node.id) });
+      group.append(svg("circle", { cx: node.x, cy: node.y, r: { observation: 7, chain: 12, principle: 20 }[node.kind], fill: colorsByKind[node.kind], stroke: "#172333", "stroke-width": node.state === "candidate" ? 1 : 2 }),
         svg("title", {}, `${node.kind} / ${node.state}${node.revision ? ` / revision ${node.revision}` : ""}\n${node.label}\n${node.id}`));
       const select = () => { inspect(node.id); byId("knowledge-inspector").scrollIntoView({ block: "nearest", behavior: "auto" }); };
       group.addEventListener("click", select); group.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } });
       chart.append(group);
     }
+    displayedGraphIds = new Set(graph.nodes.map(node => node.id));
     byId("knowledge-hero-empty").classList.toggle("hidden", graph.nodes.length > 0);
     byId("knowledge-hero-status").textContent = `${graph.nodes.length} visible records / ${graph.edges.length} source links${graph.omitted ? ` / ${graph.omitted} more in the ledger` : ""}${graph.missingReferences ? ` / ${graph.missingReferences} unresolved references` : ""}`;
     byId("hero-reuse").textContent = metrics.reuse.tasks;
@@ -825,6 +889,17 @@ function initializeReplay() {
   }
   function makeRoster(agents) {
     activityKey = "";
+    stageFeedKey = ""; stageAgents.clear(); byId("stage-roster").replaceChildren();
+    const featured = agents.filter(agent => !agent.control);
+    byId("stage-roster").style.setProperty("--stage-agents", featured.length);
+    for (const agent of featured) {
+      const item = element("div", "stage-agent"); item.style.setProperty("--agent-color", agent.color); item.dataset.agent = agent.id;
+      const avatar = element("div", "stage-avatar");
+      if (defaultAgents.some(role => role.id === agent.id)) { const face = element("span", "agent-face"); face.append(element("span", "agent-eye"), element("span", "agent-eye")); avatar.append(face); }
+      else avatar.append(icon(agent.icon ?? "bot"));
+      const action = element("div", "stage-agent-action", "Waiting");
+      item.append(avatar, element("div", "stage-agent-name", agent.name), action); byId("stage-roster").append(item); stageAgents.set(agent.id, { item, action });
+    }
     agentElements.clear(); laneElements.clear(); paths.clear(); byId("agents").replaceChildren(); byId("control-agents").replaceChildren(); byId("timeline").replaceChildren(); byId("connections").replaceChildren();
     byId("agent-cost-body").replaceChildren();
     const memoryAgents = agents.filter(agent => !agent.control); const controls = agents.filter(agent => agent.control);
@@ -867,11 +942,17 @@ function initializeReplay() {
   function load(report, live = false) {
     const next = normalizeRecording(report);
     const changed = recording?.report.runId !== report?.runId || recording?.agents.map(agent => agent.id).join() !== next.agents.map(agent => agent.id).join();
-    const wasFollowing = following;
+    const wasFollowing = following && recording?.report.status === "recording";
     recording = next;
-    if (changed) { position = live ? next.durationMs : 0; lastEventCount = -1; artifactShown = false; selectedId = null; makeRoster(next.agents); }
-    if (wasFollowing && !live && report.status !== "recording") position = next.durationMs;
-    following = live; playing = false;
+    following = live && report.status === "recording";
+    if (changed) {
+      position = following || reducedMotion.matches ? next.durationMs : 0;
+      playing = !following && !reducedMotion.matches && next.events.length > 0;
+      activityProjection = null; displayedGraphIds.clear(); knowledgeKey = ""; timelineKey = "";
+      lastEventCount = -1; artifactShown = false; selectedId = null; makeRoster(next.agents);
+    }
+    if (following) { position = next.durationMs; playing = false; }
+    else if (wasFollowing) { position = next.durationMs; playing = false; }
     byId("project-title").textContent = next.memoryLab ? "Knowledge Formation" : next.rediscovery ? "Knowledge Reuse"
       : report.title ?? next.source.protocol?.title ?? "Session expiry investigation";
     byId("project-kicker").textContent = next.control ? "LEARNING TRANSFER / A + B + C" : "SHARED BUILD / FIVE AGENTS";
@@ -1172,6 +1253,9 @@ function initializeReplay() {
   }
   function renderTimeline() {
     if (!recording) return;
+    const key = `${recording.events.length}:${Math.floor(recording.durationMs / 1000)}`;
+    if (key === timelineKey) { for (const lane of laneElements.values()) if (lane.lastElementChild) lane.lastElementChild.style.left = `${Math.min(100, position / recording.durationMs * 100)}%`; return; }
+    timelineKey = key;
     for (const [agentId, lane] of laneElements) {
       lane.replaceChildren(); const metadata = recording.agents.find(agent => agent.id === agentId);
       for (const event of recording.events) if (event.agent === agentId && event.type === "inference_finished") {
@@ -1189,7 +1273,7 @@ function initializeReplay() {
     const advancing = playing || following && recording.report.status === "recording";
     const moving = advancing && !reducedMotion.matches;
     document.documentElement.dataset.motion = moving ? "running" : "paused";
-    const activity = memoryActivity(recording, position, advancing);
+    const activity = memoryActivity(recording, position, advancing, playing ? Number(byId("speed").value) : 1);
     byId("memory-activity").dataset.active = String(moving && activity.active);
     byId("activity-mode").textContent = advancing ? following ? "LIVE" : "RECORDED REPLAY" : position >= recording.durationMs ? "RUN FINISHED" : "PAUSED";
     byId("activity-phase").textContent = activity.forming ? "Forming knowledge" : activity.writing ? "Storing evidence" : activity.reading ? "Retrieving experience"
@@ -1202,11 +1286,18 @@ function initializeReplay() {
     const key = JSON.stringify([moving, activity.flows, activity.pulses]);
     if (key === activityKey) return;
     activityKey = key;
-    byId("memory-packets")?.remove();
+    byId("memory-packets")?.remove(); byId("stage-graph-packets")?.remove();
     const pulses = new Set(moving ? activity.pulses.map(pulse => pulse.nodeId).filter(Boolean) : []);
     for (const node of document.querySelectorAll(".knowledge-hero-node")) node.dataset.active = String(pulses.has(node.dataset.nodeId));
     for (const edge of document.querySelectorAll(".knowledge-hero-edge")) edge.dataset.active = String(pulses.has(edge.dataset.to));
     if (!moving) return;
+    const graphPackets = document.createElementNS("http://www.w3.org/2000/svg", "g"); graphPackets.id = "stage-graph-packets"; graphPackets.setAttribute("aria-hidden", "true");
+    for (const edge of document.querySelectorAll('.knowledge-hero-edge[data-active="true"]')) {
+      const packet = document.createElementNS("http://www.w3.org/2000/svg", "circle"); packet.setAttribute("r", "5"); packet.setAttribute("fill", "#145ee0"); packet.setAttribute("class", "stage-graph-packet");
+      const motion = document.createElementNS("http://www.w3.org/2000/svg", "animateMotion"); motion.setAttribute("path", edge.getAttribute("d")); motion.setAttribute("dur", "1.1s"); motion.setAttribute("repeatCount", "indefinite");
+      packet.append(motion); graphPackets.append(packet);
+    }
+    byId("knowledge-hero-graph").append(graphPackets);
     const group = document.createElementNS("http://www.w3.org/2000/svg", "g"); group.id = "memory-packets"; group.setAttribute("aria-hidden", "true");
     const signals = [...activity.flows, ...activity.pulses.filter(pulse => !activity.flows.some(flow => flow.agent === pulse.agent))].slice(0, 12);
     for (const signal of signals) {
@@ -1220,9 +1311,66 @@ function initializeReplay() {
     }
     byId("connections").append(group);
   }
+  function renderStage(state, activity) {
+    const advancing = playing || following && recording.report.status === "recording";
+    const moving = advancing && !reducedMotion.matches;
+    const busy = moving && activity.phase !== "ready" && activity.phase !== "finished";
+    byId("live-stage").dataset.busy = String(busy);
+    byId("stage-heading").textContent = { thinking: "Agents investigating", working: "Investigation in motion", capturing: "Capturing experience", extracting: "Extracting observations", forming: "Forming new knowledge", retrieving: "Knowledge in action", finished: "Run captured", ready: "MindLeak at work" }[activity.phase];
+    byId("stage-run").textContent = `RUN ${recording.report.study?.sequence ?? 1} / ${String(recording.report.runId ?? "").slice(0, 8)} / ${activity.activeAgents.length} ACTIVE`;
+    byId("stage-clock").textContent = formatElapsed(position);
+    byId("stage-clock-label").textContent = following ? "LIVE ELAPSED" : "RECORDED TIME";
+    const number = (id, value) => {
+      const field = byId(id); const next = String(value);
+      if (field.textContent !== next) {
+        field.textContent = next;
+        if (moving) field.animate([{ transform: "translateY(-5px)", color: "#008655" }, { transform: "translateY(0)" }], { duration: 450 });
+      }
+    };
+    number("stage-tasks", `${activity.successfulTasks}/${activity.scheduledTasks ?? "?"}`);
+    number("stage-actions", activity.actions); number("stage-sources", activity.knowledge.observations.length); number("stage-principles", activity.acceptedPrinciples);
+    byId("stage-task-note").textContent = `${activity.completedTasks} checked / ${activity.completedTasks - activity.successfulTasks} unresolved`;
+    byId("stage-source-note").textContent = `+${activity.gained.observations} new / ${activity.inherited.observations} inherited`;
+    byId("stage-principle-note").textContent = `+${activity.gained.principles} new / ${activity.inherited.principles} inherited`;
+    byId("stage-progress").max = Math.max(1, activity.scheduledTasks ?? 1);
+    byId("stage-progress").value = activity.completedTasks;
+    for (const [id, view] of stageAgents) {
+      const actor = state.agents[id]; view.item.dataset.busy = String(busy && actor?.state === "running");
+      view.action.textContent = actor?.state === "running" ? actor.action : actor?.state ?? "Waiting";
+      view.item.title = `${nameFor(id)} / ${modelName(recording.agents.find(agent => agent.id === id)?.model)} / ${view.action.textContent}`;
+    }
+    const current = activity.currentTools.at(-1);
+    const generating = [...state.visibleEvents].reverse().find(event => event.type === "inference_started" && state.agents[event.agent]?.inference === event.atMs);
+    const detail = current && recording.report.toolExhibits?.find(item => item.toolCallId === current.toolCallId);
+    byId("stage-action").textContent = current ? `${nameFor(current.agent)} / ${current.tool.replaceAll("_", " ")}` : generating ? `${nameFor(generating.agent)} / ${generating.workload === "memory" ? "memory extraction" : "working on the next step"}` : activity.phase === "finished" ? "Recorded run complete" : "Between recorded operations";
+    byId("stage-target").textContent = current ? detail?.arguments?.path ?? detail?.arguments?.query ?? `${formatElapsed(position - current.atMs)} request elapsed`
+      : generating ? `${modelName(generating.model)} / ${formatElapsed(position - generating.atMs)} elapsed` : `${activity.knowledge.chains.length} chains / ${activity.reusedTasks} verified reuses`;
+    const earned = { observations: activity.knowledge.observations.length > 0, chains: activity.knowledge.chains.length > 0, principles: activity.acceptedPrinciples > 0, reuse: activity.reusedTasks > 0 };
+    for (const badge of document.querySelectorAll(".stage-milestone")) {
+      const next = String(earned[badge.dataset.stage]);
+      if (moving && next === "true" && badge.dataset.earned === "false") badge.animate([{ transform: "scale(1)" }, { transform: "scale(1.08)" }, { transform: "scale(1)" }], { duration: 650 });
+      badge.dataset.earned = next;
+    }
+    byId("stage-mode-note").textContent = following ? "LIVE / current run events" : playing ? "RECORDED REPLAY / no new model calls" : "PAUSED / recorded events";
+    const feedKey = activity.milestones.map(event => event.id).join(":");
+    if (feedKey !== stageFeedKey) {
+      stageFeedKey = feedKey; const feed = byId("stage-feed"); feed.replaceChildren();
+      for (const event of activity.milestones) {
+        const [symbol, title, eventDetail] = eventLabel(event); const row = element("div", "stage-event"); row.dataset.kind = event.kind ?? event.type;
+        const copy = element("div"); const node = [...activity.knowledge.principles, ...activity.knowledge.chains].find(node => node.chainId === event.nodeId);
+        const label = event.type === "tool_finished" ? ({ read_file: "Source inspected", search_files: "Repository searched", write_file: "Code updated", run_tests: "Checks executed", inspect_observation: "Evidence recovered", inspect_guide_sources: "Knowledge inspected", recall_guide: "Principles retrieved", recall_experience: "Experience retrieved", record_observation: "Observation stored", propose_chain: "Evidence connected", propose_guide: "Principle proposed", accept_knowledge: "Knowledge accepted", retain_lesson: "Principle retained" })[event.tool] ?? title : title;
+        copy.append(element("strong", "", event.type === "knowledge_written" ? `${event.kind === "principle" ? "Principle" : event.kind === "chain" ? "Chain" : "Observation"} / ${event.operation}` : label),
+          element("small", "", node?.document?.claim ?? `${nameFor(event.agent)} / ${eventDetail || formatElapsed(event.atMs)}`));
+        row.append(icon(symbol), copy); feed.append(row);
+      }
+      if (!activity.milestones.length) feed.append(element("p", "outcome-note", "Awaiting the first recorded action"));
+      icons();
+    }
+  }
   function render(force = false) {
     if (!recording) return;
     const state = replayState(recording, position);
+    activityProjection = runActivity(recording, position, state);
     byId("input-tokens").textContent = `${count(state.inputTokens)}${state.unknownInput ? " + ?" : ""}`;
     byId("output-tokens").textContent = `${count(state.outputTokens)}${state.unknownOutput ? " + ?" : ""}`;
     byId("memory-input-tokens").textContent = `${count(state.memoryInputTokens)}${state.unknownMemoryInput ? " + ?" : ""}`;
@@ -1263,7 +1411,7 @@ function initializeReplay() {
     const playIcon = byId("play").firstElementChild;
     const wanted = playing || following ? "pause" : "play";
     if (playIcon?.getAttribute("data-lucide") !== wanted) { byId("play").replaceChildren(icon(wanted)); icons(); }
-    renderEvents(state, force); renderTimeline(); renderMemories(state); renderKnowledge(); renderKnowledgeOutcomes(); renderActivity(state);
+    renderEvents(state, force); renderTimeline(); renderMemories(state); renderKnowledge(); renderKnowledgeOutcomes(); renderActivity(state); renderStage(state, activityProjection);
     const application = currentApplication();
     const ready = artifactTeam === "daleks" ? state.controlApplicationReady : state.applicationReady;
     const artifactKey = ready && application?.html ? `${artifactTeam}:${application.sha256}` : null;
@@ -1300,8 +1448,8 @@ function initializeReplay() {
   byId("attempts-input").addEventListener("input", event => { draft.attempts = Number(event.target.value); });
   byId("rounds-input").addEventListener("input", event => { draft.rounds = Number(event.target.value); });
   byId("rediscovery-profile-select").addEventListener("change", event => { draft.rediscoveryProfile = event.target.value; });
-  byId("study-fresh").addEventListener("change", () => { continueLearning = false; });
-  byId("study-continue").addEventListener("change", () => { continueLearning = true; });
+  byId("study-fresh").addEventListener("change", () => { continueLearning = false; configureStudyMode(); });
+  byId("study-continue").addEventListener("change", () => { continueLearning = true; configureStudyMode(); });
   for (const team of ["memory", "daleks"]) byId(`artifact-${team}`).addEventListener("click", () => {
     artifactTeam = team;
     for (const candidate of ["memory", "daleks"]) byId(`artifact-${candidate}`).setAttribute("aria-selected", String(candidate === team));
@@ -1310,7 +1458,8 @@ function initializeReplay() {
   byId("memory-model-select").addEventListener("change", event => { draft.memoryModel = event.target.value; byId("memory-model-status").textContent = `Next run: ${modelName(draft.memoryModel)}`; });
   byId("download-guide").addEventListener("click", () => {
     const guide = recording?.report.guide ?? recording?.report.knowledge?.guide;
-    const markdown = guide?.markdown ?? recording?.report.knowledge?.lessons?.map(lesson => lesson.markdown).join("\n\n");
+    const guides = recording?.report.knowledge?.guides ?? recording?.report.guides;
+    const markdown = guides?.length ? guides.map(item => item.markdown).join("\n\n") : guide?.markdown ?? recording?.report.knowledge?.lessons?.map(lesson => lesson.markdown).join("\n\n");
     if (markdown) save(markdown, "mindleak-solution-guide.md", "text/markdown");
   });
   byId("download-knowledge").addEventListener("click", () => { if (recording?.report.knowledge) save(JSON.stringify(recording.report.knowledge, null, 2), "mindleak-durable-knowledge.json", "application/json"); });
@@ -1329,7 +1478,7 @@ function initializeReplay() {
     byId("task-description").textContent = draft.problem; byId("run").querySelector("span").textContent = "Run experiment";
     byId("network-title").textContent = "Fresh Investigation Arms"; byId("network-meta").textContent = "Randomized / one session at a time";
     byId("app-frame").closest("section").classList.add("hidden"); byId("rediscovery-results").classList.remove("hidden");
-    byId("checks").textContent = `0 / ${draft.rediscoveryProfile === "pilot" ? 495 : 27}`;
+    byId("checks").textContent = `0 / ${draft.rediscoveryProfile === "pilot" ? 495 : draft.rediscoveryProfile === "learning" ? 135 : 27}`;
   } else if (profiles?.experiment === 2) {
     byId("project-title").textContent = "Knowledge Formation"; byId("project-kicker").textContent = "FIVE INVESTIGATORS / FIVE DALEK CONTROLS";
     byId("task-description").textContent = draft.problem; byId("run").querySelector("span").textContent = "Run experiment";
@@ -1354,18 +1503,21 @@ function initializeReplay() {
     stream.onopen = () => { byId("connection").dataset.connected = "true"; byId("connection").textContent = "Live connected"; };
     stream.onerror = () => { byId("connection").dataset.connected = "false"; byId("connection").textContent = "Reconnecting"; };
     stream.addEventListener("snapshot", message => { const data = JSON.parse(message.data); runActive = data.running; byId("run").disabled = data.running; byId("stop").disabled = !data.running; configureProfiles(data.profiles); if (data.report) load(data.report, data.running); });
-    stream.addEventListener("record", message => { if (!recording) return; const event = JSON.parse(message.data); if (recording.events.some(existing => existing.id === event.id)) return; recording.events.push(event); recording.report.events = recording.events; recording.durationMs = Math.max(recording.durationMs, event.atMs); if (following) position = recording.durationMs; if (["control_started", "control_arm_finished", "rediscovery_task_finished"].includes(event.type)) renderComparisons(); render(true); });
+    stream.addEventListener("record", message => { if (!recording) return; const event = JSON.parse(message.data); if (recording.events.some(existing => existing.id === event.id)) return; if (event.type === "run_started") recording.report.runId = event.runId; recording.events.push(event); recording.report.events = recording.events; recording.durationMs = Math.max(recording.durationMs, event.atMs); if (following) position = recording.durationMs; if (["control_started", "control_arm_finished", "rediscovery_task_finished"].includes(event.type)) renderComparisons(); render(true); });
     stream.addEventListener("memory", message => { if (!recording) return; const record = JSON.parse(message.data); const exhibits = recording.report.memoryExhibits ??= []; if (!exhibits.some(item => item.memoryId === record.memoryId)) exhibits.push(record); render(true); });
     stream.addEventListener("tool-detail", message => { if (!recording) return; const detail = JSON.parse(message.data); const exhibits = recording.report.toolExhibits ??= []; if (!exhibits.some(item => item.toolCallId === detail.toolCallId)) exhibits.push(detail); });
-    stream.addEventListener("knowledge", message => { if (!recording) return; const knowledge = JSON.parse(message.data); recording.report.knowledge = { ...recording.report.knowledge, ...knowledge }; if (knowledge.guide) recording.report.guide = knowledge.guide; renderKnowledge(); renderComparisons(); });
+    stream.addEventListener("knowledge", message => { if (!recording) return; const knowledge = JSON.parse(message.data); recording.report.knowledge = { ...recording.report.knowledge, ...knowledge }; if (knowledge.guide) recording.report.guide = knowledge.guide; renderComparisons(); render(true); });
   }
   function frame(now) {
     const delta = Math.min(1000, now - frameTime); frameTime = now;
     if (recording) {
       const advancing = following || playing;
       if (following && recording.report.status === "recording") { recording.durationMs = Math.max(recording.durationMs, Date.now() - Date.parse(recording.report.createdAt)); position = recording.durationMs; }
-      else if (playing) { position = Math.min(recording.durationMs, position + delta * Number(byId("speed").value)); if (position >= recording.durationMs) playing = false; }
-      if (advancing) render();
+      else if (playing) {
+        position = Math.min(recording.durationMs, position + delta * Number(byId("speed").value));
+        if (position >= recording.durationMs) { if (byId("replay-loop").checked && !reducedMotion.matches) position = 0; else playing = false; }
+      }
+      if (advancing && now - lastRenderAt >= 80) { lastRenderAt = now; render(); }
     }
     requestAnimationFrame(frame);
   }

@@ -16,10 +16,10 @@ export const rediscoveryProblem = "Can an earlier investigation help a fresh age
 
 export function rediscoveryPlan({ seed = 20260917, repetitions = 2, concurrency = 1, model = "gpt-6-astra", profile = "pilot" } = {}) {
   if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff || ![1, 2].includes(repetitions) || concurrency !== 1
-    || typeof model !== "string" || !model.trim() || model === "auto" || !["pilot", "smoke"].includes(profile)) throw new Error("invalid_rediscovery_plan");
+    || typeof model !== "string" || !model.trim() || model === "auto" || !["pilot", "smoke", "learning"].includes(profile)) throw new Error("invalid_rediscovery_plan");
   const families = profile === "smoke" ? rediscoveryFamilies.slice(0, 1) : rediscoveryFamilies;
-  const followups = profile === "smoke" ? ["near", "changed"] : rediscoveryFollowups;
-  const repeats = profile === "smoke" ? 1 : repetitions;
+  const followups = profile === "pilot" ? rediscoveryFollowups : ["near", "changed"];
+  const repeats = profile === "pilot" ? repetitions : 1;
   const sessions = [];
   for (const [round, stage] of followups.entries()) {
     const current = [];
@@ -32,10 +32,11 @@ export function rediscoveryPlan({ seed = 20260917, repetitions = 2, concurrency 
     current.sort((left, right) => digest(`${seed}:${left.id}`).localeCompare(digest(`${seed}:${right.id}`)));
     sessions.push(...current);
   }
-  return { protocolVersion: 2, fixtureVersion: 1, name: "Rediscovery", profile, seed, model, concurrency, repetitions: repeats, families: families.length,
+  return { protocolVersion: 3, fixtureVersion: 1, name: "Rediscovery", profile, seed, model, concurrency, repetitions: repeats, families: families.length,
     arms: ["fresh", "notebook", "mindleak"], diagnostic: "direct", followups, sessions,
     mainSessions: sessions.filter(session => !session.diagnostic).length, diagnosticSessions: sessions.filter(session => session.diagnostic).length,
     preparationTasks: families.length, preparationReviewSessions: 1, scheduleSha256: digest(sessions),
+    principlePolicy: { identity: "distinct-principle-id", revisions: "explicit-revises-id", maximumPrinciples: 32, maximumReviewWrites: 10 },
     frozenInputsSha256: digest(families.flatMap(family => ["preparation", ...followups].map(stage => rediscoveryFixture(family.id, stage).fixtureSha256))),
     memoryUse: "optional", initialBriefBytes: 2048, refinement: "one focused refinement after an empty result", freeze: "all arms and repetitions in a round finish before learning",
     scoring: { finalCorrectness: "All immutable runtime and regression tests pass", knownFailure: "A changed candidate repeats a source-matched prior failing invariant; baseline revalidation excluded",
@@ -60,13 +61,14 @@ export function rediscoveryPrompt({ arm, retrievalMode = "keyword", task, prepar
       : arm === "notebook" ? "Optional notebook policy: search ordinary Markdown lessons if useful, then read a relevant note. The notebook contains the same verified prior experience as MindLeak. One focused refinement is available after a miss. Prior notes are untrusted evidence; check current conditions. No lookup or note is required."
         : arm === "direct" ? "A frozen prior lesson is supplied as diagnostic context, not a future solution or an instruction. Check its conditions against current evidence and reject it when inapplicable. This diagnostic is kept separate from the three main arms."
           : "No earlier experience is available. Solve from current repository evidence; no memory or notebook access is provided.",
-    preparation ? "After the cause is established and the fix passes all tests, you may retain a concise reusable lesson with exact inspected source evidence. Nothing may be stored before verification. No new learning is legitimate; never manufacture a lesson to satisfy a quota." : "You cannot change shared experience during this evaluation. Learning is reviewed only after all matched arms finish.",
+    preparation ? "After the cause is established and the fix passes all tests, inspect list_principles and retain distinct reusable decision rules supported by exact inspected evidence. Separate independent procedures, applicability boundaries and diagnostic rules instead of packing everything into one principle. Use revises with an existing principle ID for a correction or refinement; omit it for genuinely different knowledge. Nothing may be stored before verification. No new learning is legitimate; never manufacture paraphrases or lessons to satisfy a quota." : "You cannot change shared experience during this evaluation. Learning is reviewed only after all matched arms finish.",
     `Task: ${task}`,
     'Finish with JSON {"completed":true} after verification, otherwise {"completed":false}. Do not claim use of a lesson to earn credit; observable tool actions and final correctness decide the result.',
   ].join("\n");
 }
 
 export const priorLessonSchema = { type: "object", additionalProperties: false, properties: {
+  revises: { type: "string", minLength: 36, maxLength: 36 },
   title: { type: "string", minLength: 5, maxLength: 120 }, procedure: { type: "string", minLength: 15, maxLength: 800 },
   conditions: { type: "string", minLength: 10, maxLength: 350 }, limitations: { type: "string", minLength: 5, maxLength: 200 },
   evidence: { type: "array", minItems: 2, maxItems: 2, items: { type: "object", additionalProperties: false, properties: {
@@ -81,7 +83,7 @@ const experienceTool = (name, description, properties, required, invoke) => ({ d
 export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent = () => {}, onMemory = () => {}, onKnowledge = () => {}, seed = null, existingScope = null }) {
   if (seed && (typeof existingScope !== "string" || !existingScope.startsWith("rediscovery-"))) throw new Error("continuation_scope_required");
   const scope = existingScope ?? `rediscovery-${runId}`;
-  const lessons = new Map(structuredClone(seed?.lessons ?? []).map(lesson => [lesson.family, lesson]));
+  const lessons = new Map(structuredClone(seed?.lessons ?? []).map(lesson => [lesson.id, lesson]));
   const nodes = new Map(structuredClone([...(seed?.chains ?? []), ...(seed?.principles ?? [])]).map(node => [node.chainId, node]));
   const observations = structuredClone(seed?.observations ?? []); const operations = structuredClone(seed?.operations ?? []); const durability = structuredClone(seed?.durability ?? []);
   const plans = new Map(); const requestIds = new Map(); const receipts = new Map(operations.map(operation => [operation.memoryId, null]));
@@ -89,6 +91,10 @@ export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent =
     chains: [...nodes.values()].filter(node => node.document.kind === "chain"), principles: [...nodes.values()].filter(node => node.document.kind === "principle") });
   const publish = () => onKnowledge(snapshot());
   const write = async (text, source, chain = null) => {
+    if (!chain) {
+      const existing = observations.find(observation => observation.rawText === text && observation.source === source);
+      if (existing) return { memoryId: existing.memoryId, fragments: structuredClone(existing.fragments) };
+    }
     const payload = { agentId: `lab3-${runId}-curator`, text, context: { scope, sessionId: runId, source: `synthetic:rediscovery/${source}` }, ...(chain ? { chain } : {}) };
     const key = digest(payload);
     if (!requestIds.has(key)) requestIds.set(key, randomUUID());
@@ -133,11 +139,15 @@ export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent =
       const family = rediscoveryFamilies.find(item => item.id === fixture.family);
       if (!family || !matchesContract(lesson, priorLessonSchema) || new Set(lesson.evidence.map(item => item.path)).size < 2
         || lesson.evidence.some(item => typeof item.quote !== "string" || item.quote.length < 4 || !observedSources.get(item.path)?.includes(item.quote))) throw new Error("inspected_source_evidence_required");
-      const prior = lessons.get(fixture.family);
-      if (prior && notebookText(prior) === notebookText(lesson)) return { ...structuredClone(prior), existing: true };
+      const prior = lesson.revises ? lessons.get(lesson.revises) : null;
+      if (lesson.revises && (!prior || prior.family !== fixture.family)) throw new Error("unknown_prior_principle");
+      const duplicate = [...lessons.values()].find(record => record.family === fixture.family && notebookText(record) === notebookText(lesson));
+      if (duplicate) return { ...structuredClone(duplicate), existing: true };
+      if (!prior && [...lessons.values()].some(record => record.family === fixture.family && record.title.trim().toLowerCase() === lesson.title.trim().toLowerCase())) throw new Error("principle_revision_requires_id");
+      if (!prior && lessons.size >= 32) throw new Error("principle_inventory_budget");
       const planKey = digest({ fixture: fixture.id, lesson, candidate: verification.sourceSha256 });
       if (!plans.has(planKey)) plans.set(planKey, { id: prior?.id ?? randomUUID(), previousRevision: prior?.revision ?? null,
-        chainIds: Array.from({ length: prior ? 1 : 2 }, () => randomUUID()), supportedBy: prior?.document.supportedBy ?? [] });
+        chainIds: Array.from({ length: 2 }, () => randomUUID()), supportedBy: prior?.document.supportedBy ?? [] });
       const plan = plans.get(planKey);
       const brief = compactPriorLesson({ ...lesson, id: plan.id, revision: (plan.previousRevision ?? 0) + 2, chainIds: [...plan.supportedBy.map(item => item.chainId), ...plan.chainIds] });
       if (Buffer.byteLength(JSON.stringify({ hits: [brief], mode: "keyword" })) > 2048) throw new Error("prior_lesson_brief_budget");
@@ -149,7 +159,12 @@ export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent =
         const document = { kind: "chain", claim: `${family.name} / ${fixture.stage} / ${index + 1}: ${evidence.claim}`,
           rationale: "The agent connected inspected source evidence to an implementation that passed the immutable checks after an initial failing baseline.",
           conclusion: evidence.claim, applicability: lesson.conditions, assumptions: [lesson.limitations],
-          evidence: (prior ? sources : [sources[index]]).map(source => ({ fragmentId: source.fragments[0].fragmentId, role: "supports", reason: "Exact inspected source from the verified investigation." })), supportedBy: [] };
+          evidence: [{ fragmentId: sources[index].fragments[0].fragmentId, role: "supports", reason: "Exact inspected source from the verified investigation." }], supportedBy: [] };
+        const existing = [...nodes.values()].find(node => node.state === "accepted" && node.review === "reviewed" && !node.requiresReview && isDeepStrictEqual(node.document, document));
+        if (existing) {
+          if (!supportedBy.some(reference => reference.chainId === existing.chainId)) supportedBy.push({ chainId: existing.chainId, revision: existing.revision, reason: "Previously verified source chain; shared evidence is not independent confirmation." });
+          continue;
+        }
         const candidate = await write(`${family.name}: the investigator proposed an evidence-backed case chain.`, fixture.id, { operation: "propose", chainId, document });
         nodes.set(chainId, { chainId, actor: "mindleak", state: candidate.state, review: candidate.review, revision: candidate.revision, memoryId: candidate.memoryId, document });
         const accepted = await accept(chainId, fixture.id, verification);
@@ -165,7 +180,7 @@ export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent =
         chainIds: supportedBy.map(item => item.chainId), document, memoryId: accepted.memoryId, sourceFixtureSha256: fixture.fixtureSha256,
         referenceImplementation: candidateFiles[fixture.modulePath] ?? null,
         verification: structuredClone(verification), baseline: structuredClone(baseline), markdown: notebookText(lesson) };
-      lessons.set(fixture.family, saved); publish(); return structuredClone(saved);
+      lessons.set(saved.id, saved); publish(); return structuredClone(saved);
     },
     async freeze() {
       const transition = await driver.restart();
@@ -318,9 +333,12 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
   if (!driver?.capabilities?.knowledge || !driver.capabilities.chains || !agent?.run || !code) throw new Error("rediscovery_requires_knowledge_agent_and_container");
   if (parent && (parent.kind !== "rediscovery_lab" || parent.status !== "completed" || !parent.runId || !parent.knowledge?.lessons?.length)) throw new Error("completed_learning_parent_required");
   const plan = rediscoveryPlan({ model: agent.configuration.model, profile, repetitions, seed });
+  const families = profile === "smoke" ? rediscoveryFamilies.slice(0, 1) : rediscoveryFamilies;
+  const preparationFamilies = families.filter(family => !parent?.knowledge.lessons.some(lesson => lesson.family === family.id));
   if (parent) {
     plan.parentRunId = parent.runId; plan.continuationVersion = 1; plan.taskExposure = "previously_exposed";
-    plan.preparationTasks = 0; plan.preparationReviewSessions = 0;
+    plan.preparationTasks = preparationFamilies.length; plan.preparationReviewSessions = preparationFamilies.length ? 1 : 0;
+    plan.newFamilyIds = preparationFamilies.map(family => family.id);
   }
   plan.agentBudget = structuredClone(agent.configuration);
   await onPlan(structuredClone(plan));
@@ -334,10 +352,15 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
   const details = detail => { toolExhibits.push(detail); onToolDetail(detail); };
   const store = createRediscoveryStore({ driver, runId, seed: parent?.knowledge, existingScope: parent ? parent.scope ?? `rediscovery-${parent.runId}` : null,
     onEvent: emit, onMemory: record => { memoryExhibits.push(record); onMemory(record); }, onKnowledge });
+  const principleInventory = experienceTool("list_principles", "Inspect the retained principle catalogue before forming knowledge. Distinct principles may share a task family or evidence. Use an existing ID in revises when refining the same rule; do not create duplicate paraphrases.", {}, [], () => ({
+    principles: store.snapshot().lessons.map(({ id, revision, family, title, conditions }) => ({ id, revision, family, title, conditions })), maximumPrinciples: 32,
+  }));
   const unsubscribe = driver.observeInference?.(event => { if (event.type === "inference_finished") memoryUsage.push(event); emit(event); });
   const runCase = async ({ fixture, arm, id, round = 0, repetition = 1, diagnostic = false, frozen = { lessons: [] }, preparing = false }) => {
     const caseStarted = performance.now(); const observedSources = new Map(); const reads = []; const writes = []; const probes = [];
-    const previous = frozen.lessons.find(lesson => lesson.family === fixture.family);
+    const priors = frozen.lessons.filter(lesson => lesson.family === fixture.family);
+    const previous = priors[0];
+    const retainedIds = new Set();
     let workspace; let baseline; let lastTests = null; let firstVerifiedFixMs = null; let retained = null; let execution; let memoryRecordingMs = 0;
     let lastChangedAt = null; let changed = false;
     const relay = event => emit({ ...event, agent: arm, phaseScope: preparing ? "preparation" : "evaluation", caseId: id, round, family: fixture.family });
@@ -371,12 +394,13 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
         },
       };
       const tools = [...agentTools(null, measured, { recall: false, write: false }), ...experience.tools];
-      if (preparing) tools.push(experienceTool("retain_lesson", "Optionally retain a concise reusable lesson only after your changed implementation passes all immutable tests. Preserve the procedure, current applicability and limits, with two exact excerpts from different source files you actually inspected. This stores observations, chains and a principle, and produces the same Markdown for the notebook arm. No note is required for task correctness.",
+      if (preparing) tools.push(principleInventory, experienceTool("retain_lesson", "Retain one distinct evidence-backed principle after your changed implementation passes all immutable tests. Call again for another independently useful rule from the same investigation. Inspect list_principles first; supply revises only to refine its existing ID. Preserve applicability, limits and two exact excerpts from different inspected files. Shared support chains are reused. No note quota or duplicate paraphrases.",
         priorLessonSchema.properties, priorLessonSchema.required, async lesson => {
           const recordingStarted = performance.now();
           try {
             const candidateFiles = Object.fromEntries(await Promise.all(fixture.editable.map(async path => [path, await workspace.read(path)])));
             retained = await store.retain({ fixture, lesson, verification: lastTests, observedSources, changed, baseline, candidateFiles });
+            retainedIds.add(retained.id);
           } finally { memoryRecordingMs += performance.now() - recordingStarted; }
           return { id: retained.id, revision: retained.revision, stored: true };
         }));
@@ -402,7 +426,7 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
     const exposures = direct ? [{ lessonIds: [previous.id], level: "principle", atMs: 0, tool: "direct-context" }, ...accesses] : accesses;
     const priorKnowledgeDelivered = exposures.some(access => access.lessonIds.length > 0);
     const beforeDecision = exposures.filter(access => access.lessonIds.length > 0 && lastChangedAt !== null && access.atMs <= lastChangedAt);
-    const applicable = fixture.stage !== "irrelevant" && beforeDecision.some(access => access.lessonIds.includes(previous?.id));
+    const applicable = fixture.stage !== "irrelevant" && beforeDecision.some(access => priors.some(prior => access.lessonIds.includes(prior.id)));
     const seenCandidates = new Set();
     const knownFailureCandidates = ["near", "generalization"].includes(fixture.stage) ? probes.filter(probe => {
       if (!probe.changed || probe.sourceSha256 === baseline?.sourceSha256 || seenCandidates.has(probe.sourceSha256)) return false;
@@ -410,12 +434,13 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
       return !probe.passed && probe.failedTests?.some(name => previous?.baseline.failedTests?.includes(name));
     }).map(probe => ({ sourceSha256: probe.sourceSha256, failedTests: probe.failedTests, atMs: probe.atMs })) : [];
     const conditionInspected = reads.some(read => ["docs/current-contract.md", "src/provider.mjs"].includes(read.path));
-    const invalidation = priorImplementationChecks.get(`${fixture.id}:${previous?.id}:${previous?.revision}`);
-    const repeatedPrior = Boolean(previous?.referenceImplementation && Object.values(caseEvidence.get(id)?.candidateFiles ?? {}).includes(previous.referenceImplementation));
+    const appliedPrior = priors.find(prior => beforeDecision.some(access => access.lessonIds.includes(prior.id))) ?? previous;
+    const invalidation = priorImplementationChecks.get(`${fixture.id}:${appliedPrior?.id}:${appliedPrior?.revision}`);
+    const repeatedPrior = Boolean(appliedPrior?.referenceImplementation && Object.values(caseEvidence.get(id)?.candidateFiles ?? {}).includes(appliedPrior.referenceImplementation));
     const elapsedMs = performance.now() - caseStarted;
     const outcome = { ...publicExecution(execution), id, arm, family: fixture.family, stage: fixture.stage, round, repetition, diagnostic,
       fixtureSha256: fixture.fixtureSha256, baseline, finalTests: lastTests, correct, elapsedMs, memoryRecordingMs, sharedElapsedMs: elapsedMs - memoryRecordingMs,
-      actualCostUsd: null, firstVerifiedFixMs, retainedLessonId: retained?.id ?? null,
+      actualCostUsd: null, firstVerifiedFixMs, retainedLessonId: retained?.id ?? null, retainedLessonIds: [...retainedIds],
       priorKnowledgeDelivered, reuseObserved: Boolean(correct && applicable),
       usedChainIds: correct && applicable ? [...new Set(beforeDecision.filter(access => access.level === "chain").map(access => access.resourceId).filter(Boolean))] : [],
       experienceAccesses: accesses, experienceErrors: experience.errors.map(error => ({ ...error, atMs: error.atMs - caseStarted })),
@@ -443,7 +468,7 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
     const inspected = new Map(); const retained = [];
     const frozen = { ...store.snapshot() };
     const readTools = rediscoveryExperienceTools({ arm: "mindleak", frozen, driver, scope: store.scope, onEvent: event => emit({ ...event, agent: "mindleak", round: round.number, phaseScope: "review" }) });
-    const tools = [...readTools.tools,
+    const tools = [principleInventory, ...readTools.tools,
       experienceTool("inspect_task_result", "Inspect a completed verified memory-side task and its source files for an optional learning review. No control answers are available.", { id: { type: "string" } }, ["id"], ({ id }) => {
         if (!permitted.has(id)) throw new Error("review_case_not_allowed");
         const evidence = caseEvidence.get(id);
@@ -451,11 +476,10 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
         inspected.set(id, sources);
         return { id, outcome: permitted.get(id), files: Object.fromEntries(sources) };
       }),
-      experienceTool("retain_lesson", "Optionally revise a lesson using a verified memory-side case you inspected. Add a reusable condition, correction or exception; no note quota. Existing equivalent lessons are reused. No automatic confirmation or lifecycle reinforcement occurs.",
+      experienceTool("retain_lesson", "Retain a distinct principle or explicitly revise one using a verified memory-side case you inspected. Several principles may come from the same case when they express different supported decision rules. Supply revises for refinement of a catalogue ID; omit it for new knowledge. Preserve limits and counterexamples. Equivalent lessons reuse their receipts; no paraphrase quota or automatic reinforcement.",
         { caseId: { type: "string" }, ...priorLessonSchema.properties }, ["caseId", ...priorLessonSchema.required], async ({ caseId, ...lesson }) => {
-          if (!inspected.has(caseId) || retained.length >= 5) throw new Error("inspect_verified_case_first");
+          if (!inspected.has(caseId) || retained.length >= 10) throw new Error("inspect_verified_case_or_review_budget");
           const evidence = caseEvidence.get(caseId);
-          if (retained.some(record => record.family === evidence.fixture.family)) throw new Error("one_family_review_per_round");
           const recordingStarted = performance.now(); let result;
           try { result = await store.retain({ ...evidence, lesson, observedSources: inspected.get(caseId) }); }
           finally { memoryRecordingMs += performance.now() - recordingStarted; }
@@ -468,8 +492,9 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
     const prompt = [rediscoveryPrompt({ arm: "mindleak", retrievalMode: driver.configuration?.retrieval ?? "unknown", preparation: true,
       task: round.number === 0 ? "Prepare reusable prior experience from the verified memory-side investigation before any evaluation starts." : "Review only verified memory-side outcomes after the frozen comparison has finished." }),
       `Review round ${round.number}. Available verified memory-side tasks: ${JSON.stringify(verified.map(outcome => ({ id: outcome.id, family: outcome.family, stage: outcome.stage, firstVerifiedFixMs: outcome.firstVerifiedFixMs })))}`,
-      round.number === 0 ? "This is a dedicated documentation task, not another coding task. Inspect the verified investigation and its source evidence. Extract an actionable diagnostic procedure, the conditions under which it applies, and a boundary where it may not apply. Use retain_lesson to store the agent-authored lesson only if the investigation established reusable evidence. Do not include any future-task solution. No new learning remains legitimate when the evidence adds nothing reusable."
-        : "No evaluation arm is running now. Inspect a result only when it might add reusable evidence. You may use retain_lesson to update the relevant procedure and conditions from its verified source files. A prior lesson becoming inapplicable is important evidence. Otherwise finish with no new learning; do not write merely because a round ended. Never infer independence from repetitions or agent IDs.",
+      "Inspect list_principles before writing. Review each verified case for distinct reusable procedures, diagnostic checks, failure boundaries and changed assumptions. One family is not one principle: separate rules when they answer different decisions, with actual supporting evidence for each. Up to ten retention calls are available, not required; use revises for an existing rule instead of duplicating it.",
+      round.number === 0 ? "This is a dedicated documentation task, not another coding task. Inspect the verified investigations and their source evidence. Extract justified principles without including any future-task solution. No new learning remains legitimate when the evidence adds nothing reusable."
+        : "No evaluation arm is running now. Inspect results that may add reusable evidence. A prior lesson becoming inapplicable is important evidence: refine its actual ID and retain the boundary. Otherwise finish with no new learning; do not write merely because a round ended. Never infer independence from repetitions or agent IDs.",
     ].join("\n");
     emit({ type: "rediscovery_review_started", agent: "mindleak", round: round.number });
     let execution;
@@ -478,20 +503,19 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
     catch { execution = { status: "provider_error", inputTokens: null, outputTokens: null, toolCalls: null, trace: [], responses: [] }; }
     const elapsedMs = performance.now() - reviewStarted;
     const cost = { ...publicExecution(execution), actualCostUsd: null, elapsedMs, memoryRecordingMs, sharedElapsedMs: elapsedMs - memoryRecordingMs,
-      outcome: execution.status !== "completed" ? "review_incomplete" : retained.length ? "learning_retained" : "no_new_learning",
+      outcome: execution.status !== "completed" ? "review_incomplete" : retained.some(record => !record.existing) ? "learning_retained" : "no_new_learning",
       retainedLessonIds: retained.map(record => ({ id: record.id, revision: record.revision })), experienceErrors: readTools.errors };
     emit({ type: "rediscovery_review_finished", agent: "mindleak", round: round.number, outcome: cost.outcome, retained: retained.length });
     return cost;
   };
   emit({ type: "run_started", runId, experiment: 3, title: "Rediscovery", agents: 4, expectedTests: (plan.preparationTasks + plan.sessions.length) * 3 });
   try {
-    const families = profile === "smoke" ? rediscoveryFamilies.slice(0, 1) : rediscoveryFamilies;
-    for (const family of parent ? [] : families) {
+    if (parent) onKnowledge(store.snapshot());
+    for (const family of preparationFamilies) {
       if (signal?.aborted) break;
       preparation.push(await runCase({ fixture: rediscoveryFixture(family.id), arm: "mindleak", id: `prepare:${family.id}`, preparing: true }));
     }
-    if (!parent && !signal?.aborted) preparationReview = await review({ number: 0, stage: "preparation" });
-    if (parent) onKnowledge(store.snapshot());
+    if (preparationFamilies.length && !signal?.aborted) preparationReview = await review({ number: 0, stage: "preparation" });
     for (let number = 1; number <= plan.followups.length && !signal?.aborted; number += 1) {
       const freezeStarted = performance.now(); const frozen = await store.freeze();
       const round = { number, stage: plan.followups[number - 1], experienceSha256: frozen.fingerprint, lessonVersions: frozen.lessons.map(lesson => ({ id: lesson.id, revision: lesson.revision })),

@@ -175,10 +175,20 @@ test("Lab 2 preserves observations, chains and guide revisions across a real res
     assert.equal(guide.chainId, candidate.chainId);
     assert.equal(guide.revision, 2);
     assert.ok(guide.markdown.includes("Branch-kit"));
+    const separate = await ledger.propose("nova", { ...captured.principles[0].document,
+      claim: "Branch-kit runtime boundaries require current compatibility evidence",
+      conclusion: "Check deployed dependency paths and the current caller contract before accepting a package-only upgrade." });
+    await ledger.accept("nova", separate.chainId, separate.revision, cases[2], { passed: true });
+    assert.notEqual(separate.chainId, guide.chainId);
+    assert.equal(ledger.snapshot().principles.length, 2);
+    assert.equal((await ledger.exportGuide()).chainId, guide.chainId, "the original export identity stays stable");
+    assert.deepEqual(new Set((await ledger.exportGuides()).map(item => item.chainId)), new Set([guide.chainId, separate.chainId]));
+    await ledger.provePersistence("nova");
+    assert.equal(ledger.snapshot().principles.length, 2);
   } finally { await driver.close(); }
 });
 
-test("Lab 2 full relay builds one durable guide from five case chains", {
+test("Lab 2 full relay forms multiple principles and freezes the collection for both rounds", {
   skip: !process.env.MINDLEAK_LAB2_TEST_BINARY,
 }, async () => {
   const { runMemoryLab, memoryLabRoles } = await import("./memory-lab.mjs");
@@ -206,6 +216,14 @@ test("Lab 2 full relay builds one durable guide from five case chains", {
         applicability: "This synthetic package-review family, including non-shipped and blocked cases.", assumptions: [], evidence: [],
         supportedBy: sources.chains.map(record => ({ chainId: record.chain.chainId, revision: record.chain.revision, reason: "Accepted case evidence." })) });
       await invoke("accept_knowledge", { chainId: guide.chainId, expectedRevision: guide.revision });
+      if (index === 1) {
+        const principle = await invoke("propose_guide", { chainId: null, expectedRevision: null,
+          claim: "Branch-kit deployment boundary verification", rationale: "The source-backed cases distinguish runtime deployment from dependency inventory.",
+          conclusion: "Inspect the deployed caller before selecting an upgrade. Verify its current contract against the actual shipped path.",
+          applicability: "Synthetic deployed-runtime checks for branch-kit.", assumptions: [], evidence: [],
+          supportedBy: sources.chains.slice(0, 2).map(record => ({ chainId: record.chain.chainId, revision: record.chain.revision, reason: "Accepted case evidence." })) });
+        await invoke("accept_knowledge", { chainId: principle.chainId, expectedRevision: principle.revision });
+      }
       return execution();
     }
     if (entries.has("record_observation")) {
@@ -222,7 +240,9 @@ test("Lab 2 full relay builds one durable guide from five case chains", {
     let previousGuide;
     if (storing && index >= 2) {
       assert.ok(!entries.has("inspect_guide_sources"), "assessment must use progressive retrieval, not all case documents");
-      const sources = await invoke("recall_guide", { query: "branch-kit" });
+      const boundary = await invoke("recall_guide", { query: "branch-kit deployment boundary" });
+      assert.ok(boundary.principles.length, "another applicable principle may be read first");
+      const sources = await invoke("recall_guide", { query: "branch-kit durable package-review guide" });
       previousGuide = sources.principles[0].chain;
       for (const source of sources.sourceReferences.slice(0, 2)) await invoke("inspect_observation", { fragmentId: source.fragmentId });
     }
@@ -245,8 +265,8 @@ test("Lab 2 full relay builds one durable guide from five case chains", {
     assert.equal(report.agents[1].attempts[0].passed, true, "verified tool results decide assessment completion, not self-report");
     assert.equal(report.summary.observationsStored, 8);
     assert.equal(report.summary.chainsStored, 5);
-    assert.equal(report.summary.principlesStored, 1);
-    assert.equal(report.summary.memoriesStored, 26);
+    assert.equal(report.summary.principlesStored, 2);
+    assert.equal(report.summary.memoriesStored, 28);
     assert.equal(report.summary.inputTokens, 140);
     assert.ok(report.agents.every(actor => actor.evidenceAttempts.length === 1 && actor.evidenceAttempts[0].passed));
     assert.equal(report.summary.guideApplications, 3);
@@ -256,7 +276,7 @@ test("Lab 2 full relay builds one durable guide from five case chains", {
     assert.equal(report.knowledge.principles[0].document.supportedBy.length, 5);
     assert.equal(report.knowledge.durability.length, 5);
     assert.ok(report.knowledge.durability.every(proof => proof.passed && proof.previousPid !== proof.currentPid));
-    assert.equal(report.knowledge.durability.at(-1).records, 14);
+    assert.equal(report.knowledge.durability.at(-1).records, 15);
     assert.equal(report.finalTests.passedTests, 35);
     assert.equal(report.comparisons.length, 0, "preparation must not contain hidden no-memory evaluation costs");
     const { runMemoryControl } = await import("./memory-control.mjs");
@@ -287,7 +307,9 @@ test("Lab 2 full relay builds one durable guide from five case chains", {
         try {
           await Promise.race([barriers[roundIndex].promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("all_ten_arms_must_start")), 10000); })]);
           if (entries.has("recall_guide")) {
-            const guide = await invoke("recall_guide", { query: "branch-kit" });
+            const boundary = await invoke("recall_guide", { query: "branch-kit deployment boundary" });
+            assert.equal(boundary.principles[0]?.chain.chainId, report.knowledge.principles[1].chainId, "all retained principles are usable in matched rounds");
+            const guide = await invoke("recall_guide", { query: "branch-kit durable package-review guide" });
             assert.equal(guide.principles[0].chain.revision, report.guide.revision + roundIndex * 2);
           }
           for (const path of specification.evidencePaths) await invoke("read_file", { path });
@@ -329,6 +351,7 @@ test("Lab 2 full relay builds one durable guide from five case chains", {
     const outcomes = control.rounds.flatMap(round => round.pairs.flatMap(pair => [pair.withMemory, pair.withoutMemory]));
     assert.equal(new Set(outcomes.map(outcome => outcome.sessionId)).size, 20);
     assert.ok(control.rounds.every(round => round.pairs.length === 5 && round.frozen.unchangedAfterComparison));
+    assert.ok(control.rounds.every(round => round.frozen.principles.length === 2));
     assert.ok(control.rounds.every(round => round.pairs.every(pair => pair.withMemory.guideRetrievedBeforeAssessment && pair.withMemory.guideApplied && !pair.withoutMemory.knowledgeReceived)));
     const { learnFromControlRound } = await import("./memory-control.mjs");
     let reviewSessions = 0;
@@ -1010,7 +1033,7 @@ test("CI runs the real lab workflows without external model calls", async () => 
 test("Lab 3 freezes three main arms and a separate diagnostic across genuine change", async () => {
   const { rediscoveryPlan, rediscoveryPrompt, compactPriorLesson } = await import("./rediscovery-lab.mjs");
   const plan = rediscoveryPlan();
-  assert.equal(plan.protocolVersion, 2);
+  assert.equal(plan.protocolVersion, 3);
   assert.equal(plan.mainSessions, 120);
   assert.equal(plan.diagnosticSessions, 40);
   assert.equal(plan.families, 5);
@@ -1021,6 +1044,13 @@ test("Lab 3 freezes three main arms and a separate diagnostic across genuine cha
   assert.equal(new Set(plan.sessions.map(session => session.id)).size, 160);
   assert.deepEqual(plan, rediscoveryPlan());
   assert.notEqual(plan.scheduleSha256, rediscoveryPlan({ seed: 33 }).scheduleSha256);
+  const learning = rediscoveryPlan({ profile: "learning" });
+  assert.equal(learning.families, 5);
+  assert.equal(learning.mainSessions, 30);
+  assert.equal(learning.diagnosticSessions, 10);
+  assert.equal(learning.repetitions, 1);
+  assert.deepEqual(learning.followups, ["near", "changed"]);
+  assert.equal(selectDemoParameters(null, { rediscoveryProfile: "learning" }).rediscoveryProfile, "learning");
   for (const group of new Set(plan.sessions.map(session => session.matchId))) {
     const matched = plan.sessions.filter(session => session.matchId === group);
     assert.equal(matched.length, 4);
@@ -1121,6 +1151,29 @@ test("Lab 3 stores verified agent lessons and gives each arm the same frozen exp
     assert.equal((await search.invoke({ query: "unrelated_zxqv_888" })).hits.length, 0);
     await assert.rejects(search.invoke({ query: "unrelated_zxqv_999" }), /query_refinement_exhausted/);
     assert.equal(await store.verifyFrozen(frozen), true);
+    const secondLesson = { ...lesson, title: "Contract-led retry verification",
+      procedure: "Compare the documented key scope with the provider implementation before reusing a retry procedure; verify its current conditions." };
+    const second = await store.retain({ ...input, lesson: secondLesson });
+    assert.notEqual(second.id, saved.id, "distinct principles in one family must coexist instead of overwriting one guide");
+    assert.equal(store.snapshot().principles.length, 2);
+    assert.equal(store.snapshot().lessons.length, 2);
+    const writesBeforeDuplicate = calls.filter(call => call.name === "write_memory").length;
+    assert.equal((await store.retain({ ...input, lesson: secondLesson })).id, second.id);
+    assert.equal(calls.filter(call => call.name === "write_memory").length, writesBeforeDuplicate, "repetition alone is not new learning");
+    await assert.rejects(store.retain({ ...input, lesson: { ...lesson, revises: randomUUID() } }), /unknown_prior_principle/);
+    const revised = await store.retain({ ...input, lesson: { ...lesson, revises: saved.id,
+      procedure: `${lesson.procedure} Inspect current provider scope before every adaptation.` } });
+    assert.equal(revised.id, saved.id, "an explicit revision preserves principle identity");
+    assert.ok(revised.revision > saved.revision);
+    assert.equal(store.snapshot().lessons.find(item => item.id === second.id).revision, second.revision);
+    const continuedStore = createRediscoveryStore({ driver: monitored, runId: randomUUID(), existingScope: store.scope, seed: store.snapshot() });
+    const continued = await continuedStore.freeze();
+    assert.deepEqual(new Set(continued.lessons.map(item => item.id)), new Set([saved.id, second.id]), "continuation retains every principle in a family");
+    const continuedRevision = await continuedStore.retain({ ...input, lesson: { ...lesson, revises: second.id, title: secondLesson.title,
+      procedure: `${secondLesson.procedure} Keep the applicability boundary explicit.` } });
+    assert.equal(continuedRevision.id, second.id);
+    assert.equal(continuedStore.snapshot().observations.length, continued.observations.length, "continued refinement reuses the exact original evidence");
+    assert.equal(continuedStore.snapshot().principles.length, 2);
     assert.ok(calls.filter(call => call.name === "write_memory").every(call => !call.args.facts), "no automatic lifecycle feedback");
   } finally { await driver.close(); }
 });
@@ -1147,6 +1200,25 @@ test("Lab 3 runs optional-memory arms with misses frozen rounds and complete acc
     if (entries.has("inspect_task_result")) {
       assert.ok(task.includes("memory-side"));
       assert.ok(!task.includes('"arm":"fresh"') && !task.includes('"arm":"direct"'));
+      if (task.includes("Review round 0.")) {
+        await invoke("inspect_task_result", { id: "prepare:retry-identity" });
+        for (const title of ["Contract-led recovery checks", "Explicit retry applicability boundaries"]) await invoke("retain_lesson", {
+          caseId: "prepare:retry-identity", title,
+          procedure: `${title}: compare provider key scope with the documented contract and verify an appropriate recovery path before reusing prior experience.`,
+          conditions: "The current provider advertises its request-key scope.", limitations: "Changed contracts may require attempt-scoped keys.",
+          evidence: [{ path: "docs/current-contract.md", quote: "The provider deduplicates committed requests by request key.", claim: "The original contract deduplicates by request key." },
+            { path: "src/provider.mjs", quote: 'keyScope: "operation"', claim: "The original provider advertises operation-scoped keys." }],
+        });
+        assert.equal((await invoke("list_principles")).principles.length, 3);
+      }
+      if (sessionCount > 12 && task.includes("Review round 1.")) {
+        const caseId = "retry-identity:near:1:mindleak";
+        const recovered = await invoke("inspect_task_result", { id: caseId });
+        await invoke("retain_lesson", { caseId, title: "Consumer-side recovery contract checks",
+          procedure: "Check the consumer contract and provider key scope together before adapting retry ownership in a different calling module.",
+          conditions: "The current consumer has passed its immutable retry checks.", limitations: "Different source files do not establish independent corroboration.",
+          evidence: ["docs/current-contract.md", "src/provider.mjs"].map(path => ({ path, quote: recovered.files[path].slice(0, 80), claim: `The verified consumer investigation inspected ${path}.` })) });
+      }
       return { status: "completed", sessionId: randomUUID(), answer: { completed: true }, trace: [], responses: [], inputTokens: 100, outputTokens: 10, toolCalls: 0, elapsedMs: 1 };
     }
     const files = await invoke("list_files");
@@ -1194,11 +1266,11 @@ test("Lab 3 runs optional-memory arms with misses frozen rounds and complete acc
     assert.equal(report.metrics.arms.fresh.totalInputTokens, 200);
     assert.equal(report.metrics.costBreakEven, null);
     assert.equal(report.metrics.compoundingScore, null);
-    assert.equal(report.knowledge.lessons.length, 1);
+    assert.equal(report.knowledge.lessons.length, 3);
     assert.equal(report.rounds.length, 2);
     assert.ok(report.rounds.every(round => round.frozenUnchanged && round.learning.outcome === "no_new_learning"));
     assert.equal(sessionCount, 12);
-    assert.equal(report.preparationReview.outcome, "no_new_learning");
+    assert.equal(report.preparationReview.outcome, "learning_retained");
     const recording = normalizeRecording(report);
     assert.equal(recording.rediscovery, true);
     assert.equal(recording.agents.length, 4);
@@ -1227,9 +1299,17 @@ test("Lab 3 runs optional-memory arms with misses frozen rounds and complete acc
     assert.equal(continued.plan.parentRunId, report.runId);
     assert.equal(continued.plan.taskExposure, "previously_exposed");
     assert.equal(continued.knowledge.lessons[0].id, report.knowledge.lessons[0].id);
+    assert.equal(continued.knowledge.lessons.length, 4);
+    assert.ok(report.knowledge.lessons.every(prior => continued.knowledge.lessons.some(lesson => lesson.id === prior.id)));
     assert.equal(continued.outcomes.length, 8);
     assert.equal(sessionCount, 22);
     assert.equal(digest(report), frozenParent, "parent-run records must remain immutable");
+    let expandedPlan;
+    await assert.rejects(runRediscoveryLab({ driver: monitored, agent, code, profile: "learning", parent: continued,
+      onPlan: plan => { expandedPlan = plan; throw new Error("plan_only_probe"); } }), /plan_only_probe/);
+    assert.equal(expandedPlan.preparationTasks, 4, "expanding smoke retains its existing family and investigates only new families");
+    assert.equal(expandedPlan.mainSessions, 30);
+    assert.equal(expandedPlan.newFamilyIds.length, 4);
   } finally { await driver.close(); }
 });
 
@@ -1381,6 +1461,42 @@ test("Lab 1 replay activity animates real event signals and respects pause and r
   } finally { await browser.close(); await server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test("Lab 1 live stage streams actual progress without waiting for run completion", {
+  skip: !process.env.MINDLEAK_LAB_BROWSER,
+}, async () => {
+  const { openArtifactBrowser } = await import("./demo-replay.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-live-stage-"));
+  const ready = Promise.withResolvers(); const finish = Promise.withResolvers();
+  const server = await createDemoServer({ outputDirectory: directory, runBuild: async options => {
+    options.onEvent({ id: 1, atMs: 0, type: "run_started", runId: randomUUID(), agents: 10 });
+    ready.resolve(options); await finish.promise;
+    return { ...server.snapshot().report, status: "completed" };
+  } });
+  const browser = await openArtifactBrowser();
+  const run = server.startRun(); const emit = await ready.promise;
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1080 } });
+    await page.goto(server.url);
+    await page.waitForFunction(() => document.querySelector("#activity-mode")?.textContent === "LIVE");
+    emit.onEvent({ id: 2, atMs: 2, type: "agent_state", agent: "atlas", state: "running" });
+    emit.onEvent({ id: 3, atMs: 3, type: "tool_started", agent: "atlas", tool: "read_file", toolCallId: "source-read" });
+    emit.onToolDetail({ agent: "atlas", toolCallId: "source-read", arguments: { path: "src/expiry.mjs" } });
+    await page.waitForFunction(() => document.querySelector("#stage-target")?.textContent === "src/expiry.mjs");
+    const before = await page.locator("#stage-clock").innerText();
+    await page.waitForFunction(before => document.querySelector("#stage-clock").textContent !== before, before);
+    emit.onEvent({ id: 4, atMs: 4, type: "tool_finished", agent: "atlas", tool: "read_file", toolCallId: "source-read", ok: true });
+    emit.onEvent({ id: 5, atMs: 5, type: "knowledge_written", agent: "atlas", kind: "observation", nodeId: "source", memoryId: "source", operation: "write" });
+    emit.onKnowledge({ observations: [{ memoryId: "source", fragments: [{ fragmentId: "fragment", text: "Test-owned live source evidence." }] }], chains: [], principles: [] });
+    await page.waitForFunction(() => document.querySelector("#stage-sources").textContent === "1");
+    assert.equal(await page.locator("#stage-actions").innerText(), "1");
+    assert.equal(await page.locator(".knowledge-hero-node").count(), 1);
+    assert.equal(server.snapshot().running, true, "live counters must update before the run returns");
+    await page.locator("#play").click();
+    assert.equal(await page.locator("#live-stage").getAttribute("data-busy"), "false");
+    assert.equal(await page.locator(".stage-graph-packet").count(), 0);
+  } finally { finish.resolve(); await run; await browser.close(); await server.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("lab completion separates a finished run from verified requirements and quality", async () => {
   const { labCompletion } = await import("./demo-view.mjs");
   const receipt = passed => ({ passed, tests: 3, expectedTests: 3, passedTests: passed ? 3 : 2, sourceSha256: "tested-candidate" });
@@ -1495,6 +1611,44 @@ test("Knowledge Capital rewards distinct verified reuse rather than inventory or
   assert.equal(knowledgeCapital(firstReuse).growthStatus, "first_reuse");
   assert.equal(knowledgeCapital({ kind: "memory_lab", knowledge: report.knowledge, summary: { guideApplications: 900 } }).score, null,
     "legacy quotation-only application counts cannot establish a behavioral index");
+});
+
+test("live stage progresses from actual work without revealing future knowledge or counting revisions twice", async () => {
+  const { runActivity } = await import("./demo-view.mjs");
+  const recording = normalizeRecording({ kind: "rediscovery_lab", runId: randomUUID(), status: "completed", elapsedMs: 60,
+    agents: [{ id: "mindleak", name: "MindLeak" }], plan: { preparationTasks: 0, sessions: [{ id: "task" }] },
+    knowledge: { observations: [{ memoryId: "source", fragments: [{ fragmentId: "fact", text: "Synthetic source" }] }],
+      chains: [{ chainId: "chain", revision: 2, state: "accepted", document: { kind: "chain", evidence: [{ fragmentId: "fact", role: "supports" }], supportedBy: [] } }],
+      principles: [{ chainId: "principle", revision: 4, state: "accepted", document: { kind: "principle", evidence: [], supportedBy: [{ chainId: "chain", revision: 2 }] } }] },
+    events: [{ atMs: 0, type: "run_started" }, { atMs: 1, type: "agent_state", agent: "mindleak", state: "running" },
+      { atMs: 2, type: "tool_started", agent: "mindleak", tool: "read_file", toolCallId: "read" },
+      { atMs: 5, type: "tool_finished", agent: "mindleak", tool: "read_file", toolCallId: "read", ok: true },
+      { atMs: 10, type: "knowledge_written", kind: "observation", nodeId: "source", memoryId: "source", operation: "write" },
+      { atMs: 20, type: "knowledge_written", kind: "chain", nodeId: "chain", memoryId: "chain-write", operation: "accept", state: "accepted", revision: 2 },
+      { atMs: 30, type: "knowledge_written", kind: "principle", nodeId: "principle", memoryId: "principle-write", operation: "propose", state: "candidate", revision: 1 },
+      { atMs: 40, type: "knowledge_written", kind: "principle", nodeId: "principle", memoryId: "principle-accept", operation: "accept", state: "accepted", revision: 2 },
+      { atMs: 45, type: "rediscovery_task_finished", phaseScope: "evaluation", agent: "mindleak", caseId: "task", correct: true, reuseObserved: true },
+      { atMs: 50, type: "knowledge_written", kind: "principle", nodeId: "principle", memoryId: "principle-revision", operation: "accept", state: "accepted", revision: 4 },
+      { atMs: 60, type: "run_finished", status: "completed" }] });
+  assert.equal(runActivity(recording, 3).actions, 0);
+  assert.equal(runActivity(recording, 3).knowledge.observations.length, 0);
+  const growing = runActivity(recording, 25);
+  assert.equal(growing.actions, 1);
+  assert.equal(growing.knowledge.observations.length, 1);
+  assert.equal(growing.knowledge.chains.length, 1);
+  assert.equal(growing.knowledge.principles.length, 0);
+  assert.equal(runActivity(recording, 35).acceptedPrinciples, 0);
+  const finished = runActivity(recording, 60);
+  assert.equal(finished.acceptedPrinciples, 1);
+  assert.equal(finished.gained.principles, 1);
+  assert.equal(finished.completedTasks, 1);
+  assert.equal(finished.successfulTasks, 1);
+  assert.equal(finished.scheduledTasks, 1);
+  assert.equal(finished.reusedTasks, 1);
+  recording.report.knowledgeBaseline = { principles: [{ id: "principle", revision: 2, state: "accepted" }] };
+  const continued = runActivity(recording, 60);
+  assert.equal(continued.inherited.principles, 1);
+  assert.equal(continued.gained.principles, 0, "refining inherited knowledge is not a new principle");
 });
 
 test("memory motion reflects real operations and stops when paused finished or cancelled", async () => {
