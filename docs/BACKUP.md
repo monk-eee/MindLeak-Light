@@ -5,7 +5,7 @@ revisions, evidence links, validation records and retry receipts. A principle
 export alone is not a recoverable store. Knowledge canaries verify retained
 sources and revisions; recovery is separate from the truth of their conclusions.
 
-**v0.6.0 development interface.** Published v0.4.0 and v0.5.0 binaries do not contain
+**Included in v0.6.0 and v0.7.0.** Published v0.4.0 and v0.5.0 binaries do not contain
 these commands. Local PG/restic behavior has executable regression coverage;
 [platform acceptance](../gaps.d/backup-platform-acceptance.md) must be completed
 before claiming those deployments are supported. Shipping the CLI does not close
@@ -13,7 +13,7 @@ unattended scheduler or remote-provider acceptance. Upload alone is not verified
 
 ## Prerequisites
 
-- This administrative build, restic 0.19.x, PostgreSQL 16, and matching `psql`,
+- The matching native release, restic 0.19.x, PostgreSQL 16, and matching `psql`,
   `pg_dump`, and `pg_restore`. Container targets use their own PG utilities.
 - An explicitly selected running PostgreSQL container or external connection
   reference. No container/account/database discovery or provisioning occurs.

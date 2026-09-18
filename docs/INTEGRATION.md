@@ -267,7 +267,7 @@ application, include this policy in its persistent instruction context.
 
 The canonical detailed workflow is the
 [mindleak-memory companion skill](../.agents/skills/mindleak-memory/SKILL.md).
-The v0.6.0 native binary can [install its project instructions automatically](INSTALL.md#automatic-project-setup)
+The v0.7.0 native binary can [install its project instructions automatically](INSTALL.md#automatic-project-setup)
 for a selected existing connection, with an optional SDK connection check.
 Install its whole folder in each client's supported location; see
 [client setup](INSTALL.md#companion-agent-skill). It loads on demand and does not
@@ -387,7 +387,7 @@ v0.6.0; published v0.5.0 does not provide them:
 Choose one mode per call. Existing calls and defaults remain unchanged; derived
 knowledge never enters ordinary observation recall.
 
-**Unreleased, targeting v0.7.0:** [compact learning context](CHAINS.md#compact-learning-context)
+**Available in v0.7.0:** [compact learning context](CHAINS.md#compact-learning-context)
 adds `knowledge.operation: capabilities`, `knowledge.view: compact` on searches,
 and nested `matchMode`, `diagnostics` and `costDiagnostics` on knowledge/chain
 searches. Discover these fields before using them; published v0.6.0 lacks them.
@@ -395,7 +395,7 @@ Capability discovery separates agent-authored chains from optional model preview
 and the actual retrieval strategy. The existing full search is still the default.
 Agents can author chains directly with v0.6.0; no formation model is required.
 
-The unreleased companion skill also supplies [evidence checkpoints](CHAINS.md#evidence-checkpoints)
+The companion skill shipped with v0.7.0 also supplies [evidence checkpoints](CHAINS.md#evidence-checkpoints)
 and `captureCalls.project`/`.general` templates. They use existing ordinary writes
 with a real source and short retrieval cues, so no new write API is required.
 The agent decides when verified evidence warrants a capture; the server does not

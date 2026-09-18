@@ -5,6 +5,55 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-18
+
+### Added
+- [Compact learning context](docs/CHAINS.md#compact-learning-context) preserves
+  conclusions, conditions, assumptions, counterexample references and review
+  reasons in a bounded response, with full evidence/history behind inspection.
+- Model-free capability discovery separates agent-authored knowledge from optional
+  extraction, formation and semantic retrieval. Explicit knowledge matching and
+  parsed-query diagnostics expose search behavior without silent broadening.
+- Optional search timing, payload bytes and provider-reported usage, with unknown
+  counts left unknown and shared query-embedding work counted once.
+- Agent-guided evidence checkpoints and companion skill **1.4.1**, with retry-safe
+  project/general capture recipes, actual verification sources and retrieval cues.
+  No write quota, automatic acceptance or read-induced feedback is introduced.
+- Three [learning labs](docs/VALIDATION.md): matched agent builds, evidence-backed
+  chain/principle formation, and later reuse against isolated fresh-agent and
+  searchable-notebook controls. Formation, reuse and comparative gains remain
+  separate claims; historical and negative results are retained.
+- A loopback dashboard with source-linked knowledge graphs, live acknowledged
+  activity, per-agent model selection and separately reported agent/provider costs.
+  Labelled recorded replays need no inference and support pause/reduced motion.
+- Multiple retained principles, explicit revisions, frozen comparison collections,
+  fresh/continued studies and a bounded five-family Learning profile. Continued
+  runs preserve lineage and complete costs without seeding no-memory controls.
+- Incremental run journals, retained failed/cancelled artifacts and browser/layout
+  acceptance bound to exact application artifacts. Execution completion, passing
+  requirements, reviewed quality and learning benefit are reported separately.
+
+### Changed
+- Lead MindLeak with knowledge formation: observations, evidence-backed Chains
+  of Memory and reusable Principles. Keep the `mindleak-light` executable/image
+  identifiers, three tools/tables, ordinary defaults and optional models unchanged.
+- Synchronize onboarding, agent policy, design and evaluation guidance. Correct
+  README setup commands and platform examples; document the v0.6.0 upgrade with
+  no new database migration and retain explicit backup/platform limitations.
+- New local trials and the all-in-one Compose default use image **0.7.0**.
+  Existing containers remain pinned and are never upgraded implicitly.
+- Lead lab reports with actual knowledge and review status; retain weighted reuse
+  scores as secondary diagnostics, not intelligence or productivity claims.
+
+### Fixed
+- Preserve counterexamples added after a principle pinned its supporting chain.
+  Replacement checks retain pinned and current counterevidence, lock supporting
+  heads and reject unavailable prior evidence without a partial write.
+- Apply compact byte limits after projection; unused full evidence, raw source
+  or history no longer reject a compact response that fits its own budget.
+- Check lab prerequisites before starting MCP children, preventing leaked
+  processes when container configuration is unavailable.
+
 ## [0.6.0] - 2026-09-17
 
 ### Added

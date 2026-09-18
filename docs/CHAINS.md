@@ -34,8 +34,8 @@ the ordinary MCP defaults remain unchanged. See the [product thesis](../RATIONAL
 and [learning acceptance criteria](VALIDATION.md#learning-acceptance).
 Evaluate formation, correct later reuse/revision, and measured benefit separately.
 More stored notes, agreement or revisions alone does not establish learning.
-The compact/capability/diagnostic additions below are **unreleased work targeting
-v0.7.0**, not features of the published v0.6.0 binaries. Discover the actual schema.
+The compact/capability/diagnostic additions below are **available in v0.7.0**,
+not in v0.6.0 binaries. Discover the actual connected server's schema.
 
 ### Evidence Checkpoints
 
@@ -58,8 +58,8 @@ operations when updating an existing belief.
 Capability metadata exposes `learning.checkpointMode: agent_guided`,
 `checkpointTriggers` and `captureFormat`; the MCP handshake supplies the same
 guidance. No hook, monitor, model call or write runs automatically. Capture recipes
-use the existing v0.4.0+ contract; the updated skill and capability metadata are
-unreleased. Fresh-client tests prove storage, retrieval and retry behavior, not
+use the existing v0.4.0+ contract; the updated skill and capability metadata ship
+with v0.7.0. Fresh-client tests prove storage, retrieval and retry behavior, not
 that an agent will follow the guidance or that more captures improve task results.
 
 ## Compatibility
@@ -92,7 +92,7 @@ place. Client compatibility is not mixed-server compatibility.
 Enable `MINDLEAK_FORMATION=openai` and configure the existing `MINDLEAK_LLM_URL`,
 `MINDLEAK_MODEL` and optional key/reasoning settings. Decomposition can remain
 `sentences`; models never become a quickstart prerequisite. Both Compose files
-forward the formation setting. Use v0.6.0 with the advertised schema;
+forward the formation setting. Use v0.6.0 or newer with the advertised schema;
 v0.5.0 and older binaries or images do not support these operations.
 
 Select observations using ordinary recall and source inspection, then call:
@@ -268,7 +268,7 @@ if the new chain is accepted. Update the pinned revision explicitly and validate
 the revised principle again. Challenges can still be recorded against stale
 principles; invalid support cannot be used to accept them.
 
-The unreleased fixes check counterexamples in both the pinned revisions and the
+Version 0.7.0 checks counterexamples in both the pinned revisions and the
 current heads of prior supports, including challenges recorded after pinning.
 Old and new supporting heads are locked in a stable order during revision. A
 missing prior head fails safely instead of implying no later counterevidence.
@@ -292,7 +292,7 @@ to inventing precision.
 
 ### Compact Learning Context
 
-For the unreleased v0.7.0 controls, first check that the advertised schema supports
+For the v0.7.0 controls, first check that the advertised schema supports
 capability discovery. This call uses local configuration only, with no database
 or model work and no search filters or limit:
 
