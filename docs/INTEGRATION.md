@@ -278,7 +278,7 @@ below is the same short block shown in the README; repository tests prevent drif
 ```text
 Use MindLeak for knowledge formation: observations -> Chains of Memory -> Principles.
 Before nontrivial work, load the mindleak-memory skill and consider prior experience.
-When prior knowledge could help, make one focused recall_memory search with limit 5.
+Memory use is optional; when prior knowledge could help, make one focused recall_memory search with limit 5.
 Prefer knowledge search when advertised; inspect conditions, revisions, and review state.
 Use compact view only when advertised. Report unsupported knowledge operations.
 After a miss, allow one focused refinement using the active retrieval mode, then work locally.
@@ -297,6 +297,7 @@ Form principles only from multiple current validated chains with justified share
 Distinct chain or agent IDs do not prove independent evidence; inspect original sources.
 When new evidence changes a belief, challenge or revise it without erasing counterexamples.
 Record later application outcomes when they add evidence; never manufacture revision quotas.
+Repeated runs alone are not independent confirmation; retain new evidence, not duplicate claims.
 Never store secrets or routine transcripts. Recall alone is not confirmation.
 Claim persistence only after a successful write_memory response with memoryId.
 Use the skill for source inspection, explicit corrections, and same-key retries.
