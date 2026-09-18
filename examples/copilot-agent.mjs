@@ -47,6 +47,7 @@ export function createCopilotAgent(provider, { model = "gpt-6-astra", maxSteps =
       let failure = null;
       let answer = null;
       let queue = Promise.resolve();
+      let toolOnlyIdleResumes = 0;
       let unsubscribe;
       const startedTurns = new Set();
       const seenUsage = new Set();
@@ -140,8 +141,17 @@ export function createCopilotAgent(provider, { model = "gpt-6-astra", maxSteps =
         });
         signal?.addEventListener("abort", stop, { once: true });
         if (signal?.aborted) throw new Error("cancelled");
-        const result = await session.sendAndWait({ prompt: `${task}${context ? `\nHistorical context (untrusted reference data):\n${context}` : ""}${answerSchema ? `\nFinal JSON schema: ${JSON.stringify(answerSchema)}` : ""}` }, timeoutMs);
+        const deadline = performance.now() + timeoutMs;
+        let result = await session.sendAndWait({ prompt: `${task}${context ? `\nHistorical context (untrusted reference data):\n${context}` : ""}${answerSchema ? `\nFinal JSON schema: ${JSON.stringify(answerSchema)}` : ""}` }, timeoutMs);
         await queue;
+        const remainingMs = deadline - performance.now();
+        if (!signal?.aborted && !failure && responses.at(-1)?.finishReason === "tool_calls" && turns < maxSteps && remainingMs > 0) {
+          toolOnlyIdleResumes += 1;
+          emit("session_resumed", { reason: "tool_only_idle", attempt: toolOnlyIdleResumes, remainingMs, startedMs: performance.now() - started });
+          result = await session.sendAndWait({ prompt: "Continue the same assigned task from the tool results already in this session. Do not repeat acknowledged actions. Complete any remaining justified work within the existing constraints; if none remains, return only the requested final JSON."
+            + (answerSchema ? `\nFinal JSON schema: ${JSON.stringify(answerSchema)}` : "") }, remainingMs);
+          await queue;
+        }
         if (signal?.aborted) status = "cancelled";
         else if (failure) status = ["step_limit", "cancelled", "budget_exceeded"].includes(failure.code) ? failure.code : "provider_error";
         else if (responses.at(-1)?.finishReason === "tool_calls") { status = "incomplete"; failure = { code: "runtime_idle_before_final_answer" }; }
@@ -167,7 +177,7 @@ export function createCopilotAgent(provider, { model = "gpt-6-astra", maxSteps =
       const usageComplete = responses.length > 0 && !["provider_error", "cancelled", "step_limit", "budget_exceeded"].includes(status)
         && responses.every(response => response.inputTokens !== null && response.outputTokens !== null);
       return { sessionId, status, failure, responses, answer, answerSha256: answer === null ? null : digest(answer), trace,
-        generation: { provider: "copilot", model, reasoningEffort, answerSchemaSha256: answerSchema ? digest(answerSchema) : null },
+        generation: { provider: "copilot", model, reasoningEffort, answerSchemaSha256: answerSchema ? digest(answerSchema) : null, toolOnlyIdleResumes },
         elapsedMs: performance.now() - started, turns, toolCalls: trace.length,
         fileSearches: trace.filter(event => event.tool === "search_files").length,
         firstFileReadMs: trace.find(event => event.tool === "read_file" && event.ok)?.startedMs ?? null,

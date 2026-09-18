@@ -424,6 +424,21 @@ Experience is frozen and rechecked across every round's arms and repetitions.
 Only then can a reviewer retain new evidence, a correction or an exception using
 verified memory-side cases. Control answers never enter the learning loop.
 
+A review is complete only when the agent finishes successfully with
+`completed: true`. A completed review may legitimately retain nothing. Failed,
+missing or explicitly unfinished reviews instead produce
+`learning_review_incomplete` and a partial run, even when every coding check
+passes. `learningReviews` records scheduled, completed and incomplete review
+counts separately from task correctness and observed reuse.
+
+If the Copilot SDK becomes idle after tool requests without a final answer, the
+adapter permits one continuation in the same session. It retains acknowledged
+tool results, uses only the remaining time and turn budget, and counts the extra
+inference. Cancellation, quota failures and exhausted budgets do not resume; a
+second unfinished response remains incomplete. Recovery attempts appear in
+`session_resumed` events and `generation.toolOnlyIdleResumes`, not as fabricated
+answers or replayed memory writes.
+
 The default **learning** profile covers five families, near transfer and changed
 conditions: **30 main-arm sessions**, ten diagnostics, five investigations and
 three documentation/review sessions. Its full plan and session counts are visible
