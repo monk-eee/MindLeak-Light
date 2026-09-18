@@ -51,8 +51,8 @@ directory. This policy does not override system, organization, or user rules.
 
 Installing this policy selects the knowledge-formation workflow on a capable,
 approved server; it does not change ordinary MCP defaults or grant permissions.
-Agent-authored chains and principles require v0.6.0. New compact/capability controls
-target unreleased v0.7.0 and require schema discovery. Older connections can retain
+Agent-authored chains and principles require v0.6.0. Compact/capability controls
+require v0.7.0 and schema discovery. Older connections can retain
 observations, but cannot satisfy a requested chain/principle workflow. Report that
 boundary instead of substituting unlinked prose. A helper model is optional.
 

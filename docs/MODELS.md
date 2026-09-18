@@ -21,10 +21,10 @@ can keep using Claude or GPT as your agent and use LM Studio for memory processi
 
 Decomposition and embeddings are independent. Chat extraction with keyword recall is valid;
 sentence decomposition with vector recall needs an embedding model but no chat
-model. With relevance filtering off, enabling both normally adds one chat request
-and one batched embedding request per write, and one embedding request per recall.
-The optional relevance stage is independent and adds a recall-time chat request
-when candidates are available.
+model. For ordinary writes, enabling both normally adds one chat request and one
+batched embedding request. Vector/hybrid recall requests a query embedding on a
+cache miss; repeated queries can reuse it. Optional relevance selection adds a
+chat request when candidates are available. These counts are not token or price estimates.
 
 ## Knowledge Formation
 
@@ -38,7 +38,7 @@ citations and structure are checked; the conclusion is not thereby proven.
 Provider failure, truncation or invented citations fail the preview without a
 fallback or any persistence. Candidate documents retain model/prompt/source
 provenance when saved. Both Compose files forward the independent opt-in; a
-v0.6.0 server is required, not the older v0.5.0 image.
+v0.6.0 or newer server is required, not the older v0.5.0 image.
 
 Explicit knowledge search uses the configured keyword/vector/hybrid strategy
 and optional relevance selector. Derived-document vectors occupy the existing
@@ -49,6 +49,13 @@ remains keyword-searchable; no vectors are fabricated or backfilled implicitly.
 Knowledge relevance selects at most 10 candidates with a 128 KiB input budget;
 reduce `MINDLEAK_RELEVANCE_CANDIDATES` for large documents. Inspection, export
 and dependency review call no models.
+
+Principles-first search selects observations, principles and any remaining chains
+separately, so it can make up to three relevance requests. The same query embedding
+is shared across those searches. In v0.7.0, optional
+[cost diagnostics](CHAINS.md#explicit-search-controls) report actual successful-search
+provider usage when supplied; missing usage remains unknown. Formation and write
+costs are separate from search diagnostics.
 
 ## What Decomposition Guarantees
 

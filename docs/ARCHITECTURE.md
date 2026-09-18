@@ -14,9 +14,9 @@ One executable exposes three MCP tools over one PostgreSQL database. Agent-autho
 knowledge needs no helper model. The underlying observation path preserves source
 text with sentence/list decomposition and keyword recall by default.
 
-This guide describes v0.6.0: knowledge formation, domain records, bounded migrations
-and administrative backups, plus explicitly marked unreleased work targeting v0.7.0.
-The v0.6.0 additions are not in older v0.5.0 packages.
+This guide describes v0.7.0: knowledge formation, compact learning context,
+capability and cost diagnostics, domain records, bounded migrations and backups.
+Chains/principles require v0.6.0 or newer; compact/capability controls require v0.7.0.
 See [installation](INSTALL.md) for release availability. The existing memory-engine
 diagrams are editable in the [architecture board](../assets/architecture.excalidraw);
 the knowledge-formation flow is described first below. See the
@@ -139,7 +139,7 @@ Revisions retain direct and inherited counterexamples, including those added to
 prior supports after pinning. Revision transactions lock old and new supporting
 heads in stable order; missing prior heads cannot be treated as absent evidence.
 
-Unreleased v0.7.0 controls add a deterministic `compact` projection with a 32 KiB
+Version 0.7.0 adds a deterministic `compact` projection with a 32 KiB
 JSON cap. It keeps complete conditions, counterexample IDs/reasons and factual
 review reasons; full evidence stays behind exact inspection. Capability discovery
 reads the configured abstractions without model/database work, separating agent
@@ -272,7 +272,7 @@ engine and key with the recovery plan. See [backup operations](BACKUP.md).
 | Knowledge results / direct supports | 10 / 8 |
 | Formation input / output candidates | 128 KiB / 3 |
 | Expanded context / complete payload | 32 KiB / 512 KiB |
-| Compact knowledge payload (unreleased) | 32 KiB including diagnostics |
+| Compact knowledge payload | 32 KiB including diagnostics |
 
 Bounds are serialized UTF-8 bytes, not tokens. Truncation flags retain references
 and identify omitted details. These bounds do not establish large-corpus capacity.

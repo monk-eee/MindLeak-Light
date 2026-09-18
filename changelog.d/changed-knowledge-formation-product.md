@@ -1,5 +1,0 @@
-- Reorient MindLeak around knowledge formation for agents: source observations, evidence-backed Chains of Memory, and reusable Principles, with synchronized onboarding, agent policy, design and evaluation guidance.
-- Lead the learning labs with the recorded knowledge hierarchy and separate formation from later verified use; retain the existing weighted reuse index as a secondary diagnostic and preserve historical experiment results.
-- Retain actual review status in new lab captures and distinguish missing review metadata in old recordings from known stale knowledge.
-- Check lab integration prerequisites before opening MCP children so unavailable container configuration reports failure without hanging the test suite.
-- Preserve the three MCP tools, ordinary call defaults, optional models, source history, deployment identifiers and permission boundaries.

@@ -3,7 +3,7 @@
   "skillVersion": "1.4.1",
   "minimumServerVersion": "0.4.0",
   "knowledgeAvailability": "Available from 0.6.0: use knowledgeCalls only when the actual server schema advertises chain, knowledge and formation. The minimum server version above applies to ordinary calls. Formation additionally requires an operator-enabled model.",
-  "learningAvailability": "Unreleased, targeting 0.7.0: learningCalls require the advertised knowledge capabilities operation and compact search view. Published 0.6.0 does not support them. Agent-authored knowledgeCalls still work without a formation model; capabilities grants no permissions.",
+  "learningAvailability": "Available from 0.7.0: learningCalls require the advertised knowledge capabilities operation and compact search view. Published 0.6.0 does not support them. Agent-authored knowledgeCalls still work without a formation model; capabilities grants no permissions.",
   "captureAvailability": "captureCalls use the existing ordinary write_memory contract from 0.4.0. The agent chooses whether verified new evidence is reusable and authorized before calling; these templates do not run automatically or accept chains. Existing configured write providers and failure semantics apply.",
   "purpose": "Synthetic call templates for the companion workflow and its contract tests. Replace the example content with verified task evidence. Do not ingest these demonstration facts into production.",
   "placeholders": {

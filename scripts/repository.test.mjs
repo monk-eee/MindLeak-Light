@@ -11,7 +11,7 @@ import test from "node:test";
 import { readAdrs, updateIndex } from "./adr-index.mjs";
 import { readFragments, releaseChangelog, render } from "./changelog.mjs";
 import { checkDocs } from "./check-docs.mjs";
-import { packageBinary, releaseNotes } from "./release.mjs";
+import { packageBinary, releaseNotes, workspaceVersion } from "./release.mjs";
 import { captureBenchmark, regressionPlan, runRegression } from "./regression-check.mjs";
 import { cleanupProjects } from "./container-projects.mjs";
 import { domainRequestId, importDomain, importReport, planDomainImport } from "../examples/import-domain.mjs";
@@ -31,6 +31,24 @@ test("knowledge-first onboarding introduces the hierarchy before setup", () => {
   assert.match(introduction, /evidence-backed/i);
   assert.match(introduction, /future agents can reuse/i);
   assert.ok(!introduction.includes("100,000"), "hypothetical compression counts must not appear as measured results");
+});
+
+test("README gives a complete agent setup command for the configured local server", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const setup = "agent setup --client vscode --server mindleak-light-local --scope repo:your-org/your-project";
+  assert.ok(readme.includes(setup), "agent setup requires a client, an existing server and an explicit memory mode");
+  assert.match(readme, /replace `--scope[^`]*`\s+with `--general`/i);
+});
+
+test("current release documentation and container defaults match the workspace version", () => {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const version = workspaceVersion(root);
+  for (const [file, phrase] of [
+    ["README.md", `The v${version} native packages include`],
+    ["docs/INSTALL.md", `This guide targets **v${version}**`],
+    ["docs/LOCAL.md", `to \`monkeemagic/mindleak-light:${version}\``],
+    ["docker/compose.all-in-one.yml", `MINDLEAK_IMAGE:-monkeemagic/mindleak-light:${version}`],
+  ]) assert.ok(readFileSync(join(root, file), "utf8").includes(phrase), `${file} must match the current release`);
 });
 
 test("lab integration prerequisites fail without retaining MCP children", {
@@ -627,7 +645,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   assert.equal(recipes.skillVersion, "1.4.1");
   for (const term of ["formation", "principle", "requiresReview", "counterEvidenceReviewed", "supportedBy"]) assert.ok(skill.includes(term));
   assert.equal(recipes.minimumServerVersion, "0.4.0");
-  assert.match(recipes.learningAvailability, /Unreleased.*0\.7\.0.*schema|Unreleased.*0\.7\.0.*advertised/);
+  assert.match(recipes.learningAvailability, /^Available from 0\.7\.0:.*advertised/);
   assert.deepEqual(Object.keys(recipes.learningCalls).sort(), ["capabilities", "compact_search"]);
   assert.deepEqual(recipes.learningCalls.capabilities.arguments, {knowledge: {operation: "capabilities"}});
   assert.deepEqual(recipes.learningCalls.compact_search.arguments, {

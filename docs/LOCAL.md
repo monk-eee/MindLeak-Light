@@ -9,8 +9,8 @@ The supported trial path is Docker/stdio. Your operating-system account's access
 to Docker is the local trust boundary. No token generation, token copying,
 secret-store configuration or OAuth registration is required.
 
-The v0.6.0 native packages include these `local` commands and default new trials
-to `monkeemagic/mindleak-light:0.6.0`. Use `--image` for a reviewed digest or
+The v0.7.0 native packages include these `local` commands and default new trials
+to `monkeemagic/mindleak-light:0.7.0`. Use `--image` for a reviewed digest or
 another explicit version. Existing containers stay unchanged; the flag never
 upgrades their database. Older v0.5.0 launchers retained a pinned v0.4.0 default.
 

@@ -101,8 +101,8 @@ jobs:
           tags: |
             type=semver,pattern={{version}},value=${{ needs.metadata.outputs.release_tag }}
           labels: |
-            org.opencontainers.image.title=MindLeak Light
-            org.opencontainers.image.description=Shared agent memory with MCP and PostgreSQL in one container
+            org.opencontainers.image.title=MindLeak
+            org.opencontainers.image.description=Knowledge formation for agents with MCP and PostgreSQL in one container
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.revision=${{ needs.metadata.outputs.source_sha }}
       - id: build

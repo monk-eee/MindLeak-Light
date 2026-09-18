@@ -21,7 +21,7 @@
 Most AI memory systems focus on storing more information.
 MindLeak asks a different question: **What if agents could actually learn?**
 
-MindLeak is a **knowledge formation system for agents**. It transforms agent
+MindLeak is a **knowledge formation system for agents**. Agents use it to turn
 observations into evidence-backed Chains of Memory and higher-level Principles
 that future agents can reuse. Instead of accumulating endless memories,
 MindLeak accumulates knowledge.
@@ -35,7 +35,7 @@ MindLeak accumulates knowledge.
 | Level | What It Captures | Example |
 |---|---|---|
 | **Observations** | Source experiences and their conditions. Evidence, not established knowledge. | A deployment passed after validation ran before persistence. |
-| **Chains of Memory** | A justified belief: claim, supporting and contrary evidence, reasoning, conclusion, and reported confidence. | For this deployment path, validate before making durable changes. |
+| **Chains of Memory** | A justified belief: claim, supporting and contrary evidence, reasoning, conclusion, and optional reported confidence. | For this deployment path, validate before making durable changes. |
 | **Principles** | Reusable expertise supported by multiple validated chains. | Validate irreversible operations before applying them. |
 
 Agents capture observations, form and validate chains, and derive principles
@@ -52,10 +52,11 @@ framework and model; agent-authored knowledge works without a server-side model.
 
 **Start MindLeak -> Connect the agent -> Form and reuse knowledge.** Local trials use
 Docker/stdio: no token to generate or copy, no secret-store setup, and no OAuth
-registration. No chat or embedding model is needed.
+registration. No server-side chat or embedding model is needed.
 
-The v0.6.0 native packages include the `local` launcher and `agent` instruction
-installer. New trials use the matching v0.6.0 server image by default.
+The v0.7.0 native packages include the `local` launcher and `agent` instruction
+installer. [Download v0.7.0](https://github.com/monk-eee/MindLeak-Light/releases/tag/v0.7.0).
+New trials use the matching v0.7.0 server image by default.
 Existing containers are never upgraded implicitly.
 
 1. Start **Docker Desktop**. [Download and verify the native package](docs/INSTALL.md#native-binary),
@@ -97,7 +98,7 @@ For Claude Code, other clients or your own application, use the
 
 The [Docker Hub image](https://hub.docker.com/r/monkeemagic/mindleak-light)
 includes MCP, PostgreSQL and pgvector. Use the versioned
-`monkeemagic/mindleak-light:0.6.0` image for an explicit deployment.
+`monkeemagic/mindleak-light:0.7.0` image for an explicit deployment.
 
 Sharing over HTTP requires a private bearer token and TLS for network access.
 Follow [shared HTTP setup](docs/INTEGRATION.md#shared-http) and
@@ -112,8 +113,17 @@ Connecting MCP makes tools available; the learning policy guides observation,
 formation, validation, and reuse. Installing it selects the knowledge workflow
 on a capable server without changing ordinary tool defaults or granting permissions.
 [Install the companion skill and policy](docs/INSTALL.md#automatic-project-setup)
-with `mindleak-light agent setup`. Choose `--general` for shared memory across
-projects or `--scope repo:your-org/your-project` for one project.
+after `local setup`, from the folder containing the generated MCP configuration:
+
+```powershell
+.\mindleak-light.exe agent setup --client vscode --server mindleak-light-local --scope repo:your-org/your-project
+```
+
+On macOS/Linux, replace `.\mindleak-light.exe` with `./mindleak-light`; in a Rust
+source checkout use `cargo run --locked -p mindleak-mcp --bin mindleak-light --`.
+Choose your project's real scope, or replace `--scope repo:your-org/your-project`
+with `--general` for shared knowledge across projects. Use the existing server
+name if it differs from `mindleak-light-local`.
 
 For manual setup, add this [activation policy](.agents/skills/mindleak-memory/references/agent-policy.md)
 to the instructions your client loads, preserving its existing rules. It belongs
@@ -194,16 +204,17 @@ Ask an agent on a v0.6.0+ server:
 
 In a fresh session, ask for a related task with the same approved connection and
 learning policy. Knowledge search returns principles, chains, and independent
-observations; source inspection keeps the justification available. Compact context
-and capability discovery are unreleased additions targeting v0.7.0: use only fields
-advertised by the connected server. Published v0.6.0 supports full knowledge search.
+observations; source inspection keeps the justification available. Version 0.7.0
+adds compact context, capability discovery, explicit knowledge matching and optional
+cost diagnostics. Use only fields advertised by the connected server; v0.6.0
+supports full knowledge search but not these newer controls.
 
 ## The Learning Labs
 
 | Lab | Question | Evidence |
 |---|---|---|
 | Discover | What experience is worth retaining? | Matched agent builds, immutable checks, source observations |
-| Form | Can experience become justified, reusable knowledge? | Observations, accepted chains, a principle, revision history and restart recovery |
+| Form | Can experience become justified, reusable knowledge? | Observations, accepted chains and principles, revision history and restart recovery |
 | Reuse | Does that knowledge help a future agent? | New tasks against a searchable notebook and fresh-agent control, including changed and irrelevant cases |
 
 [Run or replay the labs](docs/VALIDATION.md). Formation and later verified use are
@@ -248,8 +259,10 @@ control. Separate untrusted users at the service/database boundary.
 | Deploy beyond my laptop | [Security](SECURITY.md), [limitations](docs/KNOWN-LIMITATIONS.md) |
 | See what's changed | [Changelog](CHANGELOG.md), [unreleased notes](changelog.d/README.md) |
 
-Stop the stack with `docker compose down`; the database volume is retained.
-Do not add `--volumes` unless you intend to delete your memories.
+Stop the default local trial with `docker stop mindleak-light`; restart it with
+`docker start mindleak-light`. Use your configured container name if different.
+For a source Compose stack, use `docker compose down`. These retain the database
+volume; do not add `--volumes` or delete the volume unless you intend to erase it.
 
 Built from [MindLeak](https://github.com/monk-eee/MindLeak)'s Rust and repository
 conventions, without its coordination runtime. The original
