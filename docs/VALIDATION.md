@@ -62,8 +62,9 @@ same original repository fixture. Only the memory-enabled arm gets memory tools.
 ## Swarm Labs
 
 The dashboard is titled **MindLeak Learning Lab**. Its three views are **Discover**
-(Lab 1), **Form** (Lab 2), and **Reuse** (Lab 3). The route names and frozen experiment
-protocols remain stable so saved recordings keep their identity.
+(Lab 1), **Form** (Lab 2), and **Reuse** (Lab 3). Route names and historical records
+retain their identity. Changed authoring policies have new protocol versions;
+old recordings are not relabelled.
 
 One dashboard serves all three experiments on **http://127.0.0.1:54584**:
 `/lab1/` builds Session Desk, `/lab2/` investigates package upgrades, and
@@ -188,10 +189,13 @@ evidence fails continuation rather than silently starting fresh.
 
 Each continuation still creates new conversations, fresh task workspaces and a
 separate recording directory. Lab 1 inherits only the memory team's stored
-findings. Lab 2 reuses and verifies its accepted guide instead of replaying initial
-preparation. Lab 3 reuses the same prior lessons for MindLeak, the notebook and the
+findings. Lab 2 reuses and verifies its accepted principle collection instead of
+replaying initial preparation. Lab 3 reuses the same prior lessons for MindLeak, the notebook and the
 direct-lesson diagnostic; its Fresh Agent stays unseeded. Daleks never inherit
 memory, conversations or findings, and control answers never enter learning.
+Changing Lab 3 from Smoke to Learning or Pilot prepares only newly introduced
+families, retaining the existing principles. New recordings include a baseline of
+inherited IDs/revisions; a revision does not count as a new principle.
 Existing storage and response bounds still apply; repeated runs do not create an
 unbounded knowledge store.
 
@@ -204,7 +208,9 @@ Flat, negative, failed and no-new-learning results remain valid study outcomes.
 
 ### Formation and Reuse
 
-The headline is **Knowledge Formation**: unique source observations, recorded
+The live learning stage leads with actual task completions, tool actions, source
+episodes and accepted principles at the displayed event position. The knowledge
+summary shows **Knowledge Formation**: unique source observations, recorded
 accepted Chains of Memory, and recorded accepted Principles. Chain acceptance
 requires available referenced observations and a reviewed revision; principles
 also require multiple distinct accepted chains at their pinned current revisions.
@@ -243,13 +249,21 @@ an event to inspect the exact tool name, call ID, model, inference phase, measur
 latency, finish reason, usage, and safe arguments. Generated application source is retained only as the
 explicit synthetic build artifact, inside a sandboxed preview with no network access.
 
-The network's READ, WRITE and FORM indicators follow actual pending memory calls.
-Directional packets, working-agent motion and graph arrival highlights follow
-recorded requests and acknowledged writes, never fabricated growth. **Replay
-activity** seeks to recorded memory activity without new inference and visibly
-labels playback. Pause and reduced-motion settings stop animation; a finished or
-idle run does not show pretend work in flight. The graph remains the latest saved
-knowledge snapshot, with replay highlights indicating its recorded write events.
+The prominent live stage shows current agent/tool activity, elapsed work, a growing
+source-to-principle graph, recent actions and earned capture/link/formation/reuse
+milestones. The READ, WRITE and FORM indicators follow actual pending calls.
+Server-sent events update these while a run is active, not just on completion.
+An elapsed timer or working animation is not an estimate of unreported tokens.
+
+Completed recordings automatically play and loop as **RECORDED REPLAY**, without
+model calls. Playback controls, a loop switch and **Replay activity** are beside
+the stage in both experiment and Shared Knowledge views. Future nodes are hidden
+until their recorded creation; revisions do not add another node. The displayed
+document text remains the latest retained version, not a complete historical
+document reconstruction. Full acceptance and outcome tables remain report-level
+evidence, separate from playback. Pause and reduced-motion stop animations;
+reduced-motion also disables automatic replay. Only an explicit Run command starts
+model work. Fresh/continued study controls are visible beside the stage.
 
 ### Lab 2: Form Knowledge
 
@@ -288,16 +302,19 @@ not a live vulnerability finding or an unrestricted software-maintenance task.
 1. Atlas investigates independently, records quoted source observations, and
    proposes and explicitly accepts a case-specific chain.
 2. Iris finishes its own assessment before reading Atlas's work. It records a
-   second chain, then authors a principle supported by both accepted chains.
+   second chain, then authors supported principles from the available chains.
 3. Nova, Vega, and Orion retrieve the stored guide for their new cases. Each adds
-   a source-backed chain and revises the same principle while retaining the
-   earlier case support and known exceptions.
+   a source-backed chain, then authors a distinct principle, explicitly revises
+   a relevant existing ID, or records no new learning. Each principle selects
+   2..8 relevant accepted supports rather than absorbing every case chain.
 4. MindLeak is actually stopped and restarted between stages. The runner reads
    back every observation and current knowledge document, requiring identical
    IDs, revisions, raw sources, and structured content. Recorded child PIDs show
    the process change; fresh conversations alone do not count as persistence.
-5. The final procedure is extracted through `recall_memory` with
-   `knowledge.operation=export`, as both JSON and Markdown.
+5. Every accepted principle is extracted through `recall_memory` with
+   `knowledge.operation=export`, as JSON and Markdown. The first guide ID remains
+   the stable entry in older report fields; `guides` and `principles.md` retain
+   the full collection.
 
 Every start prompt explains principles (procedures/applicability), chains
 (reasoning/conditions) and observations (source evidence) before the task.
@@ -307,7 +324,10 @@ The first two seed assessments remain independent despite receiving this orienta
 Assessment, evidence capture and guide authoring use separate fresh sessions.
 The authoring session recovers stored case chains instead of an earlier conversation.
 
-Delivery protocol v4 removes repeated rationale, acceptance metadata and duplicated
+Protocol **v5** permits multiple distinct principles and explicit revisions, with
+a bounded inventory of 32. Source selection and counterevidence requirements still
+apply. Different IDs or paraphrases are not independent knowledge. It retains the
+compact delivery introduced in v4, which removes repeated rationale, acceptance metadata and duplicated
 support explanations from the first guide response. It preserves the complete
 procedure, applicability, assumptions and counterevidence. Two initial positive
 source pointers are supplied from distinct supporting chains; every contrary
@@ -332,17 +352,17 @@ retrieval and an exact guide-step/source quotation record attributable use separ
 
 ### Matched Dalek Rounds
 
-After preparation, the runner restarts MCP and verifies the accepted guide, then
-freezes its revision for a round. Five new codebase variants go to five matched
-memory/Dalek pairs simultaneously. The memory team can search the frozen guide and
+After preparation, the runner restarts MCP and verifies all accepted principles,
+then freezes their IDs, revisions and documents for a round. Five new codebase variants go to five matched
+memory/Dalek pairs simultaneously. The memory team can search the frozen collection and
 inspect its sources; no agent in either arm can write during comparison. The runner
-checks the guide again only after all ten sessions finish. Session start skew and
+checks the entire collection again only after all ten sessions finish. Session start skew and
 actual provider usage remain in the report; a common scheduling barrier does not
 guarantee identical provider queue time.
 
 Orion then reviews only verified memory-team results in two fresh evidence/guide
 sessions. It can store useful applications, constraints or exceptions, form an
-accepted round chain, and revise the same principle. It can instead explicitly
+accepted round chain, and form distinct principles or revise existing ones. It can instead explicitly
 record no new learning without writing. The next round uses the resulting revision
 with new versions and case IDs in the same five families. New values and session IDs
 are not independent task families or independent confirmations. Ordinary recall
@@ -390,18 +410,27 @@ evidence is available on demand. No fixed read-all-files requirement, required
 lookup, quoted conclusion or note is part of correctness. Retrieval misses and
 non-use stay in the assigned arm's denominator.
 
-Protocol **v2**, fixture **v1**, separates verified code investigation from an
-explicit preparation documentation session. Both may retain a useful lesson or
-finish with no new learning. Every evaluation uses a fresh session and private
+Protocol **v3**, fixture **v1**, retains the separate investigation/documentation
+sessions introduced in v2. A family may now retain several distinct principles,
+keyed by stable principle ID rather than by family. `list_principles` exposes the
+catalogue to curators; `retain_lesson.revises` explicitly targets a refinement.
+Equivalent lessons and exact accepted source chains are reused instead of creating
+duplicates. There is a 32-principle inventory bound and ten retention calls per
+review, not a quota. Each rule still needs inspected source evidence and a verified
+changed implementation. A reviewer may report no new learning. Every evaluation uses a fresh session and private
 workspace. A seeded randomized schedule runs one session at a time across all
 arms, including the separate diagnostic, to avoid concurrent provider congestion.
 Experience is frozen and rechecked across every round's arms and repetitions.
 Only then can a reviewer retain new evidence, a correction or an exception using
 verified memory-side cases. Control answers never enter the learning loop.
 
-The default **smoke** profile covers one family, near transfer and changed
-conditions: six main-arm sessions plus two diagnostics, one investigation and
-three documentation/review sessions. The explicit **pilot** profile covers five
+The default **learning** profile covers five families, near transfer and changed
+conditions: **30 main-arm sessions**, ten diagnostics, five investigations and
+three documentation/review sessions. Its full plan and session counts are visible
+before starting; selecting a larger profile increases model work.
+The shorter **smoke** profile covers one family: six main-arm sessions plus two
+diagnostics, one investigation and three documentation/review sessions.
+The explicit **pilot** profile covers five
 families, four follow-ups and two repetitions: **120 main-arm sessions**, 40
 diagnostics, five investigations and five documentation/review sessions.
 Repeated variants are not independent families. Inspect the full plan without
@@ -435,6 +464,19 @@ Necessary revalidation is not counted as wasted work.
 
 Knowledge reuse, correctness and adaptation lead the page. The three main curves
 show observed cumulative correctness; the direct diagnostic is reported separately.
+
+The retained protocol-v3 smoke run `b13b00af-3d30-4bb1-bfe3-672c607e270c` used
+GPT-6 Astra with GLM 4.7 Flash extraction. It passed 27/27 fixture checks, retained
+eight observations, eight accepted chains and three accepted principles. Two
+principles existed before evaluation; changed-contract review revised one and
+added a third. This is actual multi-principle formation, not a fixed record quota.
+The MindLeak and notebook arms did not retrieve in that run; their observed reuse
+was zero, while the separate direct diagnostic recorded two temporal uses. All
+arms passed both tasks, so no comparative improvement is established. Total
+recorded agent usage was 171,719 input and 5,710 output tokens, plus 15,816 input
+and 2,445 output extraction tokens across 32 writes; elapsed time was 405.3 seconds.
+Earlier single-principle, empty-experience and negative results remain unchanged.
+
 The secondary cost panel includes preparation, review, failed attempts, validation
 and memory processing. Shared authoring token costs are allocated to each
 experience-bearing arm for the counterfactual comparison, not summed as additional

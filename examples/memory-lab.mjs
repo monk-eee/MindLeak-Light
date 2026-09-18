@@ -17,7 +17,7 @@ const supports = { type: "array", minItems: 2, maxItems: 8, items: { type: "obje
 const documentProperties = { claim: statement, rationale: statement, conclusion: { type: "string", minLength: 1, maxLength: 2048 },
   applicability: statement, assumptions: { type: "array", maxItems: 8, items: { ...statement, maxLength: 1024 } }, evidence: references };
 const documentRequired = Object.keys(documentProperties);
-export const memoryProtocol = { version: 4, name: "procedure-first-memory-budget", briefingBytes: 16384,
+export const memoryProtocol = { version: 5, name: "multiple-principles-progressive-reuse", briefingBytes: 16384,
   captureKinds: ["finding", "constraint", "failed_approach", "exception", "decision"], exactDuplicateWrites: "reuse-acknowledged-receipt" };
 export function memoryStartPrompt({ mode = "learning", stage = "assessment", independent = false } = {}) {
   const orientation = [
@@ -30,7 +30,7 @@ export function memoryStartPrompt({ mode = "learning", stage = "assessment", ind
   if (mode === "withoutMemory") orientation.push("No stored knowledge is available in this matched no-memory control. Solve from the same local evidence and correctness checks; no previous answer or conversation has been supplied.");
   else if (independent && stage === "assessment") orientation.push("This is an independent seed investigation. Do not retrieve earlier findings before your assessment passes. You still need to understand the hierarchy: later phases will store your observations and chain for a future principle.");
   else if (stage === "evidence") orientation.push("Start with memory_checkpoint to recover acknowledged observations and your case chain. Store only reusable verified evidence, then connect it in a case-specific chain; do not reconstruct earlier IDs from conversation.");
-  else if (stage === "guide") orientation.push("Start with memory_checkpoint and inspect_guide_sources. Recover the accepted chains from MindLeak, then form or revise the principle with their evidence, conditions and exceptions. Explicit acceptance and a final checkpoint complete this phase.");
+  else if (stage === "guide") orientation.push("Start with memory_checkpoint and inspect_guide_sources. Recover accepted chains and the principle catalogue. Identify distinct reusable decisions: deployment checks, compatibility rules, diagnostic procedures and failure boundaries may warrant different principles. Form separate principles only when each has real supporting chains and its own applicability. Revise an existing ID for the same rule; do not merge every lesson into one guide or create paraphrases. Explicitly accept every new candidate, or use skip_learning if there is no new supported knowledge.");
   else orientation.push("Before investigating, call recall_guide with focused topic keywords. Read the accepted principle's procedure, applicability, revision and review state before choosing your next action. Follow its references progressively: relevant chain first when reasoning is needed, original observations when source verification is needed. An empty search is not proof that no lesson exists.",
     mode === "control" ? "Memory is read-only and frozen for this comparison. No writes, reinforcement or guide revisions are allowed; retrieve only what helps the current decision."
       : "Use memory_checkpoint at phase start and finish. The assessment phase applies the guide; separate capture and guide-authoring phases retain new evidence and exceptions.");
@@ -148,9 +148,7 @@ export function createKnowledgeLedger({ driver, runId, scope, emit, onMemory = (
         if (document.supportedBy.some(reference => { const node = nodes.get(reference.chainId); return !node || node.document.kind !== "chain" || node.state !== "accepted" || node.revision !== reference.revision; })) {
           throw new Error("current_accepted_chains_required");
         }
-        const accepted = [...nodes.values()].filter(node => node.document.kind === "chain" && node.state === "accepted");
-        if (accepted.some(node => !document.supportedBy.some(reference => reference.chainId === node.chainId))) throw new Error("retain_all_case_chains_in_guide");
-        if (guideId && (!previous || previous.chainId !== guideId)) throw new Error("revise_the_existing_guide");
+        if (!previous && [...nodes.values()].filter(node => node.document.kind === "principle").length >= 32) throw new Error("principle_inventory_budget");
       }
       const chainId = previous?.chainId ?? randomUUID();
       if (previous && nodes.get(chainId)?.revision !== previous.expectedRevision) throw new Error("stale_guide_revision");
@@ -158,13 +156,14 @@ export function createKnowledgeLedger({ driver, runId, scope, emit, onMemory = (
         { operation: previous ? "revise" : "propose", chainId, ...(previous ? { expectedRevision: previous.expectedRevision } : {}), document });
       nodes.set(chainId, { chainId, actor, revision: receipt.revision, state: receipt.state, review: receipt.review,
         document: structuredClone(document), memoryId: receipt.memoryId });
-      if (document.kind === "principle") guideId = chainId;
+      if (document.kind === "principle" && !guideId) guideId = chainId;
       publish(); return receipt;
     },
     async accept(actor, chainId, expectedRevision, specification, verification) {
       const node = nodes.get(chainId);
       if (!verification?.passed || !node || node.actor !== actor || node.revision !== expectedRevision || node.state !== "candidate") throw new Error("verified_current_candidate_required");
-      const counterEvidenceReviewed = node.document.evidence.filter(reference => reference.role === "counterexample").map(reference => reference.fragmentId);
+      const counterEvidenceReviewed = [...new Set([...node.document.evidence, ...(node.document.supportedBy ?? []).flatMap(reference => nodes.get(reference.chainId)?.document.evidence ?? [])]
+        .filter(reference => reference.role === "counterexample").map(reference => reference.fragmentId))];
       const count = verification.expectedTests ?? 5;
       const receipt = await write(actor, `Branch-kit guide: ${actor} accepted the candidate after all ${count} frozen ${specification.id} assessment checks passed and its stored sources were reviewed.`,
         { operation: "accept", chainId, expectedRevision, validation: { method: "Check frozen shipped paths, advisory ranges, registry candidates and compatibility policy with semver, then inspect cited observations and any recorded sandbox upgrade probe.",
@@ -231,13 +230,18 @@ export function createKnowledgeLedger({ driver, runId, scope, emit, onMemory = (
       durability.push(proof); emit({ type: "persistence_verified", agent: actor, ...proof }); publish();
       return proof;
     },
-    async exportGuide() {
-      if (!guideId || nodes.get(guideId)?.state !== "accepted") return null;
-      const snapshot = await call("recall_memory", { knowledge: { operation: "export", chainId: guideId, format: "json" }, scope, limit: 8 });
-      const markdown = await call("recall_memory", { knowledge: { operation: "export", chainId: guideId, format: "markdown" }, scope, limit: 8 });
-      if (snapshot.snapshot?.chain?.chainId !== guideId || typeof markdown.markdown !== "string") throw new Error("guide_export_mismatch");
-      return { chainId: guideId, revision: snapshot.snapshot.chain.revision, extractedAt: new Date().toISOString(),
+    async exportGuide(selectedId = guideId) {
+      if (!selectedId || nodes.get(selectedId)?.state !== "accepted") return null;
+      const snapshot = await call("recall_memory", { knowledge: { operation: "export", chainId: selectedId, format: "json" }, scope, limit: 8 });
+      const markdown = await call("recall_memory", { knowledge: { operation: "export", chainId: selectedId, format: "markdown" }, scope, limit: 8 });
+      if (snapshot.snapshot?.chain?.chainId !== selectedId || typeof markdown.markdown !== "string") throw new Error("guide_export_mismatch");
+      return { chainId: selectedId, revision: snapshot.snapshot.chain.revision, extractedAt: new Date().toISOString(),
         snapshot: snapshot.snapshot, markdown: markdown.markdown, source: "MindLeak recall_memory knowledge.export" };
+    },
+    async exportGuides() {
+      const guides = [];
+      for (const node of nodes.values()) if (node.document.kind === "principle" && node.state === "accepted") guides.push(await this.exportGuide(node.chainId));
+      return guides;
     },
   };
 }
@@ -252,8 +256,9 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
   const retrieved = new Map();
   const sourceObservations = new Set();
   const memoryReads = [];
-  let guideAtAssessment = null;
+  const guidesAtAssessment = new Map();
   let application = null;
+  let learningSkipped = null;
   let verification = stage !== "assessment" ? priorAssessment?.verification ?? null : null;
   let verifiedAt = null;
   let answer = stage !== "assessment" ? priorAssessment?.answer ?? null : null;
@@ -296,15 +301,17 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
       if (!ownChain) nextActions.push("propose_chain");
       if (ownChain?.state !== "accepted") nextActions.push("accept_knowledge");
     } else {
-      if (currentGuide?.actor !== actor || !currentGuide) nextActions.push("propose_guide");
-      if (currentGuide?.actor !== actor || currentGuide?.state !== "accepted") nextActions.push("accept_knowledge");
+      const ownPrinciples = [...ledger.nodes.values()].filter(node => node.actor === actor && node.document.kind === "principle");
+      if (!ownPrinciples.length && !learningSkipped) nextActions.push("propose_guide");
+      if (!learningSkipped && (!ownPrinciples.length || ownPrinciples.some(node => node.state !== "accepted"))) nextActions.push("accept_knowledge");
     }
     const summary = node => node ? { chainId: node.chainId, revision: node.revision, state: node.state } : null;
     return { stage, ready: nextActions.length === 0, nextActions, assessmentVerified: Boolean(verification?.passed),
       ...(stage === "assessment" ? { guideReceived: index >= 2 && retrieved.size > 0, sourceObservationsRead: sourceObservations.size,
         guideApplied: Boolean(application) } : { observations: ownObservations.map(observation => ({ memoryId: observation.memoryId,
         source: observation.source, fragmentIds: observation.fragments.map(fragment => fragment.fragmentId) })), caseChain: summary(ownChain),
-        ...(stage === "guide" ? { guide: summary(currentGuide) } : {}) }) };
+        ...(stage === "guide" ? { guide: summary(currentGuide), principles: [...ledger.nodes.values()].filter(node => node.document.kind === "principle")
+          .map(node => ({ ...summary(node), claim: node.document.claim })), learningOutcome: learningSkipped ? "no_new_learning" : null } : {}) }) };
   };
   const tools = [
     tool("list_files", "List the read-only frozen package investigation files.", {}, [], () => workspace.list()),
@@ -315,7 +322,7 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
         verification = checkAssessment(specification, candidate, workspace.filesRead, workspace.probes);
         if (verification.passed && verifiedAt === null) {
           verifiedAt = performance.now() - stageStarted; answer = structuredClone(candidate);
-          guideAtAssessment = [...retrieved.values()].find(record => record.snapshot.document.kind === "principle") ?? null;
+          for (const record of retrieved.values()) if (record.snapshot.document.kind === "principle") guidesAtAssessment.set(record.chainId, structuredClone(record));
         }
         emit({ type: "tests", agent: actor, condition, phase: "assessment", passed: verification.passed, passedTests: verification.passedTests,
           expectedTests: verification.expectedTests, checks: verification.checks, sourceSha256: verification.sourceSha256 });
@@ -365,6 +372,7 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
         items: { type: "object", additionalProperties: false, properties: { quote: { type: "string", minLength: 12, maxLength: 700 },
           decision: { type: "string", enum: ["applies", "exception"] }, evidencePath: { type: "string" }, reason: { ...statement, maxLength: 700 } },
         required: ["quote", "decision", "evidencePath", "reason"] } } }, ["chainId", "revision", "steps"], async detail => {
+        const guideAtAssessment = guidesAtAssessment.get(detail.chainId);
         if (!verification?.passed || !guideAtAssessment || detail.chainId !== guideAtAssessment.chainId || detail.revision !== guideAtAssessment.revision) throw new Error("guide_must_precede_verified_assessment");
         const current = await ledger.inspect(detail.chainId);
         if (current.chain.revision !== detail.revision) throw new Error("stale_guide_revision");
@@ -385,7 +393,7 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
         if (!document.claim.toLowerCase().includes(specification.id)) throw new Error("case_identity_required_in_claim");
         return ledger.propose(actor, { ...document, kind: "chain", supportedBy: [] });
       }),
-    tool("propose_guide", "Build or revise the reusable branch-kit solution guide as a principle supported by all current accepted case chains (at least two). Include your new chain and preserve earlier case support. Use null chainId/expectedRevision only for the first guide; otherwise revise the existing ID/revision. Keep the complete procedure, applicability and exceptions. The candidate still requires accept_knowledge.",
+    tool("propose_guide", "Form a distinct reusable branch-kit principle using 2..8 relevant current accepted case chains. Multiple principles can coexist and share evidence. Use null chainId/expectedRevision for genuinely new decision rules, or a catalogue ID/current revision to refine that same rule. Select relevant supports, not every case chain. Preserve conditions and all known counterexamples. Each candidate requires accept_knowledge; never write paraphrases for a quota.",
       { ...documentProperties, supportedBy: supports, chainId: { type: ["string", "null"] }, expectedRevision: { type: ["integer", "null"], minimum: 1 } },
       [...documentRequired, "supportedBy", "chainId", "expectedRevision"], async ({ chainId, expectedRevision, ...document }) => {
         if (!verification?.passed) throw new Error("assessment_required");
@@ -394,8 +402,14 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
     tool("accept_knowledge", "Explicitly accept your candidate after checking the assessment and reviewing its cited sources. Preserves its ID and adds a validation revision in MindLeak. This records your validation, not a universal truth claim.",
       { chainId: { type: "string" }, expectedRevision: { type: "integer", minimum: 1 } }, ["chainId", "expectedRevision"],
       ({ chainId, expectedRevision }) => ledger.accept(actor, chainId, expectedRevision, specification, verification)),
+    tool("skip_learning", "Record that inspected existing principles already cover the verified evidence and no new principle or revision is justified. Requires actual knowledge inspection and an accepted principle. Stores no new knowledge.",
+      { reason: { type: "string", minLength: 10, maxLength: 500 } }, ["reason"], ({ reason }) => {
+        if (!verification?.passed || !accessedKnowledge.size || ![...ledger.nodes.values()].some(node => node.document.kind === "principle" && node.state === "accepted")) throw new Error("inspect_existing_principles_first");
+        if ([...ledger.nodes.values()].some(node => node.actor === actor && node.document.kind === "principle" && node.state !== "accepted")) throw new Error("finish_pending_principle_first");
+        learningSkipped = reason; return { stored: false, outcome: "no_new_learning", reason };
+      }),
   );
-  const guideTools = new Set(["memory_checkpoint", "recall_guide", "inspect_knowledge", "inspect_guide_sources", "inspect_observation", "propose_guide", "accept_knowledge"]);
+  const guideTools = new Set(["memory_checkpoint", "recall_guide", "inspect_knowledge", "inspect_guide_sources", "inspect_observation", "propose_guide", "accept_knowledge", "skip_learning"]);
   const evidenceTools = new Set(["memory_checkpoint", "list_files", "read_file", "search_files", "record_observation", "inspect_guide_sources", "inspect_observation", "propose_chain", "accept_knowledge"]);
   const assessmentTools = new Set(["memory_checkpoint", "list_files", "read_file", "search_files", "verify_assessment", "probe_upgrade", "recall_guide", "inspect_knowledge", "inspect_observation", "apply_guide"]);
   const selected = tools.filter(entry => stage === "guide" ? guideTools.has(entry.definition.function.name)
@@ -414,6 +428,7 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
     return result;
   } }));
   return { tools: wrapped, workspace, accessedKnowledge, receivedOwners, sourceObservations, checkpoint, memoryReads,
+    get learningSkipped() { return learningSkipped; },
     get application() { return application; },
     get verification() { return verification; }, get answer() { return answer; }, get investigationMs() { return verifiedAt; } };
 }
@@ -511,20 +526,22 @@ export async function runMemoryLab({ driver, agentsByRole, onEvent = () => {}, o
             memoryStartPrompt({ stage: "guide" }),
             `You are ${actor.name}, continuing as the guide author for branch-kit case ${specification.id}. Your independent case assessment passed and your case chain is already accepted in MindLeak.`,
             "No earlier conversation is available. FIRST call memory_checkpoint, then inspect_guide_sources to retrieve current accepted case chains and the existing principle from MindLeak. Recover the findings and evidence from storage, not a previous conversation.",
-            "Use propose_guide to author a complete reusable solution principle with ALL current accepted case chains in supportedBy, including your own. If a principle exists, retain its chainId and use its current revision as expectedRevision; otherwise use null for both. Preserve the earlier supported procedure and add the current case's lesson or exception.",
+            "Use propose_guide for each distinct supported decision rule. Choose 2..8 relevant accepted chains for that principle; they need not include every case. Use null chainId/expectedRevision for new principles. For refinement of an existing rule, retain its ID/current revision and preserve known support and counterexamples. Deployment identity, API adaptation, policy limits and verification strategy can be different rules when the evidence justifies them. Several principles from one investigation are allowed; paraphrases and arbitrary quotas are not.",
             "Put a concise ordered procedure in conclusion (under 1800 characters), a branch-kit claim, auditable rationale, applicability and assumptions. Direct evidence may only be counterexamples; positive support comes from accepted chains. Do not fabricate certainty or independent corroboration.",
-            "Then explicitly call accept_knowledge on the returned candidate ID/revision. A proposed-but-unaccepted guide is unfinished. Do not just repeat the previous guide or describe an action without executing it.",
+            "Explicitly call accept_knowledge for every returned candidate ID/revision. A proposed-but-unaccepted principle is unfinished. If existing inspected principles already cover the current evidence, use skip_learning instead of manufacturing another revision.",
             "Finish with memory_checkpoint. Preserve an actionable short guide and the exceptions learned; raw observations stay in the source records rather than being copied into the procedure.",
             'Finish with JSON {"completed":true} only after the guide acceptance succeeds, otherwise {"completed":false}.',
           ].join("\n");
           emit({ type: "guide_phase_started", agent: actor.id, attempt, caseId: specification.id });
           const execution = await agent.run(instructions, author.tools, "", { type: "object", properties: { completed: { type: "boolean" } }, required: ["completed"], additionalProperties: false },
             { signal, onEvent: event => emit({ ...event, agent: actor.id, condition: "guide", attempt }) });
-          const current = ledger.guideId ? ledger.nodes.get(ledger.guideId) : null;
-          guidePublished = execution.status === "completed" && current?.actor === actor.id && current.state === "accepted";
+          const authored = [...ledger.nodes.values()].filter(node => node.document.kind === "principle" && node.actor === actor.id);
+          const current = authored.at(-1) ?? ledger.nodes.get(ledger.guideId);
+          guidePublished = execution.status === "completed" && author.checkpoint().ready && Boolean(current?.state === "accepted");
           actor.guideAttempts.push({ ...publicExecution(execution), phase: "guide", attempt, passed: Boolean(guidePublished),
             selfReportedComplete: execution.answer?.completed === true,
-            chainId: current?.chainId ?? null, revision: current?.revision ?? null, memoryReads: author.memoryReads, memoryCheckpoint: author.checkpoint() });
+            chainId: current?.chainId ?? null, revision: current?.revision ?? null, principleIds: authored.map(node => node.chainId),
+            learningOutcome: author.learningSkipped ? "no_new_learning" : "principles_retained", memoryReads: author.memoryReads, memoryCheckpoint: author.checkpoint() });
           emit({ type: "guide_phase_finished", agent: actor.id, attempt, passed: Boolean(guidePublished), revision: current?.revision });
           if (guidePublished) break;
         }
@@ -535,7 +552,7 @@ export async function runMemoryLab({ driver, agentsByRole, onEvent = () => {}, o
       if (actor.state !== "passed") { failure = "investigation_or_guide_not_verified"; break; }
       await ledger.provePersistence(actor.id);
       guide = await ledger.exportGuide();
-      if (guide) { onKnowledge({ guide }); emit({ type: "guide_extracted", agent: actor.id, chainId: guide.chainId, revision: guide.revision, extractedAt: guide.extractedAt }); }
+      if (guide) { onKnowledge({ guide, guides: await ledger.exportGuides() }); emit({ type: "guide_extracted", agent: actor.id, chainId: guide.chainId, revision: guide.revision, extractedAt: guide.extractedAt }); }
     }
   } catch (error) {
     const allowed = ["observation_persistence_mismatch", "chain_persistence_mismatch", "memory_server_did_not_restart", "guide_export_mismatch", "mcp_tool_failed", "mcp_invalid_result"];
@@ -552,7 +569,7 @@ export async function runMemoryLab({ driver, agentsByRole, onEvent = () => {}, o
   emit({ type: "run_finished", status });
   return { reportVersion: 1, kind: "memory_lab", experiment: 2, title: "The Package Investigation Guide", runId, createdAt, status, failure, problem, memoryProtocol,
     agents, events, elapsedMs: performance.now() - started, server: driver.server, binarySha256: driver.binarySha256, realMcpProcess: driver.realProcess, code,
-    comparisons, memoryExhibits, toolExhibits, scope, guide,
+    comparisons, memoryExhibits, toolExhibits, scope, guide, guides: await ledger.exportGuides(),
     knowledge: { observations: ledger.observations, chains: [...ledger.nodes.values()].filter(node => node.document.kind === "chain"),
       principles: [...ledger.nodes.values()].filter(node => node.document.kind === "principle"), operations: ledger.operations, durability: ledger.durability, applications: ledger.applications, guide },
     summary: { agents: 5, agentsPassed: agents.filter(actor => actor.state === "passed").length, inputTokens: sum(executions, "inputTokens"), outputTokens: sum(executions, "outputTokens"),

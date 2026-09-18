@@ -23,7 +23,7 @@ export function controlPlan({ pairs = 5, rounds = 1, model = null, agentModels =
       schedule: "common-start-barrier", withMemory: { ...common, agent: role.id, name: role.name, memoryAccess: "read-only-frozen-guide" },
       withoutMemory: { ...common, agent: controlRoles[index].id, name: controlRoles[index].name, memoryAccess: "none" } };
   })).flat();
-  return { version: 2, experiment: "simultaneous-memory-control", model: model ?? "Mixed matched models", rounds, pairs: planned,
+  return { version: 3, experiment: "simultaneous-memory-control", model: model ?? "Mixed matched models", rounds, pairs: planned,
     agentExecutions: planned.length * 2, concurrency: 10, caseVariants: planned.length, caseFamilies: 5, freshSessions: true,
     sameSourceAndCorrectnessChecks: true, noCrossArmConversationOrEdits: true, memoryWritesDuringComparison: false,
     preparationCostsIncluded: true, feedbackBetweenRoundsOnly: true, fixtureVersion: 2, fixtureSha256: digest(planned.map(pair => pair.withMemory.fixtureSha256)),
@@ -85,11 +85,16 @@ const finalSchema = { type: "object", additionalProperties: false, properties: {
   required: ["claim", "path", "quote", "guideStep"] } }, required: ["completed", "finding"] };
 
 async function readGuide(driver, preparation) {
-  const result = (await driver.call("recall_memory", { chain: { operation: "inspect", chainId: preparation.guide.chainId }, scope: preparation.scope, limit: 2 })).data;
-  const expected = preparation.knowledge.principles.find(node => node.chainId === preparation.guide.chainId);
-  if (!expected || result.chain?.chainId !== expected.chainId || result.chain.revision !== preparation.guide.revision
-    || result.chain.snapshot?.state !== "accepted" || result.requiresReview !== false || !isDeepStrictEqual(result.chain.snapshot.document, expected.document)) throw new Error("control_guide_changed");
-  return knowledgeToolView(result);
+  const principles = [];
+  for (const expected of preparation.knowledge.principles.filter(node => node.state === "accepted")) {
+    const result = (await driver.call("recall_memory", { chain: { operation: "inspect", chainId: expected.chainId }, scope: preparation.scope, limit: 2 })).data;
+    if (result.chain?.chainId !== expected.chainId || result.chain.revision !== expected.revision
+      || result.chain.snapshot?.state !== "accepted" || result.requiresReview !== false || !isDeepStrictEqual(result.chain.snapshot.document, expected.document)) throw new Error("control_guide_changed");
+    principles.push(knowledgeToolView(result));
+  }
+  const primary = principles.find(record => record.chain.chainId === preparation.guide.chainId);
+  if (!primary || primary.chain.revision !== preparation.guide.revision) throw new Error("control_guide_changed");
+  return { primary, principles };
 }
 
 export async function runMemoryControl({ driver, preparation, agentsByRole, code, rounds = 1, learn,
@@ -114,12 +119,15 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
       const freezeStarted = performance.now();
       const transition = await driver.restart();
       if (transition.previous === transition.current || transition.previousPid && transition.previousPid === transition.currentPid) throw new Error("memory_server_did_not_restart");
-      const frozenView = await readGuide(driver, current);
-      const allowedSources = new Set([...frozenView.chain.snapshot.document.evidence,
-        ...frozenView.supportingChains.flatMap(support => support.document?.evidence ?? [])].map(reference => reference.fragmentId));
-      const knownChains = new Map([[frozenView.chain.chainId, frozenView.chain], ...frozenView.supportingChains.map(record => [record.reference.chainId,
-        { chainId: record.reference.chainId, revision: record.reference.revision, snapshot: { document: record.document, state: record.state } }])]);
-      const round = { number, frozen: { chainId: frozenView.chain.chainId, revision: frozenView.chain.revision, documentSha256: digest(frozenView), ...transition,
+      const frozenCollection = await readGuide(driver, current);
+      const frozenView = frozenCollection.primary;
+      const frozenPrinciples = new Map(frozenCollection.principles.map(record => [record.chain.chainId, record]));
+      const allowedSources = new Set(frozenCollection.principles.flatMap(record => [...record.chain.snapshot.document.evidence,
+        ...record.supportingChains.flatMap(support => support.document?.evidence ?? [])]).map(reference => reference.fragmentId));
+      const knownChains = new Map(frozenCollection.principles.flatMap(record => [[record.chain.chainId, record.chain], ...record.supportingChains.map(support => [support.reference.chainId,
+        { chainId: support.reference.chainId, revision: support.reference.revision, snapshot: { document: support.document, state: support.state } }])]));
+      const round = { number, frozen: { chainId: frozenView.chain.chainId, revision: frozenView.chain.revision, documentSha256: digest(frozenCollection),
+        principles: frozenCollection.principles.map(record => ({ chainId: record.chain.chainId, revision: record.chain.revision, documentSha256: digest(record) })), ...transition,
         unchangedAfterComparison: false }, freezeMs: performance.now() - freezeStarted, pairs: [] };
       emit({ type: "control_guide_frozen", round: number, ...round.frozen });
       const cases = upgradeCases({ split: "evaluation", round: number });
@@ -133,7 +141,7 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
         const session = investigatorTools({ driver, scope: current.scope, actor: arm.agent, specification, code,
           ledger: { observations: [], nodes: new Map() }, condition, index: 0, memoryEnabled: false, emit: relay,
           onToolDetail: detail => details({ ...detail, round: number }) });
-        const reads = []; const sourceIds = new Set();
+        const reads = []; const sourceIds = new Set(); const receivedGuides = new Map();
         let receivedAtMs = null; let execution;
         const memoryTool = (name, description, properties, required, invoke) => ({ definition: { type: "function", function: { name, description,
           parameters: { type: "object", additionalProperties: false, properties, required } } }, invoke: async (args, context = {}) => {
@@ -148,14 +156,18 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
         } });
         const tools = [...session.tools];
         if (condition === "withMemory") tools.push(
-          memoryTool("recall_guide", "Search MindLeak for the frozen accepted principle. Use focused topic keywords, then read its procedure, applicability and current revision. Source references support progressive chain and observation inspection. Returns no later-round knowledge; no writes are permitted.",
+          memoryTool("recall_guide", "Search the frozen collection of accepted MindLeak principles. Use focused topic keywords for the current decision, then read the relevant procedure, applicability and revision. Other focused searches can retrieve different principles from the same collection. Returns no later-round knowledge; no writes are permitted.",
             { query: { type: "string", minLength: 1, maxLength: 256 } }, ["query"], async ({ query }) => {
               const result = (await driver.call("recall_memory", { knowledge: { operation: "search", query }, scope: current.scope, limit: 2 })).data;
-              const record = result.principles?.find(record => record.chain?.chainId === frozenView.chain.chainId);
+              const record = result.principles?.find(record => frozenPrinciples.has(record.chain?.chainId));
               if (!record) return { kind: "knowledge", view: "guide-first", principles: [], chains: [], observations: [], sourceReferences: [] };
-              if (!isDeepStrictEqual(knowledgeToolView(record), frozenView)) throw new Error("control_guide_changed");
+              if (!isDeepStrictEqual(knowledgeToolView(record), frozenPrinciples.get(record.chain.chainId))) throw new Error("control_guide_changed");
               const brief = knowledgeBrief({ principles: [record] });
-              if (receivedAtMs === null) { receivedAtMs = performance.now() - startedAtMs - started; relay({ type: "memory_delivered", from: "memory", kind: "principle", fragments: 1, chainId: record.chain.chainId, revision: record.chain.revision }); }
+              if (!receivedGuides.has(record.chain.chainId)) {
+                const atMs = performance.now() - startedAtMs - started;
+                receivedGuides.set(record.chain.chainId, { atMs, record }); receivedAtMs ??= atMs;
+                relay({ type: "memory_delivered", from: "memory", kind: "principle", fragments: 1, chainId: record.chain.chainId, revision: record.chain.revision });
+              }
               return brief;
             }),
           memoryTool("inspect_knowledge", "Inspect a supporting chain or the principle from this frozen guide, preserving its reasoning and conditions. Use only an ID returned by recall_guide.",
@@ -190,12 +202,15 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
           && typeof finding.quote === "string" && finding.quote.length >= 4 && finding.quote.length <= 1200 && session.workspace.filesRead.has(finding.path)
           && specification.files[finding.path]?.includes(finding.quote);
         const receivedBefore = receivedAtMs !== null && session.investigationMs !== null && receivedAtMs <= session.investigationMs;
-        const applied = findingVerified && receivedBefore && typeof finding.guideStep === "string" && finding.guideStep.length >= 12
-          && frozenView.chain.snapshot.document.conclusion.includes(finding.guideStep);
+        const usedGuide = findingVerified && receivedBefore && typeof finding.guideStep === "string" && finding.guideStep.length >= 12
+          ? [...receivedGuides.values()].find(({ atMs, record }) => atMs <= session.investigationMs && record.chain.snapshot.document.conclusion.includes(finding.guideStep))?.record : null;
+        const applied = Boolean(usedGuide);
         const outcome = { ...publicExecution(execution), agent: arm.agent, name: arm.name, condition, model: arm.model, caseId: specification.id,
           startedAtMs, finishedAtMs, elapsedMs: finishedAtMs - startedAtMs, investigationMs: session.investigationMs,
           verification: session.verification, answer: session.answer, passed, success: passed, knowledgeReceived: receivedAtMs !== null,
           guideRetrievedBeforeAssessment: receivedBefore, guideApplied: Boolean(applied), finding: findingVerified ? finding : null,
+          receivedPrinciples: [...receivedGuides.values()].map(({ atMs, record }) => ({ chainId: record.chain.chainId, revision: record.chain.revision, atMs })),
+          guideUsed: usedGuide ? { chainId: usedGuide.chain.chainId, revision: usedGuide.chain.revision } : null,
           memoryReads: reads, sourceObservationsRead: sourceIds.size, upgradeProbes: session.workspace.probes, fixtureSha256: specification.fixtureSha256 };
         relay({ type: "agent_state", state: passed ? "passed" : signal?.aborted ? "cancelled" : "failed", caseId: specification.id });
         relay({ type: "control_arm_finished", passed, caseId: specification.id, inputTokens: outcome.inputTokens, outputTokens: outcome.outputTokens,
@@ -213,7 +228,7 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
       });
       completedRounds.push(round);
       const checkedAt = performance.now();
-      round.frozen.unchangedAfterComparison = isDeepStrictEqual(await readGuide(driver, current), frozenView);
+      round.frozen.unchangedAfterComparison = isDeepStrictEqual(await readGuide(driver, current), frozenCollection);
       round.freezeMs += performance.now() - checkedAt;
       if (!round.frozen.unchangedAfterComparison) throw new Error("control_guide_changed");
       emit({ type: "control_round_finished", round: number, pairs: round.pairs.length, correct: round.pairs.reduce((total, pair) => total + Number(pair.withMemory.passed) + Number(pair.withoutMemory.passed), 0) });
@@ -237,7 +252,7 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
   emit({ type: "control_finished", status });
   return { reportVersion: 1, kind: "memory_control", runId, status, failure, plan, memoryProtocol, rounds: completedRounds, summary, events, toolExhibits,
     elapsedMs: performance.now() - started, preparation: { runId: preparation.runId, elapsedMs: preparation.elapsedMs, summary: preparation.summary,
-      memoryProcessing: preparation.memoryProcessing }, knowledge: current.knowledge, guide: current.guide, code,
+      memoryProcessing: preparation.memoryProcessing }, knowledge: current.knowledge, guide: current.guide, guides: current.guides, code,
     binarySha256: driver.binarySha256, realMcpProcess: driver.realProcess, interpretation: plan.interpretation };
 }
 
@@ -287,7 +302,7 @@ export async function learnFromControlRound({ driver, preparation, round, agent,
         const task = [memoryStartPrompt({ stage }),
           `You are Orion, reviewing completed evaluation round ${round.number}. All ten comparison sessions are finished. The review case is ${specification.id}.`,
           stage === "evidence" ? "Read round/verified-cases.json and inspect_guide_sources. Only verified memory-side cases are present; never use control answers. Inspect the original case source files when needed. Retain a useful new condition, failed approach, application or exception with record_observation and exact source quotes. Connect the useful observations in ONE chain whose claim names branch-kit and this review case, then explicitly accept_knowledge. These repeated families are not independent confirmations."
-            : "Recover the accepted chains with inspect_guide_sources. Revise the existing principle using its stable ID/current expectedRevision and ALL accepted chains, including the round-review chain. Preserve a short actionable procedure, API/deployment/policy exceptions and source links. Do not paste raw round results or earlier version answers into the procedure. Explicitly accept_knowledge on the returned candidate.",
+            : "Recover accepted chains and existing principles with inspect_guide_sources. Form distinct supported decision rules from these verified cases: use null IDs for genuinely new principles and actual catalogue IDs/current revisions for refinement. Choose the 2..8 chains relevant to each rule, preserving conditions and counterexamples. Do not force all cases into one principle or create paraphrases. Explicitly accept every candidate, or use skip_learning when the catalogue already covers the evidence.",
           stage === "evidence" ? "A measured application can add evidence, but no new learning is also valid: after inspecting the round file and stored guide, use skip_learning with a reason instead of inventing a note. Recall and repeated sessions alone are not confirmation or reinforcement. Do not propose a guide in this evidence phase." : "Do not repeat the investigation or create extra source observations in the guide phase.",
           attempt > 1 ? "This is an explicit retry. Recover the current checkpoint and reuse acknowledged observation/chain IDs. Finish pending acceptance instead of creating duplicates." : "",
           'Finish with JSON {"completed":true} only after the required tools succeed; otherwise {"completed":false}. Use memory_checkpoint before finishing unless skip_learning completed the phase.',
@@ -295,7 +310,7 @@ export async function learnFromControlRound({ driver, preparation, round, agent,
         const execution = await agent.run(task, tools, "", { type: "object", additionalProperties: false, properties: { completed: { type: "boolean" } }, required: ["completed"] },
           { signal, onEvent: event => onEvent({ ...event, agent: "orion", phaseScope: `round-${stage}`, reviewer: actor, attempt }) });
         const accepted = stage === "evidence" ? [...ledger.nodes.values()].some(node => node.actor === actor && node.document.kind === "chain" && node.state === "accepted")
-          : ledger.nodes.get(ledger.guideId)?.actor === actor && ledger.nodes.get(ledger.guideId)?.state === "accepted";
+          : author.checkpoint().ready;
         completed = execution.status === "completed" && (Boolean(skipped) || accepted);
         executions.push({ ...publicExecution(execution), stage, attempt, passed: completed });
         if (completed) break;
@@ -306,7 +321,7 @@ export async function learnFromControlRound({ driver, preparation, round, agent,
       await ledger.provePersistence(actor);
       guide = await ledger.exportGuide();
       if (!guide) throw new Error("round_learning_not_verified");
-      onKnowledge({ ...ledger.snapshot(), guide });
+      onKnowledge({ ...ledger.snapshot(), guide, guides: await ledger.exportGuides() });
     }
   } catch { failure = "round_learning_not_verified"; }
   finally { unsubscribe?.(); }
@@ -314,7 +329,8 @@ export async function learnFromControlRound({ driver, preparation, round, agent,
   const cost = { inputTokens: sum(executions, "inputTokens"), outputTokens: sum(executions, "outputTokens"), toolCalls: sum(executions, "toolCalls"),
     elapsedMs: performance.now() - started, memoryProcessing: { calls: memoryUsage.length, inputTokens: sum(memoryUsage, "inputTokens"), outputTokens: sum(memoryUsage, "outputTokens") },
     executions, outcome: skipped ? "no_new_learning" : status, reason: skipped ?? failure, guideRevision: guide?.revision ?? null };
-  return { status, failure, cost, preparation: { ...preparation, guide, knowledge: { ...ledger.snapshot(), guide } } };
+  const guides = await ledger.exportGuides();
+  return { status, failure, cost, preparation: { ...preparation, guide, guides, knowledge: { ...ledger.snapshot(), guide, guides } } };
 }
 
 export function preparationEvent(event) {
@@ -343,7 +359,7 @@ export function combineControlReport(preparation, control) {
   const summary = control.summary;
   const { events: controlEvents, toolExhibits, memoryExhibits, knowledge, ...experiment } = control;
   return { ...preparation, title: "Memory vs Daleks", status: control.status, failure: control.failure, agents, events, elapsedMs, finalTests,
-    controlExperiment: experiment, knowledge, guide: control.guide,
+    controlExperiment: experiment, knowledge, guide: control.guide, guides: control.guides,
     memoryExhibits: [...preparation.memoryExhibits, ...(memoryExhibits ?? [])], toolExhibits: [...preparation.toolExhibits, ...toolExhibits],
     memoryProcessing: { ...preparation.memoryProcessing, ...summary.memoryProcessing },
     summary: { ...preparation.summary, agents: 10, agentsPassed: agents.filter(agent => agent.state === "passed").length,
