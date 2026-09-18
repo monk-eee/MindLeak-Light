@@ -85,11 +85,17 @@ your existing Copilot login, local GLM, and Docker or Podman:
 
 ```sh
 npm ci --prefix examples
+node examples/node_modules/playwright/cli.js install chromium
 export MINDLEAK_TEST_DATABASE_URL='postgresql://USER:PASSWORD@localhost:5432/mindleak_demo_test?sslmode=disable'
 export MINDLEAK_DEMO_MEMORY_URL='http://127.0.0.1:11434/v1'
 podman pull docker.io/library/node:22-bookworm-slim
 node examples/swarm-demo.mjs --binary PATH_TO_V060_BINARY --agent-provider copilot --code-engine podman --port 54584 --output-dir target/swarm-labs
 ```
+
+Chromium is required for Lab 1's artifact acceptance checks. An existing compatible
+browser can be selected with `MINDLEAK_BROWSER_EXECUTABLE=/absolute/path/to/chromium`.
+The runner checks browser availability before starting paid model work. Lab 2 and
+Lab 3 do not require a browser to execute their code fixtures.
 
 The default roster assigns **GPT-6 Astra** to Atlas, Iris, and Nova, and
 **Claude Opus 5** to Vega and Orion. **MAI-Code 1.1 Flash** is another selector
@@ -129,17 +135,74 @@ component tests pass. Final integration runs eighteen immutable checks per team 
 network-disabled container against a fingerprinted source snapshot. Coordination
 lives in this example runner; MindLeak remains the memory server.
 
-Each recording directory contains `events.ndjson`, `report.json`, `memories.json`,
-`tool-details.json`, and a standalone `index.html`. The event log is metadata-only;
-the two separate exhibits contain the explicitly visible synthetic saved findings
-and safe tool arguments, such as fixture paths and search queries. Successful
-builds also contain `session-desk.html` and `session-desk-daleks.html`, with separate
-`project` and `dalek-project` source directories. The artifact tabs switch between
-their sandboxed previews. Playback needs no server or model. Regenerate a page:
+Every Run click creates a new recording directory, without overwriting or deleting
+earlier results. `run.json` records the capture ID, start time and parameters before
+execution; the runner's eventual run ID is retained separately. `events.ndjson`
+receives metadata-only events incrementally. `evidence.ndjson` separately journals
+the explicitly visible synthetic findings, safe tool details and knowledge snapshots.
+Normal failure and cancellation retain these journals and a `partial-report.json`.
+An export failure also retains the computed report rather than discarding its results.
+These are local buffered files, not a power-loss-safe transaction log: an abrupt
+process or machine failure can lose recent writes, and automatic crash resume is
+not implemented. Back up the output directory for long-term analysis.
+
+Completed captures also contain `report.json`, `memories.json`, `tool-details.json`,
+and a standalone `index.html`. Successful builds contain `session-desk.html` and
+`session-desk-daleks.html`, with separate `project` and `dalek-project` source
+directories. The artifact tabs switch between their sandboxed previews. Playback
+needs no server or model. Regenerate a page into a new directory:
 
 ```sh
 node examples/demo-replay.mjs --report target/RUN/report.json --output-dir target/replay-copy
 ```
+
+### Acceptance and Continued Studies
+
+**RUN FINISHED** means execution ended, not that every requirement passed.
+**Acceptance Evidence** separates execution, immutable requirement-test receipts,
+quality review coverage and observed learning. Missing or incomplete test receipts
+cannot count as a pass. Learning activity is not an acceptance gate, and a passing
+fixture is not a production-readiness certification.
+
+Lab 1 checks each generated artifact in Chromium at 1440 x 1080 and 390 x 844.
+The checks cover rendering, creating and removing sessions, validation, text
+escaping, controlled expiry, blocked external requests and responsive layout.
+Each receipt names the artifact, its exact SHA-256, viewport and individual results.
+A review of one team's output cannot cover the other team's output; stale hashes
+do not count. Failed checks keep the artifacts and mark the run incomplete.
+Accessibility, security and maintainability remain explicitly unreviewed: these
+browser checks are not comprehensive audits. To check an older build without
+running models or changing its original record:
+
+```sh
+node examples/demo-replay.mjs --report target/RUN/report.json --output-dir target/reviewed-copy --verify-build
+```
+
+**Fresh study** is the default: new memory scope, preparation and agent sessions.
+**Continue learning** instead uses the completed run currently displayed by the
+server as its parent. Reopen an older completed report with the recording options
+above to continue that study. The server checks the exact parent run ID; a browser
+file import alone does not change the server's parent. Incomplete runs remain
+archived but cannot currently be continuation parents. Missing retained database
+evidence fails continuation rather than silently starting fresh.
+
+Each continuation still creates new conversations, fresh task workspaces and a
+separate recording directory. Lab 1 inherits only the memory team's stored
+findings. Lab 2 reuses and verifies its accepted guide instead of replaying initial
+preparation. Lab 3 reuses the same prior lessons for MindLeak, the notebook and the
+direct-lesson diagnostic; its Fresh Agent stays unseeded. Daleks never inherit
+memory, conversations or findings, and control answers never enter learning.
+Existing storage and response bounds still apply; repeated runs do not create an
+unbounded knowledge store.
+
+The study history links parent run IDs, records per-arm verified completion and
+retained knowledge counts, and includes preparation, review and failed-run costs
+in cumulative totals. Compact history summaries do not copy prior conversations
+into new prompts. Task families are labelled previously exposed on continuation:
+a rising curve is not held-out evidence or proof of a causal memory advantage.
+Flat, negative, failed and no-new-learning results remain valid study outcomes.
+
+### Formation and Reuse
 
 The headline is **Knowledge Formation**: unique source observations, recorded
 accepted Chains of Memory, and recorded accepted Principles. Chain acceptance
@@ -179,6 +242,14 @@ scroll up to inspect history, or use its follow toggle to resume tailing. Select
 an event to inspect the exact tool name, call ID, model, inference phase, measured
 latency, finish reason, usage, and safe arguments. Generated application source is retained only as the
 explicit synthetic build artifact, inside a sandboxed preview with no network access.
+
+The network's READ, WRITE and FORM indicators follow actual pending memory calls.
+Directional packets, working-agent motion and graph arrival highlights follow
+recorded requests and acknowledged writes, never fabricated growth. **Replay
+activity** seeks to recorded memory activity without new inference and visibly
+labels playback. Pause and reduced-motion settings stop animation; a finished or
+idle run does not show pretend work in flight. The graph remains the latest saved
+knowledge snapshot, with replay highlights indicating its recorded write events.
 
 ### Lab 2: Form Knowledge
 
@@ -289,8 +360,9 @@ The guide's prose remains agent-authored, not an independently adjudicated truth
 
 `control-experiment.json` retains the matched plan, per-arm outcomes, round guide
 hashes/revisions, source/probe fingerprints, review costs and cumulative summaries.
-Starting another dashboard run creates a new scope and independent preparation;
-use multiple rounds within one run to continue learning from its existing guide.
+Fresh study creates a new scope and independent preparation. Multiple rounds within
+a run, or an explicit continuation from its completed report, reuse the existing
+guide while retaining a separate record of every run's work and costs.
 
 ### Lab 3: Reuse Knowledge
 

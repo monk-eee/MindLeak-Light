@@ -49,7 +49,7 @@ export async function buildSwarmApplication(workspace) {
 }
 
 export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurrency = 2, maxAttempts = 2, signal, problem = swarmProblem,
-  memoryEnabled = true, onEvent = () => {}, onMemory = () => {}, onToolDetail = () => {}, workspaceFactory = createCodingWorkspace, applicationBuilder = buildSwarmApplication } = {}) {
+  memoryEnabled = true, parent = null, onEvent = () => {}, onMemory = () => {}, onToolDetail = () => {}, workspaceFactory = createCodingWorkspace, applicationBuilder = buildSwarmApplication } = {}) {
   if (typeof memoryEnabled !== "boolean" || memoryEnabled && !driver || !code || swarmRoles.some(role => !(agentsByRole ? agentsByRole[role.id] : agent)?.run)) throw new Error("swarm_requires_memory_agent_and_container");
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 5 || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
     throw new Error("invalid_swarm_budget");
@@ -64,12 +64,15 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
     provider: (agentsByRole?.[role.id] ?? agent)?.configuration?.provider ?? null, state: "queued", attempts: [] }]));
   const sourceOwners = new Map();
   const seenMemories = new Set();
-  const memoryExhibits = [];
+  const inherited = memoryEnabled && parent ? structuredClone(parent.memoryExhibits ?? []) : [];
+  if (memoryEnabled && parent && (parent.kind !== "swarm_build" || parent.status !== "completed" || !inherited.length
+    || new Set(inherited.map(memory => memory.scope)).size !== 1 || typeof inherited[0].scope !== "string")) throw new Error("completed_learning_parent_required");
+  const memoryExhibits = [...inherited];
   const toolExhibits = [];
   const memoryUsage = [];
   const transfers = new Map();
   const fixture = swarmFixture();
-  const scope = `swarm-demo-${runId}`;
+  const scope = inherited[0]?.scope ?? `swarm-demo-${runId}`;
   const emit = record => {
     if (events.length >= 20000) throw new Error("swarm_event_budget");
     const event = { id: events.length + 1, atMs: performance.now() - started, ...record };
@@ -99,11 +102,17 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
   let application = null;
   let failure = null;
   try {
+    for (const memory of inherited) for (const fragment of memory.fragments) {
+      const recovered = (await driver.call("recall_memory", { fragmentId: fragment.fragmentId, scope, includeInactive: true })).data;
+      if (recovered.memoryId !== memory.memoryId || recovered.text !== fragment.text || recovered.context?.scope !== scope) throw new Error("inherited_memory_mismatch");
+      sourceOwners.set(fragment.fragmentId, memory.agent);
+    }
+    if (inherited.length) emit({ type: "experience_continued", parentRunId: parent.runId, inheritedMemories: inherited.length });
     workspace = await workspaceFactory("swarm", code, fixture);
     baselineTests = await workspace.test();
     emit({ type: "tests", agent: "system", phase: "baseline", ...baselineTests });
     if (baselineTests.passed || baselineTests.tests !== fixture.testCount) throw new Error("swarm_requires_failing_fixture");
-    if (memoryEnabled) {
+    if (memoryEnabled && !inherited.length) {
       const brief = scopedMemory(driver, scope, `swarm-${runId}-brief`);
       register(await brief.write("Session Desk is a local session-expiry application; the shared implementation contracts and ownership boundaries are recorded in README.md.",
         { requestId: randomUUID(), context: { sessionId: runId, source: "swarm-demo/project-brief" } }), "brief");
@@ -219,7 +228,7 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
   emit({ type: "run_finished", status });
   return { reportVersion: 1, kind: "swarm_build", title: "Session Desk", runId, createdAt, status, failure,
     agents: Object.values(roles), events, baselineTests, finalTests, application, handoffs: [...transfers.values()], memoryExhibits, toolExhibits,
-    problem, memoryPolicy: "optional-use-v2", memoryAccess: memoryEnabled ? "read-write" : "none", memoryProcessing: { model: memoryEnabled ? driver.configuration?.decompositionModel ?? null : null,
+    problem, scope: memoryEnabled ? scope : null, inheritedMemories: inherited.length, memoryPolicy: "optional-use-v2", memoryAccess: memoryEnabled ? "read-write" : "none", memoryProcessing: { model: memoryEnabled ? driver.configuration?.decompositionModel ?? null : null,
       mode: memoryEnabled ? driver.configuration?.decomposition ?? "sentences" : "off", workload: "memory", modelClass: "slm", calls: memoryUsage.length,
       inputTokens: memoryUsage.every(call => Number.isSafeInteger(call.inputTokens)) ? memoryUsage.reduce((sum, call) => sum + call.inputTokens, 0) : null,
       outputTokens: memoryUsage.every(call => Number.isSafeInteger(call.outputTokens)) ? memoryUsage.reduce((sum, call) => sum + call.outputTokens, 0) : null },
@@ -242,6 +251,7 @@ export async function runSwarmComparison(options = {}) {
   emit({ type: "run_started", runId, title: "Session Desk / Memory vs Daleks", agents: 10, expectedTests: 36, concurrency: (options.concurrency ?? 2) * 2 });
   const outcomes = await Promise.all(["withMemory", "withoutMemory"].map(condition => runSwarmBuild({ ...options,
     driver: condition === "withMemory" ? options.driver : null, memoryEnabled: condition === "withMemory",
+    parent: condition === "withMemory" ? options.parent : null,
     onEvent: event => {
       const type = event.type === "run_started" ? "build_team_started" : event.type === "run_finished" ? "build_team_finished"
         : event.type === "tests" && event.agent === "system" && event.phase === "final" ? "build_team_tests"
@@ -259,7 +269,7 @@ export async function runSwarmComparison(options = {}) {
   const finalTests = { passed: outcomes.every(report => report.finalTests?.passed), passedTests: outcomes.reduce((sum, report) => sum + (report.finalTests?.passedTests ?? 0), 0), expectedTests: 36 };
   emit({ type: "tests", agent: "system", phase: "final", ...finalTests }); emit({ type: "run_finished", status });
   const result = report => ({ ...report.summary, elapsedMs: report.elapsedMs, status: report.status, memoryAccess: report.memoryAccess,
-    finalTests: report.finalTests, fixtureSha256: report.fixtureSha256, memoryProcessing: report.memoryProcessing });
+    finalTests: report.finalTests, fixtureSha256: report.fixtureSha256, memoryProcessing: report.memoryProcessing, inheritedMemories: report.inheritedMemories });
   return { ...withMemory, reportVersion: 2, experiment: 1, title: "Session Desk / Memory vs Daleks", runId, createdAt, status,
     failure: status === "partial" ? "one_or_both_builds_incomplete" : null, agents, events, toolExhibits, memoryExhibits, finalTests,
     controlApplication: withoutMemory.application, elapsedMs: performance.now() - started,

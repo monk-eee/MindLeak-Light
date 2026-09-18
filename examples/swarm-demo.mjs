@@ -10,24 +10,25 @@ import { benchmarkSettings } from "./benchmark-recall.mjs";
 import { containerConfiguration, openMemoryDriver } from "./validation-runtime.mjs";
 import { runSwarmComparison } from "./swarm-runner.mjs";
 import { swarmFixture, swarmRoles, swarmProblem } from "./swarm-fixture.mjs";
-import { renderDemoPage, writeDemoReplay } from "./demo-replay.mjs";
+import { renderDemoPage, writeDemoReplay, runBuildWithAcceptance } from "./demo-replay.mjs";
 import { openCopilotProvider, createCopilotAgent } from "./copilot-agent.mjs";
 import { openMemoryUsageObserver } from "./demo-memory.mjs";
-import { normalizeRecording } from "./demo-view.mjs";
+import { normalizeRecording, labCompletion, studyProgress } from "./demo-view.mjs";
 import { runMemoryLab, memoryLabRoles } from "./memory-lab.mjs";
 import { memoryLabProblem } from "./memory-lab-fixture.mjs";
-import { controlRoles, runMemoryControl, learnFromControlRound, combineControlReport, preparationEvent } from "./memory-control.mjs";
+import { controlRoles, runMemoryControl, learnFromControlRound, combineControlReport, preparationEvent, continueMemoryPreparation } from "./memory-control.mjs";
 import { rediscoveryArms, rediscoveryPlan, rediscoveryProblem, runRediscoveryLab } from "./rediscovery-lab.mjs";
 
 export function selectDemoParameters(profiles, input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)
-    || Object.keys(input).some(key => !["problem", "concurrency", "attempts", "rounds", "agentModels", "memoryModel", "rediscoveryProfile", "querySeed"].includes(key))) throw new Error("invalid_demo_parameters");
-  const parameters = { problem: swarmProblem, concurrency: 2, attempts: 2, rounds: 1, rediscoveryProfile: "smoke", querySeed: 20260917, agentModels: {}, memoryModel: "off", ...profiles?.defaults, ...input };
+    || Object.keys(input).some(key => !["problem", "concurrency", "attempts", "rounds", "agentModels", "memoryModel", "rediscoveryProfile", "querySeed", "continueFrom"].includes(key))) throw new Error("invalid_demo_parameters");
+  const parameters = { problem: swarmProblem, concurrency: 2, attempts: 2, rounds: 1, rediscoveryProfile: "smoke", querySeed: 20260917, continueFrom: null, agentModels: {}, memoryModel: "off", ...profiles?.defaults, ...input };
   if (typeof parameters.problem !== "string" || !parameters.problem.trim() || Buffer.byteLength(parameters.problem) > 4096
     || !Number.isInteger(parameters.concurrency) || parameters.concurrency < 1 || parameters.concurrency > 5
     || !Number.isInteger(parameters.attempts) || parameters.attempts < 1 || parameters.attempts > 3
     || !Number.isInteger(parameters.rounds) || parameters.rounds < 1 || parameters.rounds > 3
     || !["smoke", "pilot"].includes(parameters.rediscoveryProfile) || !Number.isSafeInteger(parameters.querySeed) || parameters.querySeed < 0 || parameters.querySeed > 0xffffffff
+    || parameters.continueFrom !== null && (typeof parameters.continueFrom !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(parameters.continueFrom))
     || !parameters.agentModels || typeof parameters.agentModels !== "object" || Array.isArray(parameters.agentModels)
     || Object.keys(parameters.agentModels).some(id => !swarmRoles.some(role => role.id === id))) throw new Error("invalid_demo_parameters");
   if (profiles) {
@@ -60,9 +61,15 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
     response.write(message);
   };
   const broadcast = (type, data) => { for (const response of clients) send(response, type, data); };
+  const continuationParent = parameters => {
+    if (parameters.continueFrom === null) return null;
+    if (!report || report.runId !== parameters.continueFrom || report.status !== "completed") throw new Error("continuation_parent_mismatch");
+    return structuredClone(report);
+  };
   async function startRun(input = {}) {
     if (active || busy()) throw new Error("demo_already_running");
     const parameters = selectDemoParameters(profiles, input);
+    const parent = continuationParent(parameters);
     const releaseRun = beforeRun();
     const controller = new AbortController();
     const artifactDirectory = join(output, `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`);
@@ -72,20 +79,29 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
     const rediscovery = profiles?.experiment === 3;
     const roles = rediscovery ? rediscoveryArms : [...(memoryLab ? memoryLabRoles : swarmRoles), ...controlRoles];
     report = { reportVersion: 1, kind: rediscovery ? "rediscovery_lab" : memoryLab ? "memory_lab" : "swarm_build", experiment: rediscovery ? 3 : memoryLab ? 2 : 1,
-      title: rediscovery ? "Rediscovery" : memoryLab ? "Memory vs Daleks" : "Session Desk / Memory vs Daleks", expectedTests: rediscovery ? parameters.rediscoveryProfile === "smoke" ? 27 : 495 : memoryLab ? 35 + parameters.rounds * 70 : 36, runId: randomUUID(), createdAt: new Date().toISOString(),
+      title: rediscovery ? "Rediscovery" : memoryLab ? "Memory vs Daleks" : "Session Desk / Memory vs Daleks", expectedTests: rediscovery ? (parameters.rediscoveryProfile === "smoke" ? parent ? 24 : 27 : parent ? 480 : 495) : memoryLab ? (parent ? 0 : 35) + parameters.rounds * 70 : 36, runId: randomUUID(), createdAt: new Date().toISOString(),
       status: "recording", agents: roles.map(({ task, ...role }) => ({ ...role, state: "queued", model: parameters.agentModels[role.pairedWith ?? role.id] ?? model })), events: [], elapsedMs: 0,
       problem: parameters.problem, parameters, memoryExhibits: [], toolExhibits: [],
+      study: parent?.study ?? null,
       memoryProcessing: { model: parameters.memoryModel === "off" ? null : parameters.memoryModel, mode: parameters.memoryModel === "off" ? "sentences" : "openai" },
       agent: { model }, realMcpProcess: true };
     broadcast("snapshot", snapshot());
     run.promise = (async () => {
       let journal;
+      let evidenceJournal;
       let writes = Promise.resolve();
       let recordingError = false;
+      const appendEvidence = (kind, data) => {
+        const entry = `${JSON.stringify({ kind, recordedAt: new Date().toISOString(), data })}\n`;
+        writes = writes.then(() => evidenceJournal.write(entry)).catch(() => { recordingError = true; controller.abort(); });
+      };
       try {
         await mkdir(artifactDirectory, { mode: 0o700 });
         journal = await open(join(artifactDirectory, "events.ndjson"), "wx", 0o600);
-        const completed = await runBuild({ signal: controller.signal, parameters, onPlan: async plan => {
+        evidenceJournal = await open(join(artifactDirectory, "evidence.ndjson"), "wx", 0o600);
+        await writeFile(join(artifactDirectory, "run.json"), JSON.stringify({ captureVersion: 1, captureId: report.runId, createdAt: report.createdAt,
+          experiment: report.experiment, parameters }, null, 2), { flag: "wx", mode: 0o600 });
+        const completed = await runBuild({ signal: controller.signal, parameters, parent, onPlan: async plan => {
           await writeFile(join(artifactDirectory, "frozen-plan.json"), JSON.stringify(plan, null, 2), { flag: "wx", mode: 0o600 });
           report.plan = plan; broadcast("snapshot", snapshot());
         }, onEvent: event => {
@@ -94,12 +110,16 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
           report.elapsedMs = event.atMs;
           writes = writes.then(() => journal.write(`${JSON.stringify(event)}\n`)).catch(() => { recordingError = true; controller.abort(); });
           broadcast("record", event);
-        }, onMemory: memory => { report.memoryExhibits.push(memory); broadcast("memory", memory); },
-        onToolDetail: detail => { report.toolExhibits.push(detail); broadcast("tool-detail", detail); },
-        onKnowledge: knowledge => { report.knowledge = { ...report.knowledge, ...knowledge }; if (knowledge.guide) report.guide = knowledge.guide; broadcast("knowledge", knowledge); } });
+        }, onMemory: memory => { appendEvidence("memory", memory); report.memoryExhibits.push(memory); broadcast("memory", memory); },
+        onToolDetail: detail => { appendEvidence("tool-detail", detail); report.toolExhibits.push(detail); broadcast("tool-detail", detail); },
+        onKnowledge: knowledge => { appendEvidence("knowledge", knowledge); report.knowledge = { ...report.knowledge, ...knowledge }; if (knowledge.guide) report.guide = knowledge.guide; broadcast("knowledge", knowledge); } });
         completed.parameters = parameters;
+        completed.verification = labCompletion(completed);
+        completed.study = studyProgress(completed, parent);
+        report = completed;
         await writes;
         await journal.close(); journal = null;
+        await evidenceJournal.close(); evidenceJournal = null;
         if (recordingError) throw new Error("event_recording_failed");
         for (const [key, projectDirectory] of [["application", "project"], ["controlApplication", "dalek-project"]]) if (completed[key]?.project) {
           const fixture = swarmFixture();
@@ -125,14 +145,16 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
         if (report.guide?.markdown) await writeFile(join(artifactDirectory, "solution-guide.md"), report.guide.markdown, { flag: "wx", mode: 0o600 });
         await writeDemoReplay(report, artifactDirectory, { reserved: true });
         lastRun = { directory: artifactDirectory, status: report.status, runId: report.runId, summary: report.summary };
-      } catch {
+      } catch (error) {
         report = { ...report, status: controller.signal.aborted && !recordingError ? "cancelled" : "partial",
-          failure: recordingError ? "event_recording_failed" : "demo_execution_or_recording_failed" };
+          failure: recordingError ? "event_recording_failed" : error.message === "browser_acceptance_unavailable_run_playwright_install_chromium" ? error.message : "demo_execution_or_recording_failed" };
+        report.study = studyProgress(report, parent);
         lastRun = { directory: artifactDirectory, status: report.status, runId: report.runId };
         try { await writeFile(join(artifactDirectory, "partial-report.json"), JSON.stringify(report, null, 2), { flag: "wx", mode: 0o600 }); } catch {}
       } finally {
         await writes;
         if (journal) await journal.close();
+        if (evidenceJournal) await evidenceJournal.close();
         active = null;
         releaseRun?.();
         broadcast("snapshot", snapshot());
@@ -171,6 +193,7 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
         try { parameters = selectDemoParameters(profiles, command); } catch { json(400, { error: "invalid_demo_parameters" }); return; }
         if (path === "/run") {
           if (active || busy()) { json(409, { error: "demo_already_running" }); return; }
+          try { continuationParent(parameters); } catch { json(409, { error: "continuation_parent_mismatch" }); return; }
           void startRun(parameters); json(202, { started: true });
         } else {
           if (!active) { json(409, { error: "no_active_run" }); return; }
@@ -294,10 +317,16 @@ async function main() {
               maxOutputTokens: Number(values["agent-max-output-tokens"] ?? 4096), reasoningEffort: values["agent-reasoning-effort"] ?? null }));
         }
         const execute = lab === 3 ? runRediscoveryLab : lab === 2 ? runMemoryLab : runSwarmComparison;
-        let report = await execute({ driver, agent: actors.atlas, agentsByRole: actors, code, concurrency: parameters.concurrency,
+        const executionOptions = { driver, agent: actors.atlas, agentsByRole: actors, code, concurrency: parameters.concurrency,
           profile: parameters.rediscoveryProfile, seed: parameters.querySeed,
           maxAttempts: parameters.attempts, problem: parameters.problem, ...options,
-          onEvent: lab === 2 ? event => options.onEvent(preparationEvent(event)) : options.onEvent });
+          onEvent: lab === 2 ? event => options.onEvent(preparationEvent(event)) : options.onEvent };
+        let report = lab === 1 ? await runBuildWithAcceptance(onEvent => execute({ ...executionOptions, onEvent }), { onEvent: options.onEvent, signal: options.signal })
+          : lab === 2 && options.parent ? continueMemoryPreparation(options.parent) : await execute(executionOptions);
+        if (lab === 2 && options.parent) {
+          const event = { id: 1, atMs: 0, type: "run_started", runId: report.runId, parentRunId: options.parent.runId, expectedTests: parameters.rounds * 70 };
+          report.events.push(event); options.onEvent(event); options.onKnowledge(report.knowledge);
+        }
         if (lab === 2 && report.status === "completed" && !options.signal.aborted) {
           const preparation = report; const memoryExhibits = [];
           const control = await runMemoryControl({ driver, preparation, agentsByRole: actors, code, rounds: parameters.rounds, signal: options.signal,

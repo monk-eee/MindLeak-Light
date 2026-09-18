@@ -445,6 +445,27 @@ test("five Dalek controls match the same models cases budgets and simultaneous s
   assert.throws(() => controlPlan({ rounds: 4 }));
 });
 
+test("Lab 2 continuation preserves the accepted guide without replaying preparation", async () => {
+  const { continueMemoryPreparation } = await import("./memory-control.mjs");
+  const parent = { kind: "memory_lab", status: "completed", runId: "prior-run", scope: "memory-lab-prior-run", fixtureVersion: 2,
+    guide: { chainId: "guide", revision: 4 }, knowledge: { principles: [{ chainId: "guide", revision: 4, state: "accepted" }], observations: [], chains: [], operations: [] },
+    agents: [...swarmRoles.map(role => ({ ...role, attempts: [{ passed: true }], state: "passed" })), { id: "dalek-1", control: true }],
+    events: [{ type: "run_finished", atMs: 9 }], elapsedMs: 10, summary: { inputTokens: 100, outputTokens: 10, toolCalls: 8 },
+    memoryProcessing: { calls: 3, inputTokens: 10, outputTokens: 4 }, finalTests: { passed: true, passedTests: 105, expectedTests: 105 } };
+  const before = structuredClone(parent); const preparation = continueMemoryPreparation(parent);
+  assert.notEqual(preparation.runId, parent.runId);
+  assert.equal(preparation.scope, parent.scope);
+  assert.deepEqual(preparation.guide, parent.guide);
+  assert.deepEqual(preparation.knowledge, parent.knowledge);
+  assert.equal(preparation.preparationReused, true);
+  assert.equal(preparation.summary.inputTokens, 0, "no old inference is re-emitted as a new execution");
+  assert.equal(preparation.finalTests.expectedTests, 0);
+  assert.ok(preparation.agents.length === 5 && preparation.agents.every(actor => actor.attempts.length === 0));
+  assert.deepEqual(parent, before);
+  assert.throws(() => continueMemoryPreparation({ ...parent, status: "partial" }));
+  assert.throws(() => continueMemoryPreparation({ ...parent, guide: { chainId: "guide", revision: 5 } }));
+});
+
 test("Lab 2 round parameters stay bounded and Dalek models cannot diverge", () => {
   const profiles = { experiment: 2, agents: [{ id: "gpt-6-astra" }], memory: [{ id: "off" }], defaults: {
     problem: "Investigate the synthetic export upgrade.", concurrency: 1, attempts: 2, rounds: 2, memoryModel: "off",
@@ -906,7 +927,8 @@ test("Lab 1 Daleks build an isolated matched project without any MindLeak capabi
       return { sessionId, status: "completed", answer: { completed: true }, trace: [], responses: [], inputTokens: 100, outputTokens: 20, toolCalls: 4, elapsedMs: 2 };
     } }]));
   const events = [];
-  const comparison = await runSwarmComparison({ driver: memoryDouble(), agentsByRole: actors, code: { engine: "test-double", image: "unit" },
+    const driver = memoryDouble();
+    const comparison = await runSwarmComparison({ driver, agentsByRole: actors, code: { engine: "test-double", image: "unit" },
     workspaceFactory, applicationBuilder: async workspace => ({ html: `<html>${await workspace.read("src/app.mjs")}</html>`, sha256: digest(await workspace.read("src/app.mjs")) }),
     onEvent: event => events.push(event) });
   assert.equal(comparison.status, "completed");
@@ -927,6 +949,15 @@ test("Lab 1 Daleks build an isolated matched project without any MindLeak capabi
   assert.equal(counted.checks, 36);
   assert.equal(counted.inputTokens, 1000);
   assert.ok(Object.entries(counted.agents).filter(([id]) => id.startsWith("dalek-")).every(([, actor]) => actor.inputTokens === 100));
+  const continued = await runSwarmComparison({ driver, parent: comparison, agentsByRole: actors, code: { engine: "test-double", image: "unit" },
+    workspaceFactory, applicationBuilder: async workspace => ({ html: `<html>${await workspace.read("src/app.mjs")}</html>`, sha256: digest(await workspace.read("src/app.mjs")) }) });
+  assert.equal(continued.status, "completed");
+  assert.equal(continued.scope, comparison.scope);
+  assert.equal(continued.inheritedMemories, comparison.memoryExhibits.length);
+  assert.equal(continued.buildComparison.withoutMemory.inheritedMemories, 0);
+  assert.equal(continued.buildComparison.withoutMemory.memoryAccess, "none");
+  assert.equal(workspaces.length, 4);
+  assert.equal(new Set(sessions.map(session => session.sessionId)).size, 20);
 
   const forbiddenDriver = new Proxy({}, { get() { throw new Error("Daleks must never access a memory driver"); } });
   const isolated = await runSwarmBuild({ driver: forbiddenDriver, memoryEnabled: false, agentsByRole: actors,
@@ -970,6 +1001,8 @@ test("CI runs the real lab workflows without external model calls", async () => 
   assert.ok(workflow.includes("Verify isolated memory labs"));
   assert.ok(workflow.includes("MINDLEAK_LAB2_TEST_BINARY: ${{ github.workspace }}/target/release/mindleak-light"));
   assert.ok(workflow.includes("MINDLEAK_VALIDATION_CODE_ENGINE: docker"));
+  assert.ok(workflow.includes('MINDLEAK_LAB_BROWSER: "1"'));
+  assert.ok(workflow.includes("node examples/node_modules/playwright/cli.js install --with-deps chromium"));
   assert.ok(workflow.includes("/mindleak_labs_test?sslmode=disable"));
   assert.ok(workflow.includes("--test-name-pattern='Lab [123]|swarm project'"));
 });
@@ -1181,7 +1214,171 @@ test("Lab 3 runs optional-memory arms with misses frozen rounds and complete acc
     assert.ok(page.includes('id="rediscovery-results"'));
     assert.ok(page.includes('id="rediscovery-cost-curve"'));
     if (process.env.MINDLEAK_REDISCOVERY_TEST_REPLAY_DIR) await writeDemoReplay(report, process.env.MINDLEAK_REDISCOVERY_TEST_REPLAY_DIR);
+    const frozenParent = digest(report);
+    const continued = await runRediscoveryLab({ driver: monitored, agent, code, profile: "smoke", parent: report, onEvent: event => {
+      if (event.type === "rediscovery_round_started") comparisonActive = true;
+      if (event.type === "rediscovery_round_finished") comparisonActive = false;
+    } });
+    assert.equal(continued.status, "completed");
+    assert.notEqual(continued.runId, report.runId);
+    assert.equal(continued.scope, report.scope);
+    assert.equal(continued.preparation.length, 0, "continuation reuses verified experience rather than rerunning preparation");
+    assert.equal(continued.plan.preparationTasks, 0);
+    assert.equal(continued.plan.parentRunId, report.runId);
+    assert.equal(continued.plan.taskExposure, "previously_exposed");
+    assert.equal(continued.knowledge.lessons[0].id, report.knowledge.lessons[0].id);
+    assert.equal(continued.outcomes.length, 8);
+    assert.equal(sessionCount, 22);
+    assert.equal(digest(report), frozenParent, "parent-run records must remain immutable");
   } finally { await driver.close(); }
+});
+
+test("Lab 1 artifact acceptance records real browser checks for each exact build", {
+  skip: !process.env.MINDLEAK_LAB_BROWSER,
+}, async () => {
+  const { verifyBuildArtifacts } = await import("./demo-replay.mjs");
+  const { sessionDeskHtml } = await import("./swarm-fixture.mjs");
+  const script = `
+const root=document.querySelector("#session-app");
+const records=[];let sequence=0;
+const render=()=>{
+ const list=root.querySelector("[data-sessions]");list.replaceChildren();root.querySelector("[data-count]").textContent=String(records.length);
+ for(const record of records){
+  const row=document.createElement("div");row.className="session-card";row.dataset.state=Date.now()>=record.expiresAt?"expired":"active";
+  const label=document.createElement("span");label.className="session-label";label.textContent=record.label;
+  const remove=document.createElement("button");remove.type="button";remove.dataset.remove=record.id;remove.textContent="Remove";
+  remove.onclick=()=>{records.splice(records.indexOf(record),1);render();};row.append(label,remove);list.append(row);
+ }
+};
+root.querySelector("form").onsubmit=event=>{
+ event.preventDefault();const label=root.querySelector("#session-label").value.trim();const ttl=Number(root.querySelector("#session-ttl").value);
+ if(!label||ttl<1||ttl>3600){root.querySelector("[data-error]").textContent="Invalid session";return;}
+ root.querySelector("[data-error]").textContent="";records.push({id:String(++sequence),label,expiresAt:Date.now()+ttl*1000});render();
+};
+root.querySelector("[data-clear-expired]").onclick=()=>{for(let index=records.length-1;index>=0;index-=1)if(Date.now()>=records[index].expiresAt)records.splice(index,1);render();};
+setInterval(render,100);render();
+`;
+  const html = sessionDeskHtml.replace("</body>", `<script src="data:text/javascript;base64,${Buffer.from(script).toString("base64")}"></script></body>`);
+  const artifact = { html, sha256: digest(html) };
+  const report = { kind: "swarm_build", application: artifact, controlApplication: artifact };
+  const reviews = await verifyBuildArtifacts(report, { executablePath: process.env.MINDLEAK_BROWSER_EXECUTABLE });
+  assert.equal(reviews.length, 8);
+  assert.ok(reviews.every(review => review.checks > 0 && review.passedChecks === review.checks),
+    JSON.stringify(reviews.map(({ artifact, area, viewport, failures }) => ({ artifact, area, viewport, failures }))));
+  assert.deepEqual(new Set(reviews.map(review => review.artifact)), new Set(["application", "controlApplication"]));
+  assert.deepEqual(new Set(reviews.map(review => review.viewport.width)), new Set([1440, 390]));
+  assert.ok(reviews.every(review => review.artifactSha256 === artifact.sha256 && review.method.includes("Playwright") && review.checkedAt));
+  await assert.rejects(verifyBuildArtifacts({ ...report, application: { ...artifact, sha256: "not-the-reviewed-artifact" } }), /artifact_identity_mismatch/);
+  const broken = "<html><body>No usable app controls</body></html>";
+  const failed = await verifyBuildArtifacts({ kind: "swarm_build", application: { html: broken, sha256: digest(broken) } }, { executablePath: process.env.MINDLEAK_BROWSER_EXECUTABLE });
+  assert.ok(failed.some(review => review.passedChecks < review.checks));
+  assert.ok(failed.some(review => review.failures.length));
+});
+
+test("Lab 1 preflights browser acceptance and retains failed reviews without false success", async () => {
+  const { runBuildWithAcceptance } = await import("./demo-replay.mjs");
+  let built = false; let closed = 0; const events = [];
+  const browser = { async close() { closed += 1; } };
+  const build = async emit => {
+    built = true;
+    const report = { kind: "swarm_build", status: "completed", agents: [], elapsedMs: 1,
+      application: { html: "<html></html>", sha256: digest("<html></html>") },
+      events: [{ id: 1, type: "run_started", atMs: 0 }, { id: 2, type: "run_finished", status: "completed", atMs: 1 }] };
+    report.events.forEach(emit); return report;
+  };
+  await assert.rejects(runBuildWithAcceptance(build, { openBrowser: async () => { throw new Error("browser unavailable"); } }), /browser unavailable/);
+  assert.equal(built, false, "preflight must fail before model work starts");
+  const report = await runBuildWithAcceptance(build, { openBrowser: async () => browser, onEvent: event => events.push(event),
+    verifyArtifacts: async report => [{ artifact: "application", artifactSha256: report.application.sha256, area: "Browser behaviour",
+      method: "Test verifier", checks: 2, passedChecks: 1, failures: ["Create a session"] }] });
+  assert.equal(report.status, "partial");
+  assert.equal(report.failure, "browser_acceptance_failed");
+  assert.equal(report.qualityReviews[0].failures[0], "Create a session");
+  assert.equal(report.verification.quality.status, "failed");
+  assert.equal(report.events.at(-1).type, "run_finished");
+  assert.equal(report.events.at(-1).status, "partial");
+  assert.equal(events.filter(event => event.type === "run_finished").length, 1);
+  assert.deepEqual(report.events, events);
+  assert.equal(closed, 1);
+  assert.ok(report.qualityCheckMs >= 0 && report.browserPreflightMs >= 0);
+});
+
+test("study progress retains parent outcomes and cumulative costs without copying conversations", async () => {
+  const { studyProgress } = await import("./demo-view.mjs");
+  const run = (id, inputTokens, correct) => ({ runId: id, kind: "rediscovery_lab", status: "completed", createdAt: "2026-09-18T00:00:00Z",
+    elapsedMs: 100, summary: { inputTokens, outputTokens: 10 }, memoryProcessing: { inputTokens: 5, outputTokens: 2 },
+    metrics: { arms: { mindleak: { correct, scheduled: 2 }, fresh: { correct: 1, scheduled: 2 }, notebook: { correct: 1, scheduled: 2 } } },
+    knowledge: { observations: [{ memoryId: "source" }], chains: [{ chainId: "chain" }], principles: [{ chainId: "guide" }] },
+    outcomes: [{ transcript: "private conversation must not enter the history summary" }] });
+  const parent = run("run-one", 100, 1); parent.study = studyProgress(parent);
+  const before = digest(parent); const current = run("run-two", 50, 2);
+  const history = studyProgress(current, parent);
+  assert.equal(history.studyId, "run-one");
+  assert.equal(history.parentRunId, "run-one");
+  assert.equal(history.sequence, 2);
+  assert.equal(history.taskExposure, "previously_exposed");
+  assert.equal(history.runs.length, 2);
+  assert.equal(history.runs[0].arms.mindleak.correct, 1, "an earlier unresolved task remains in the record");
+  assert.equal(history.runs[1].arms.mindleak.correct, 2);
+  assert.equal(history.totals.inputTokens, 150);
+  assert.equal(history.totals.memoryInputTokens, 10);
+  assert.ok(!JSON.stringify(history).includes("private conversation"));
+  assert.equal(digest(parent), before);
+  assert.equal(studyProgress(current).sequence, 1, "fresh mode starts a new study without deleting the old archive");
+});
+
+test("Lab 1 replay activity animates real event signals and respects pause and reduced motion", {
+  skip: !process.env.MINDLEAK_LAB_BROWSER,
+}, async () => {
+  const { openArtifactBrowser } = await import("./demo-replay.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-replay-motion-"));
+  const report = { kind: "swarm_build", runId: randomUUID(), status: "completed", realModel: false, agents: [swarmRoles[0]], elapsedMs: 20000,
+    events: [{ id: 1, atMs: 0, type: "run_started" }, { id: 2, atMs: 100, type: "agent_state", agent: "atlas", state: "running" },
+      { id: 3, atMs: 1000, type: "tool_started", agent: "atlas", tool: "write_memory", toolCallId: "write" },
+      { id: 4, atMs: 4000, type: "memory_saved", agent: "atlas", memoryId: "source", fragments: 1 },
+      { id: 5, atMs: 8000, type: "knowledge_written", agent: "atlas", nodeId: "chain", memoryId: "chain-write", kind: "chain", operation: "propose" },
+      { id: 6, atMs: 15000, type: "tool_finished", agent: "atlas", tool: "write_memory", toolCallId: "write", ok: true },
+      { id: 7, atMs: 20000, type: "run_finished", status: "completed" }],
+    knowledge: { observations: [{ memoryId: "source", fragments: [{ fragmentId: "fragment", text: "Synthetic recorded evidence." }] }],
+      chains: [{ chainId: "chain", revision: 1, state: "candidate", document: { kind: "chain", claim: "Synthetic formation event", evidence: [{ fragmentId: "fragment", role: "supports" }], supportedBy: [] } }], principles: [] } };
+  const server = await createDemoServer({ outputDirectory: directory, initialReport: report, runBuild: async () => { throw new Error("not_requested"); } });
+  const browser = await openArtifactBrowser();
+  try {
+    const page = await browser.newPage();
+    await page.goto(`${server.url}/replay`);
+    await page.locator("#speed").selectOption("1");
+    await page.locator("#replay-activity").click();
+    await page.waitForFunction(() => document.querySelectorAll(".memory-packet").length > 0);
+    assert.equal(await page.locator("#activity-mode").innerText(), "RECORDED REPLAY");
+    const before = await page.locator(".memory-packet").first().evaluate(node => ({ x: node.getCTM().e, y: node.getCTM().f }));
+    await page.waitForFunction(before => { const matrix = document.querySelector(".memory-packet")?.getCTM(); return matrix && Math.abs(matrix.e - before.x) + Math.abs(matrix.f - before.y) > 0.2; }, before);
+    await page.locator("#play").click();
+    assert.equal(await page.locator(".memory-packet").count(), 0);
+    assert.equal(await page.locator("#activity-mode").innerText(), "PAUSED");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.locator("#replay-activity").click();
+    assert.equal(await page.locator(".memory-packet").count(), 0);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width === 1440 ? 1080 : 844 });
+      await page.goto(`${server.url}/replay#learnings`);
+      assert.equal(await page.locator("#replay-activity").isVisible(), true, "the knowledge graph needs an accessible replay action");
+      assert.equal(await page.locator("#knowledge-page #play").isVisible(), true);
+      assert.equal(await page.locator("#knowledge-page #memory-activity").isVisible(), true);
+      await page.locator("#speed").selectOption("1");
+      await page.locator("#scrubber").evaluate(input => { input.value = "400"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await page.locator("#play").click();
+      await page.waitForFunction(() => document.querySelector('[data-node-id="chain"]')?.dataset.active === "true");
+      assert.equal(await page.locator('.knowledge-hero-edge[data-active="true"]').count(), 1);
+      await page.locator("#play").click();
+      assert.equal(await page.locator('.knowledge-hero-node[data-active="true"]').count(), 0);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+      await page.locator("#nav-lab1").click();
+      await page.locator("#experiment-page #play").waitFor({ state: "visible" });
+      assert.equal(await page.locator("#experiment-page #play").isVisible(), true);
+      assert.equal(await page.locator("#experiment-page #memory-activity").isVisible(), true);
+    }
+  } finally { await browser.close(); await server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("lab completion separates a finished run from verified requirements and quality", async () => {
@@ -1219,6 +1416,16 @@ test("lab completion separates a finished run from verified requirements and qua
   const running = labCompletion({ ...report, status: "recording" });
   assert.equal(running.execution.status, "running");
   assert.equal(labCompletion({}).requirements.status, "not_measured");
+  const builds = { kind: "swarm_build", status: "completed", application: { sha256: "memory-html" }, controlApplication: { sha256: "dalek-html" } };
+  const review = (artifact, area, width) => ({ artifact, artifactSha256: builds[artifact].sha256, area, viewport: { width, height: width === 1440 ? 1080 : 844 },
+    method: "Playwright acceptance smoke", checks: 2, passedChecks: 2, checkedAt: "2026-09-18T00:00:00Z" });
+  builds.qualityReviews = ["Browser behaviour", "Responsive layout"].flatMap(area => [1440, 390].map(width => review("application", area, width)));
+  assert.ok(labCompletion(builds).quality.unreviewed.includes("Browser behaviour"), "one team's review cannot cover the other build");
+  builds.qualityReviews.push(...["Browser behaviour", "Responsive layout"].flatMap(area => [1440, 390].map(width => review("controlApplication", area, width))));
+  assert.deepEqual(labCompletion(builds).quality.unreviewed, ["Accessibility", "Security", "Maintainability"]);
+  assert.equal(labCompletion(builds).quality.status, "partial_review");
+  builds.controlApplication.sha256 = "changed-html";
+  assert.ok(labCompletion(builds).quality.unreviewed.includes("Browser behaviour"), "a stale hash cannot approve changed output");
 });
 
 test("Knowledge Capital rewards distinct verified reuse rather than inventory or control activity", async () => {
@@ -1288,6 +1495,34 @@ test("Knowledge Capital rewards distinct verified reuse rather than inventory or
   assert.equal(knowledgeCapital(firstReuse).growthStatus, "first_reuse");
   assert.equal(knowledgeCapital({ kind: "memory_lab", knowledge: report.knowledge, summary: { guideApplications: 900 } }).score, null,
     "legacy quotation-only application counts cannot establish a behavioral index");
+});
+
+test("memory motion reflects real operations and stops when paused finished or cancelled", async () => {
+  const { memoryActivity } = await import("./demo-view.mjs");
+  const recording = { agents: [{ id: "atlas" }, { id: "dalek-1", control: true }, { id: "notebook", connectToMemory: false }], events: [
+    { atMs: 1, type: "tool_started", agent: "atlas", toolCallId: "read", tool: "recall_guide" },
+    { atMs: 2, type: "inference_started", workload: "memory", requestId: "extraction" },
+    { atMs: 3, type: "tool_started", agent: "dalek-1", toolCallId: "control", tool: "recall_guide" },
+    { atMs: 4, type: "experience_access", agent: "notebook", lessonIds: ["notebook-note"], level: "principle" },
+    { atMs: 10, type: "tool_finished", agent: "atlas", toolCallId: "read", tool: "recall_guide", ok: true },
+    { atMs: 11, type: "tool_started", agent: "atlas", toolCallId: "write", tool: "propose_chain" },
+    { atMs: 20, type: "knowledge_written", agent: "atlas", kind: "chain", nodeId: "chain-1", operation: "propose", memoryId: "write-1" },
+    { atMs: 21, type: "tool_finished", agent: "atlas", toolCallId: "write", tool: "propose_chain", ok: true },
+    { atMs: 22, type: "inference_finished", workload: "memory", requestId: "extraction" },
+    { atMs: 40, type: "run_finished", status: "completed" },
+  ] };
+  const reading = memoryActivity(recording, 5);
+  assert.equal(reading.reading, 1);
+  assert.equal(reading.processing, 1);
+  assert.ok(reading.flows.every(flow => flow.agent !== "dalek-1" && flow.agent !== "notebook"));
+  const forming = memoryActivity(recording, 15);
+  assert.equal(forming.forming, 1);
+  assert.equal(forming.reading, 0);
+  assert.ok(memoryActivity(recording, 25).pulses.some(pulse => pulse.nodeId === "chain-1" && pulse.kind === "chain"));
+  assert.equal(memoryActivity(recording, 25, false).active, false);
+  assert.equal(memoryActivity(recording, 41).active, false);
+  assert.equal(memoryActivity({ ...recording, events: [...recording.events.slice(0, 2), { atMs: 6, type: "run_finished", status: "cancelled" }] }, 7).active, false);
+  assert.equal(memoryActivity({ agents: [], events: [] }, 1000).active, false);
 });
 
 test("durable learning graph uses only real lineage and deduplicated recorded growth", async () => {
@@ -1564,6 +1799,70 @@ test("one dashboard serves both labs and knowledge on one port without crossing 
     assert.equal((await (await fetch(`${hub.url}/lab2/state`)).json()).report.experiment, 2);
     assert.equal((await fetch(`${hub.url}/lab2/state`, { headers: { origin: "http://foreign.invalid" } })).status, 403);
   } finally { await hub.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("live continuation requires an explicit matching parent and retains the study lineage", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-continuation-"));
+  const parents = [];
+  const server = await createDemoServer({ outputDirectory: directory, runBuild: async options => {
+    parents.push(options.parent?.runId ?? null);
+    return { kind: "swarm_build", runId: randomUUID(), createdAt: new Date().toISOString(), status: "completed", agents: swarmRoles,
+      events: [], elapsedMs: 1, summary: { inputTokens: 10, outputTokens: 1 } };
+  } });
+  try {
+    const first = await server.startRun();
+    await assert.rejects(server.startRun({ continueFrom: randomUUID() }), /continuation_parent_mismatch/);
+    const second = await server.startRun({ continueFrom: first.runId });
+    assert.deepEqual(parents, [null, first.runId]);
+    const report = JSON.parse(await readFile(join(second.directory, "report.json"), "utf8"));
+    assert.equal(report.study.parentRunId, first.runId);
+    assert.equal(report.study.sequence, 2);
+    assert.equal(report.study.totals.inputTokens, 20);
+    const fresh = await server.startRun();
+    const freshReport = JSON.parse(await readFile(join(fresh.directory, "report.json"), "utf8"));
+    assert.equal(freshReport.study.parentRunId, null);
+    assert.equal(freshReport.study.sequence, 1);
+    assert.equal(parents[2], null);
+  } finally { await server.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("live run archives retain evidence and parameters after failure or cancellation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-run-archive-"));
+  let invocation = 0;
+  const entered = Promise.withResolvers();
+  const server = await createDemoServer({ outputDirectory: directory, runBuild: async options => {
+    invocation += 1;
+    options.onEvent({ id: 1, atMs: 0, type: "run_started", runId: `archived-${invocation}` });
+    options.onMemory({ memoryId: `memory-${invocation}`, agent: "atlas", fragments: [{ fragmentId: "source", text: "Synthetic retained source evidence." }] });
+    options.onToolDetail({ toolCallId: `tool-${invocation}`, agent: "atlas", tool: "read_file", arguments: { path: "src/expiry.mjs" } });
+    options.onKnowledge({ observations: [{ memoryId: `memory-${invocation}`, rawText: "Synthetic retained source evidence." }], chains: [], principles: [] });
+    if (invocation === 3) {
+      entered.resolve();
+      await new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }));
+    }
+    throw new Error("controlled test interruption");
+  } });
+  try {
+    const first = await server.startRun();
+    const original = await readFile(join(first.directory, "partial-report.json"), "utf8");
+    const manifest = JSON.parse(await readFile(join(first.directory, "run.json"), "utf8"));
+    assert.equal(manifest.captureVersion, 1);
+    assert.ok(manifest.parameters.problem);
+    const journal = (await readFile(join(first.directory, "evidence.ndjson"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(journal.map(entry => entry.kind), ["memory", "tool-detail", "knowledge"]);
+    assert.ok(journal.every(entry => Number.isFinite(Date.parse(entry.recordedAt))));
+    assert.equal(journal[0].data.memoryId, "memory-1");
+    assert.ok(!String(await readFile(join(first.directory, "events.ndjson"))).includes("Synthetic retained source evidence"));
+    const second = await server.startRun();
+    assert.notEqual(second.directory, first.directory);
+    assert.equal(await readFile(join(first.directory, "partial-report.json"), "utf8"), original);
+    const pending = server.startRun();
+    await entered.promise;
+    await server.close();
+    const cancelled = await pending;
+    assert.equal(cancelled.status, "cancelled");
+    assert.ok((await readFile(join(cancelled.directory, "evidence.ndjson"), "utf8")).includes("memory-3"));
+  } finally { if (invocation !== 3) await server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("live demo reopens a saved recording without starting agents", async () => {

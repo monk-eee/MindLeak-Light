@@ -78,10 +78,13 @@ const notebookText = lesson => `# ${lesson.title}\n\n## Procedure\n${lesson.proc
 const experienceTool = (name, description, properties, required, invoke) => ({ definition: { type: "function", function: { name, description,
   parameters: { type: "object", additionalProperties: false, properties, required } } }, invoke });
 
-export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent = () => {}, onMemory = () => {}, onKnowledge = () => {} }) {
-  const scope = `rediscovery-${runId}`;
-  const lessons = new Map(); const nodes = new Map(); const observations = []; const operations = []; const durability = [];
-  const plans = new Map(); const requestIds = new Map(); const receipts = new Map();
+export function createRediscoveryStore({ driver, runId = randomUUID(), onEvent = () => {}, onMemory = () => {}, onKnowledge = () => {}, seed = null, existingScope = null }) {
+  if (seed && (typeof existingScope !== "string" || !existingScope.startsWith("rediscovery-"))) throw new Error("continuation_scope_required");
+  const scope = existingScope ?? `rediscovery-${runId}`;
+  const lessons = new Map(structuredClone(seed?.lessons ?? []).map(lesson => [lesson.family, lesson]));
+  const nodes = new Map(structuredClone([...(seed?.chains ?? []), ...(seed?.principles ?? [])]).map(node => [node.chainId, node]));
+  const observations = structuredClone(seed?.observations ?? []); const operations = structuredClone(seed?.operations ?? []); const durability = structuredClone(seed?.durability ?? []);
+  const plans = new Map(); const requestIds = new Map(); const receipts = new Map(operations.map(operation => [operation.memoryId, null]));
   const snapshot = () => structuredClone({ lessons: [...lessons.values()], observations, operations, durability,
     chains: [...nodes.values()].filter(node => node.document.kind === "chain"), principles: [...nodes.values()].filter(node => node.document.kind === "principle") });
   const publish = () => onKnowledge(snapshot());
@@ -311,9 +314,14 @@ export function rediscoveryMetrics({ plan, preparation, outcomes, rounds, memory
 
 export async function runRediscoveryLab({ driver, agent, code, profile = "pilot", repetitions = 2, seed = 20260917, signal,
   onEvent = () => {}, onMemory = () => {}, onKnowledge = () => {}, onToolDetail = () => {}, onPlan = async () => {},
-  workspaceFactory = createCodingWorkspace } = {}) {
+  workspaceFactory = createCodingWorkspace, parent = null } = {}) {
   if (!driver?.capabilities?.knowledge || !driver.capabilities.chains || !agent?.run || !code) throw new Error("rediscovery_requires_knowledge_agent_and_container");
+  if (parent && (parent.kind !== "rediscovery_lab" || parent.status !== "completed" || !parent.runId || !parent.knowledge?.lessons?.length)) throw new Error("completed_learning_parent_required");
   const plan = rediscoveryPlan({ model: agent.configuration.model, profile, repetitions, seed });
+  if (parent) {
+    plan.parentRunId = parent.runId; plan.continuationVersion = 1; plan.taskExposure = "previously_exposed";
+    plan.preparationTasks = 0; plan.preparationReviewSessions = 0;
+  }
   plan.agentBudget = structuredClone(agent.configuration);
   await onPlan(structuredClone(plan));
   const started = performance.now(); const createdAt = new Date().toISOString(); const runId = randomUUID();
@@ -324,7 +332,8 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
     const event = { ...record, id: events.length + 1, atMs: performance.now() - started }; events.push(event); onEvent(structuredClone(event));
   };
   const details = detail => { toolExhibits.push(detail); onToolDetail(detail); };
-  const store = createRediscoveryStore({ driver, runId, onEvent: emit, onMemory: record => { memoryExhibits.push(record); onMemory(record); }, onKnowledge });
+  const store = createRediscoveryStore({ driver, runId, seed: parent?.knowledge, existingScope: parent ? parent.scope ?? `rediscovery-${parent.runId}` : null,
+    onEvent: emit, onMemory: record => { memoryExhibits.push(record); onMemory(record); }, onKnowledge });
   const unsubscribe = driver.observeInference?.(event => { if (event.type === "inference_finished") memoryUsage.push(event); emit(event); });
   const runCase = async ({ fixture, arm, id, round = 0, repetition = 1, diagnostic = false, frozen = { lessons: [] }, preparing = false }) => {
     const caseStarted = performance.now(); const observedSources = new Map(); const reads = []; const writes = []; const probes = [];
@@ -477,11 +486,12 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
   emit({ type: "run_started", runId, experiment: 3, title: "Rediscovery", agents: 4, expectedTests: (plan.preparationTasks + plan.sessions.length) * 3 });
   try {
     const families = profile === "smoke" ? rediscoveryFamilies.slice(0, 1) : rediscoveryFamilies;
-    for (const family of families) {
+    for (const family of parent ? [] : families) {
       if (signal?.aborted) break;
       preparation.push(await runCase({ fixture: rediscoveryFixture(family.id), arm: "mindleak", id: `prepare:${family.id}`, preparing: true }));
     }
-    if (!signal?.aborted) preparationReview = await review({ number: 0, stage: "preparation" });
+    if (!parent && !signal?.aborted) preparationReview = await review({ number: 0, stage: "preparation" });
+    if (parent) onKnowledge(store.snapshot());
     for (let number = 1; number <= plan.followups.length && !signal?.aborted; number += 1) {
       const freezeStarted = performance.now(); const frozen = await store.freeze();
       const round = { number, stage: plan.followups[number - 1], experienceSha256: frozen.fingerprint, lessonVersions: frozen.lessons.map(lesson => ({ id: lesson.id, revision: lesson.revision })),
@@ -526,7 +536,7 @@ export async function runRediscoveryLab({ driver, agent, code, profile = "pilot"
     passedTests: [...preparation, ...outcomes].reduce((total, outcome) => total + (outcome.finalTests?.passedTests ?? 0), 0) };
   emit({ type: "tests", agent: "system", phase: "final", ...finalTests }); emit({ type: "run_finished", status });
   return { reportVersion: 1, kind: "rediscovery_lab", experiment: 3, title: "Rediscovery", problem: rediscoveryProblem, runId, createdAt, status, failure,
-    plan, preparation, preparationReview, outcomes, rounds, metrics, memoryProcessing, events, memoryExhibits, toolExhibits, knowledge: store.snapshot(),
+    plan, scope: store.scope, preparation, preparationReview, outcomes, rounds, metrics, memoryProcessing, events, memoryExhibits, toolExhibits, knowledge: store.snapshot(),
     candidates: Object.fromEntries([...caseEvidence].map(([id, evidence]) => [id, evidence.candidateFiles])),
     elapsedMs: performance.now() - started, finalTests, fixtureSha256: plan.frozenInputsSha256, binarySha256: driver.binarySha256, realMcpProcess: driver.realProcess,
     realModel: agent.configuration.provider !== "test", server: driver.server, agent: agent.configuration, codeContainer: code,
