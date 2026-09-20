@@ -70,6 +70,14 @@ database volume; `down -v` destroys it and is never part of routine test cleanup
 
 ## Checks
 
+The investigation-learning and knowledge-first profiles reuse the existing lab
+test suite. Their focused gate is
+`node --test --test-name-pattern='Lab 3' examples/validation-harness.test.mjs`.
+Set `MINDLEAK_LAB2_TEST_BINARY` to this worktree's normal MCP build and
+`MINDLEAK_VALIDATION_CODE_ENGINE=podman` (or `docker`), plus an owned `_test`
+database URL, to run the real storage/restart and container checks instead of skips.
+The existing CI lab selection includes these tests; no paid model is required.
+
 ```sh
 npm ci --prefix examples --ignore-scripts
 cargo fmt --all -- --check

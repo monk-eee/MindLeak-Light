@@ -11,8 +11,11 @@ MCP tool discovery or permit guessing a server or unavailable tool name.
 
 ```text
 Use MindLeak for knowledge formation: observations -> Chains of Memory -> Principles.
-Before nontrivial work, load the mindleak-memory skill and consider prior experience.
-Memory use is optional; when prior knowledge could help, make one focused recall_memory search with limit 5.
+Before nontrivial work, load the mindleak-memory skill and check prior knowledge before choosing an implementation or assessment.
+When the approved connection supports the configured scope, make one focused recall_memory search with limit 5.
+Supplied source IDs do not replace a search for related prior work. Inspect original sources and current evidence before applying a claim.
+Record apply, adapt or reject, or a genuine miss or unavailable connection; a lookup alone is not reuse.
+Explicit no-memory controls and independent discovery fixtures retain their declared isolation.
 Prefer knowledge search when advertised; inspect conditions, revisions, and review state.
 Use compact view only when advertised. Report unsupported knowledge operations.
 After a miss, allow one focused refinement using the active retrieval mode, then work locally.

@@ -46,6 +46,18 @@ fallback. Use [scoped cached-input recovery](docs/INTEGRATION.md#recover-a-rejec
 not authentication removal, for shared HTTP. Never put credentials, full
 container environments, or memory content into support diagnostics.
 
+## Native Development Lab
+
+The synthetic learning-lab browser app is separate from the MCP server. It binds
+to `127.0.0.1` by default. An operator can explicitly enable trusted-private-LAN
+HTTP with `--listen-host 0.0.0.0 --public-origin http://PRIVATE_LAN_IP:PORT`.
+This lab-only mode has no authentication or TLS: reachable clients are trusted
+to read its evidence and start or stop the configured model experiments. Exact
+Host/Origin and explicit command checks remain, but are not identity controls.
+Public origins and forwarding headers are refused. Do not expose this mode to
+the internet or use sensitive source data. It does not change the remote MCP or
+database requirements below. See [lab access](docs/VALIDATION.md#trusted-lan-browser-access).
+
 ## Deployment
 
 Chain acceptance is an attributed validation claim, not authorization or verified

@@ -56,7 +56,7 @@ test("lab integration prerequisites fail without retaining MCP children", {
 }, async () => {
   const environment = { ...process.env, MINDLEAK_VALIDATION_CODE_ENGINE: "unavailable" };
   delete environment.NODE_TEST_CONTEXT;
-  const result = await captureBenchmark(["--test", "--test-name-pattern=Lab 2 full relay|Lab 3 runs optional-memory",
+  const result = await captureBenchmark(["--test", "--test-name-pattern=Lab 2 full relay|Lab 3 runs knowledge-first",
     fileURLToPath(new URL("../examples/validation-harness.test.mjs", import.meta.url))], {
     timeout: 15000, env: environment,
   });
@@ -630,7 +630,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   assert.match(frontmatter, /^name: mindleak-memory$/m);
   const description = JSON.parse(/^description: (".*")$/m.exec(frontmatter)?.[1] ?? "null");
   assert.ok(typeof description === "string" && description.length <= 1024 && description.includes("agents"));
-  assert.match(frontmatter, /version: "1\.4\.1"/);
+  assert.match(frontmatter, /version: "1\.5\.0"/);
   assert.doesNotMatch(frontmatter, /^(?:allowed-tools|hooks|context|agent|model):/m);
   assert.doesNotMatch(skill, /^!`|^```!/m);
   assert.ok(skill.split("\n").length < 250, "keep the on-demand workflow compact");
@@ -642,7 +642,7 @@ test("companion skill is self-contained, discoverable, and permission-neutral", 
   }
   const recipes = JSON.parse(readFileSync(join(directory, "references/tool-recipes.json"), "utf8"));
   assert.equal(recipes.schemaVersion, 1);
-  assert.equal(recipes.skillVersion, "1.4.1");
+  assert.equal(recipes.skillVersion, "1.5.0");
   for (const term of ["formation", "principle", "requiresReview", "counterEvidenceReviewed", "supportedBy"]) assert.ok(skill.includes(term));
   assert.equal(recipes.minimumServerVersion, "0.4.0");
   assert.match(recipes.learningAvailability, /^Available from 0\.7\.0:.*advertised/);
@@ -702,9 +702,11 @@ test("memory activation closes the capture and reuse loop without requiring note
   for (const phrase of ["observations", "Chains of Memory", "Principles", "Use applicable principles", "Validate before accepting", "Repeated runs alone"]) {
     assert.ok(policy.includes(phrase), `missing task-start knowledge orientation: ${phrase}`);
   }
-  for (const phrase of ["Memory use is optional", "active retrieval mode", "one focused refinement"]) {
+  for (const phrase of ["Before nontrivial work", "make one focused recall_memory search", "active retrieval mode", "one focused refinement"]) {
     assert.ok(policy.includes(phrase), `missing measured recall guidance: ${phrase}`);
   }
+  assert.ok(!policy.includes("Memory use is optional"), "approved prior-knowledge checks must not be optional at task start");
+  assert.ok(!skill.includes("Memory use is optional"));
   assert.ok(policy.includes("explicitly chosen general mode"));
   assert.ok(policy.includes("Recall alone is not confirmation"));
   assert.ok(policy.includes("Respect tool approvals"));

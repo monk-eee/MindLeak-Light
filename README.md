@@ -131,8 +131,11 @@ in agent instructions, not the MCP connection JSON.
 
 ```text
 Use MindLeak for knowledge formation: observations -> Chains of Memory -> Principles.
-Before nontrivial work, load the mindleak-memory skill and consider prior experience.
-Memory use is optional; when prior knowledge could help, make one focused recall_memory search with limit 5.
+Before nontrivial work, load the mindleak-memory skill and check prior knowledge before choosing an implementation or assessment.
+When the approved connection supports the configured scope, make one focused recall_memory search with limit 5.
+Supplied source IDs do not replace a search for related prior work. Inspect original sources and current evidence before applying a claim.
+Record apply, adapt or reject, or a genuine miss or unavailable connection; a lookup alone is not reuse.
+Explicit no-memory controls and independent discovery fixtures retain their declared isolation.
 Prefer knowledge search when advertised; inspect conditions, revisions, and review state.
 Use compact view only when advertised. Report unsupported knowledge operations.
 After a miss, allow one focused refinement using the active retrieval mode, then work locally.
@@ -220,6 +223,11 @@ supports full knowledge search but not these newer controls.
 [Run or replay the labs](docs/VALIDATION.md). Formation and later verified use are
 reported separately. Comparative improvement requires controlled evaluation, not
 more notes or a higher score. See the [recorded results](docs/BENCHMARK-RESULTS.md).
+
+The opt-in [v4 investigation experiment](docs/VALIDATION.md#lab-3-v4-investigation-learning)
+retains checked findings from unfinished tasks, forms principles across two
+investigations, tests predictions on reserved cases, and compares later decisions
+against independently authored notes and fresh agents. Existing labs stay available.
 
 ## Add Models When Ready
 

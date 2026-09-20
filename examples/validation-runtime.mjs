@@ -280,13 +280,19 @@ export async function createCodingWorkspace(kind, configuration, fixture = codin
   return workspace;
 }
 
-export function agentTools(memory, workspace, { recall = true, write = false, handoffKind = null } = {}) {
+export function agentTools(memory, workspace, { recall = true, write = false, handoffKind = null, knowledgeFirst = true, onEvent = () => {} } = {}) {
   const tool = (name, description, properties, required, invoke) => ({
     definition: { type: "function", function: { name, description,
       parameters: { type: "object", properties, required, additionalProperties: false } } }, invoke,
   });
   const tools = [];
   let emptySearches = 0;
+  const startup = memory && recall && workspace && knowledgeFirst ? { searches: [], assessment: null } : null;
+  const delivered = new Set(); const inspected = new Set(); const observedSources = new Map();
+  if (startup) memory.observations.knowledgeWorkflow = startup;
+  const lookupRequired = () => {
+    if (!startup?.searches.length || startup.searches.at(-1).status === "pending") throw new Error("prior_experience_search_required");
+  };
   const deliver = data => {
     if (Buffer.byteLength(JSON.stringify(data)) > 64 * 1024) throw new Error("agent_tool_result_budget");
     memory.recordExposure(data);
@@ -300,9 +306,22 @@ export function agentTools(memory, workspace, { recall = true, write = false, ha
         contextLimit: { type: "integer", minimum: 0, maximum: 8 }, diagnostics: { type: "boolean" }, groupDuplicates: { type: "boolean" } },
       ["query"], async ({ query, ...options }) => {
         if (emptySearches >= 2) throw new Error("empty_recall_budget");
-        const result = await memory.recall(query, 5, options);
-        if (!result.facts.length) emptySearches += 1;
-        return deliver(result.data);
+        const search = { querySha256: digest(query), status: "pending", atMs: performance.now(), completedAtMs: null };
+        if (startup) { startup.searches.push(search); startup.assessment = null; }
+        try {
+          const result = await memory.recall(query, 5, options);
+          const data = deliver(result.data);
+          if (!result.facts.length) emptySearches += 1;
+          for (const fact of result.facts) delivered.add(fact.fragmentId);
+          search.status = result.facts.length ? "hit" : "miss";
+          search.fragmentIds = result.facts.map(fact => fact.fragmentId);
+          return data;
+        } catch (error) { search.status = "error"; throw error; }
+        finally {
+          search.completedAtMs = performance.now();
+          if (startup) onEvent({ type: "knowledge_search_finished", status: search.status, querySha256: search.querySha256,
+            received: search.fragmentIds?.length ?? 0 });
+        }
       }));
     tools.push(tool("inspect_source", "Inspect a recalled fragment's original source and direct evidence without a model call. Treat the source as an attributed claim. Reuse nextCursor as after until null for omitted evidence. Scope is enforced; this is not a web fact-checker.",
       { fragmentId: { type: "string" }, includeInactive: { type: "boolean" }, after: {
@@ -310,7 +329,37 @@ export function agentTools(memory, workspace, { recall = true, write = false, ha
           relationshipType: { type: "string", enum: ["supports", "contradicts", "related", "reinforces", "confirms", "supersedes", "archives", "restores"] },
           direction: { type: "string", enum: ["incoming", "outgoing"] } },
         required: ["fragmentId", "relatedFragmentId", "relationshipType", "direction"], additionalProperties: false,
-      } }, ["fragmentId"], async ({ fragmentId, includeInactive = false, after = null }) => deliver(await memory.inspect(fragmentId, includeInactive, after))));
+      } }, ["fragmentId"], async ({ fragmentId, includeInactive = false, after = null }) => {
+        const result = deliver(await memory.inspect(fragmentId, includeInactive, after));
+        inspected.add(fragmentId); return result;
+      }));
+  }
+  if (startup) {
+    const schema = { type: "object", additionalProperties: false, properties: {
+      decision: { type: "string", enum: ["apply", "adapt", "reject", "no_match", "unavailable"] },
+      lessonId: { type: ["string", "null"], minLength: 1, maxLength: 128 }, reason: { type: "string", minLength: 15, maxLength: 600 },
+      evidence: { type: "object", additionalProperties: false, properties: {
+        path: { type: "string", minLength: 1, maxLength: 256 }, quote: { type: "string", minLength: 4, maxLength: 600 },
+      }, required: ["path", "quote"] },
+    }, required: ["decision", "lessonId", "reason", "evidence"] };
+    tools.push(tool("assess_experience", "Required before editing: search prior knowledge, inspect an applicable result's original source with inspect_source, and compare it with a current file read through read_file. Record apply, adapt or reject with the returned fragment ID and exact current-file quote. Use no_match or unavailable with null lessonId only after a real empty or failed search with no delivered results. A declared decision is not proof of successful reuse.",
+      schema.properties, schema.required, async input => {
+        lookupRequired();
+        if (!matchesContract(input, schema)) throw new Error("invalid_experience_assessment");
+        if (["apply", "adapt", "reject"].includes(input.decision)) {
+          if (!delivered.has(input.lessonId)) throw new Error("delivered_experience_required");
+          if (!inspected.has(input.lessonId)) throw new Error("inspected_source_evidence_required");
+        } else {
+          if (delivered.size || input.lessonId !== null) throw new Error("retrieved_experience_requires_assessment");
+          if (startup.searches.at(-1).status !== (input.decision === "no_match" ? "miss" : "error")) throw new Error("lookup_outcome_mismatch");
+        }
+        const source = observedSources.get(input.evidence.path);
+        if (typeof source !== "string" || !source.includes(input.evidence.quote)) throw new Error("current_source_evidence_required");
+        startup.assessment = { ...structuredClone(input), sourceSha256: digest(source), atMs: performance.now() };
+        onEvent({ type: "experience_assessed", decision: input.decision, lessonId: input.lessonId,
+          evidencePath: input.evidence.path, sourceSha256: digest(source), quoteSha256: digest(input.evidence.quote) });
+        return { recorded: true, decision: input.decision, lessonId: input.lessonId, currentSourceVerified: true };
+      }));
   }
   if (memory && write && handoffKind) {
     const schema = handoffSchema(handoffKind);
@@ -337,10 +386,18 @@ export function agentTools(memory, workspace, { recall = true, write = false, ha
     { text: { type: "string" } }, ["text"], ({ text }) => memory.write(text)));
   if (workspace) tools.push(
     tool("list_files", "List files in this disposable task repository.", {}, [], () => workspace.list()),
-    tool("read_file", "Read a file in this disposable task repository.", { path: { type: "string" } }, ["path"], ({ path }) => workspace.read(path)),
+    tool("read_file", "Read a file in this disposable task repository.", { path: { type: "string" } }, ["path"], async ({ path }) => {
+      const source = await workspace.read(path); observedSources.set(path, source); return source;
+    }),
     tool("search_files", "Search for literal text in this disposable task repository.", { query: { type: "string" } }, ["query"], ({ query }) => workspace.search(query)),
     tool("write_file", "Replace one of the implementation paths listed in the schema. Tests and all other files are immutable. Content is limited to 32768 UTF-8 bytes.",
-      { path: { type: "string", enum: workspace.editablePaths }, content: { type: "string", maxLength: 32768 } }, ["path", "content"], ({ path, content }) => workspace.write(path, content)),
+      { path: { type: "string", enum: workspace.editablePaths }, content: { type: "string", maxLength: 32768 } }, ["path", "content"], async ({ path, content }) => {
+        if (startup) {
+          lookupRequired();
+          if (!startup.assessment || startup.assessment.atMs < startup.searches.at(-1).completedAtMs) throw new Error("experience_assessment_required");
+        }
+        return workspace.write(path, content);
+      }),
     tool("run_tests", "Execute the fixed task tests in a network-disabled, read-only container.", {}, [], () => workspace.test()),
   );
   return tools;

@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { digest, pairedMetrics } from "./validation-scenarios.mjs";
 import { upgradeCases } from "./memory-lab-fixture.mjs";
 import { swarmRoles, controlRoles } from "./swarm-fixture.mjs";
-import { createKnowledgeLedger, investigatorTools, knowledgeBrief, knowledgeToolView, memoryStartPrompt, memoryProtocol } from "./memory-lab.mjs";
+import { createKnowledgeLedger, investigatorTools, knowledgeBrief, knowledgeToolView, memoryStartPrompt, memoryProtocol, runGuideSynthesis } from "./memory-lab.mjs";
 import { publicExecution } from "./validation-agent.mjs";
 
 export { controlRoles } from "./swarm-fixture.mjs";
@@ -23,7 +23,7 @@ export function controlPlan({ pairs = 5, rounds = 1, model = null, agentModels =
       schedule: "common-start-barrier", withMemory: { ...common, agent: role.id, name: role.name, memoryAccess: "read-only-frozen-guide" },
       withoutMemory: { ...common, agent: controlRoles[index].id, name: controlRoles[index].name, memoryAccess: "none" } };
   })).flat();
-  return { version: 3, experiment: "simultaneous-memory-control", model: model ?? "Mixed matched models", rounds, pairs: planned,
+  return { version: 4, experiment: "simultaneous-memory-control", memoryUse: "knowledge_first", model: model ?? "Mixed matched models", rounds, pairs: planned,
     agentExecutions: planned.length * 2, concurrency: 10, caseVariants: planned.length, caseFamilies: 5, freshSessions: true,
     sameSourceAndCorrectnessChecks: true, noCrossArmConversationOrEdits: true, memoryWritesDuringComparison: false,
     preparationCostsIncluded: true, feedbackBetweenRoundsOnly: true, fixtureVersion: 2, fixtureSha256: digest(planned.map(pair => pair.withMemory.fixtureSha256)),
@@ -138,10 +138,14 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
         const arm = pair[condition]; const specification = cases[index];
         const startedAtMs = performance.now() - started;
         const relay = event => emit({ ...event, agent: arm.agent, condition, round: number, experimentPhase: "control" });
+        const reads = []; const sourceIds = new Set(); const receivedGuides = new Map(); const searches = [];
         const session = investigatorTools({ driver, scope: current.scope, actor: arm.agent, specification, code,
           ledger: { observations: [], nodes: new Map() }, condition, index: 0, memoryEnabled: false, emit: relay,
-          onToolDetail: detail => details({ ...detail, round: number }) });
-        const reads = []; const sourceIds = new Set(); const receivedGuides = new Map();
+          onToolDetail: detail => details({ ...detail, round: number }), beforeAssessment() {
+            if (condition !== "withMemory") return;
+            if (!searches.length || searches.at(-1).status === "pending") throw new Error("prior_experience_search_required");
+            if (receivedGuides.size && !sourceIds.size) throw new Error("inspected_source_evidence_required");
+          } });
         let receivedAtMs = null; let execution;
         const memoryTool = (name, description, properties, required, invoke) => ({ definition: { type: "function", function: { name, description,
           parameters: { type: "object", additionalProperties: false, properties, required } } }, invoke: async (args, context = {}) => {
@@ -158,17 +162,21 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
         if (condition === "withMemory") tools.push(
           memoryTool("recall_guide", "Search the frozen collection of accepted MindLeak principles. Use focused topic keywords for the current decision, then read the relevant procedure, applicability and revision. Other focused searches can retrieve different principles from the same collection. Returns no later-round knowledge; no writes are permitted.",
             { query: { type: "string", minLength: 1, maxLength: 256 } }, ["query"], async ({ query }) => {
-              const result = (await driver.call("recall_memory", { knowledge: { operation: "search", query }, scope: current.scope, limit: 2 })).data;
-              const record = result.principles?.find(record => frozenPrinciples.has(record.chain?.chainId));
-              if (!record) return { kind: "knowledge", view: "guide-first", principles: [], chains: [], observations: [], sourceReferences: [] };
-              if (!isDeepStrictEqual(knowledgeToolView(record), frozenPrinciples.get(record.chain.chainId))) throw new Error("control_guide_changed");
-              const brief = knowledgeBrief({ principles: [record] });
-              if (!receivedGuides.has(record.chain.chainId)) {
-                const atMs = performance.now() - startedAtMs - started;
-                receivedGuides.set(record.chain.chainId, { atMs, record }); receivedAtMs ??= atMs;
-                relay({ type: "memory_delivered", from: "memory", kind: "principle", fragments: 1, chainId: record.chain.chainId, revision: record.chain.revision });
-              }
-              return brief;
+              if (!query.trim()) throw new Error("invalid_search_query");
+              const search = { status: "pending", querySha256: digest(query) }; searches.push(search);
+              try {
+                const result = (await driver.call("recall_memory", { knowledge: { operation: "search", query }, scope: current.scope, limit: 2 })).data;
+                const record = result.principles?.find(record => frozenPrinciples.has(record.chain?.chainId));
+                if (!record) { search.status = "miss"; return { kind: "knowledge", view: "guide-first", principles: [], chains: [], observations: [], sourceReferences: [] }; }
+                if (!isDeepStrictEqual(knowledgeToolView(record), frozenPrinciples.get(record.chain.chainId))) throw new Error("control_guide_changed");
+                const brief = knowledgeBrief({ principles: [record] });
+                if (!receivedGuides.has(record.chain.chainId)) {
+                  const atMs = performance.now() - startedAtMs - started;
+                  receivedGuides.set(record.chain.chainId, { atMs, record }); receivedAtMs ??= atMs;
+                  relay({ type: "memory_delivered", from: "memory", kind: "principle", fragments: 1, chainId: record.chain.chainId, revision: record.chain.revision });
+                }
+                search.status = "hit"; return brief;
+              } catch (error) { search.status = "error"; throw error; }
             }),
           memoryTool("inspect_knowledge", "Inspect a supporting chain or the principle from this frozen guide, preserving its reasoning and conditions. Use only an ID returned by recall_guide.",
             { chainId: { type: "string" } }, ["chainId"], async ({ chainId }) => {
@@ -191,6 +199,7 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
         const task = [memoryStartPrompt({ mode: condition === "withMemory" ? "control" : "withoutMemory" }),
           `You are ${arm.name}. Investigate the report-export upgrade case ${specification.id}. This is evaluation round ${number}.`,
           `Both arms use identical frozen sources, patch options, limits and correctness checks. Required evidence: ${specification.evidencePaths.join(", ")}. Inspect additional code as needed, run probe_upgrade for your chosen path/version/adapterMode, then verify_assessment. Correct failures from evidence. Preserve unresolved failures if policy blocks the upgrade.`,
+          condition === "withMemory" ? "Before probing or verifying, search recall_guide and inspect an original observation cited by the selected principle. Compare it with current evidence; a real miss or lookup error permits local assessment but is not knowledge use. Do not copy a past case answer." : "No prior-knowledge search is required or available in this control.",
           "Finish with the requested JSON after the tool checks. finding may be null when nothing reusable was learned; otherwise give one concise verified finding and an exact quotation from a source file you read. If a stored principle materially guided this decision, include one exact step from its conclusion as guideStep; otherwise use null. No memory is written during this comparison.",
         ].join("\n");
         try { execution = await agentsByRole[pair.withMemory.agent].run(task, tools, "", finalSchema, { signal, onEvent: relay }); }
@@ -210,11 +219,13 @@ export async function runMemoryControl({ driver, preparation, agentsByRole, code
           verification: session.verification, answer: session.answer, passed, success: passed, knowledgeReceived: receivedAtMs !== null,
           guideRetrievedBeforeAssessment: receivedBefore, guideApplied: Boolean(applied), finding: findingVerified ? finding : null,
           receivedPrinciples: [...receivedGuides.values()].map(({ atMs, record }) => ({ chainId: record.chain.chainId, revision: record.chain.revision, atMs })),
+          knowledgeWorkflow: condition === "withMemory" ? { lookedUp: searches.length > 0, searches } : null,
           guideUsed: usedGuide ? { chainId: usedGuide.chain.chainId, revision: usedGuide.chain.revision } : null,
           memoryReads: reads, sourceObservationsRead: sourceIds.size, upgradeProbes: session.workspace.probes, fixtureSha256: specification.fixtureSha256 };
         relay({ type: "agent_state", state: passed ? "passed" : signal?.aborted ? "cancelled" : "failed", caseId: specification.id });
         relay({ type: "control_arm_finished", passed, caseId: specification.id, inputTokens: outcome.inputTokens, outputTokens: outcome.outputTokens,
-          elapsedMs: outcome.elapsedMs, guideRetrievedBeforeAssessment: receivedBefore, guideApplied: Boolean(applied) });
+          elapsedMs: outcome.elapsedMs, guideRetrievedBeforeAssessment: receivedBefore, guideApplied: Boolean(applied),
+          sourceEvidenceVerified: Boolean(findingVerified), sourceObservationsRead: sourceIds.size, guideUsed: outcome.guideUsed });
         return { pairId: pair.id, condition, outcome };
       }));
       emit({ type: "control_round_started", round: number, readySessions: jobs.length, expectedSessions: 10 });
@@ -302,17 +313,20 @@ export async function learnFromControlRound({ driver, preparation, round, agent,
         const task = [memoryStartPrompt({ stage }),
           `You are Orion, reviewing completed evaluation round ${round.number}. All ten comparison sessions are finished. The review case is ${specification.id}.`,
           stage === "evidence" ? "Read round/verified-cases.json and inspect_guide_sources. Only verified memory-side cases are present; never use control answers. Inspect the original case source files when needed. Retain a useful new condition, failed approach, application or exception with record_observation and exact source quotes. Connect the useful observations in ONE chain whose claim names branch-kit and this review case, then explicitly accept_knowledge. These repeated families are not independent confirmations."
-            : "Recover accepted chains and existing principles with inspect_guide_sources. Form distinct supported decision rules from these verified cases: use null IDs for genuinely new principles and actual catalogue IDs/current revisions for refinement. Choose the 2..8 chains relevant to each rule, preserving conditions and counterexamples. Do not force all cases into one principle or create paraphrases. Explicitly accept every candidate, or use skip_learning when the catalogue already covers the evidence.",
+            : "Review the attached one-time dossier, including current documents and original evidence. Then make a synthesis decision immediately: explicitly accept a reviewed pending candidate, propose/revise a genuinely supported rule, or use skip_learning with an evidence-based reason that existing principles cover this round. Choose 2..8 relevant chains and preserve exceptions. Accept a candidate before another proposal; do not request unavailable read/checkpoint tools or create paraphrases. A completed review need not produce a write.",
           stage === "evidence" ? "A measured application can add evidence, but no new learning is also valid: after inspecting the round file and stored guide, use skip_learning with a reason instead of inventing a note. Recall and repeated sessions alone are not confirmation or reinforcement. Do not propose a guide in this evidence phase." : "Do not repeat the investigation or create extra source observations in the guide phase.",
-          attempt > 1 ? "This is an explicit retry. Recover the current checkpoint and reuse acknowledged observation/chain IDs. Finish pending acceptance instead of creating duplicates." : "",
-          'Finish with JSON {"completed":true} only after the required tools succeed; otherwise {"completed":false}. Use memory_checkpoint before finishing unless skip_learning completed the phase.',
+          attempt > 1 ? "This is an explicit retry. Reuse acknowledged IDs and finish pending acceptance instead of creating duplicates. The guide dossier already includes current pending candidates." : "",
+          'Finish with JSON {"completed":true} only after the required tools succeed; otherwise {"completed":false}.',
+          stage === "evidence" ? "Use memory_checkpoint before finishing unless skip_learning completed the phase." : "The runner checks completion after your decision; no checkpoint tool is exposed.",
         ].filter(Boolean).join("\n");
-        const execution = await agent.run(task, tools, "", { type: "object", additionalProperties: false, properties: { completed: { type: "boolean" } }, required: ["completed"] },
-          { signal, onEvent: event => onEvent({ ...event, agent: "orion", phaseScope: `round-${stage}`, reviewer: actor, attempt }) });
+        const relay = event => onEvent({ ...event, agent: "orion", phaseScope: `round-${stage}`, reviewer: actor, attempt });
+        const execution = stage === "guide" ? await runGuideSynthesis({ author, agent, task, signal, onEvent: relay })
+          : await agent.run(task, tools, "", { type: "object", additionalProperties: false, properties: { completed: { type: "boolean" } }, required: ["completed"] }, { signal, onEvent: relay });
         const accepted = stage === "evidence" ? [...ledger.nodes.values()].some(node => node.actor === actor && node.document.kind === "chain" && node.state === "accepted")
           : author.checkpoint().ready;
         completed = execution.status === "completed" && (Boolean(skipped) || accepted);
-        executions.push({ ...publicExecution(execution), stage, attempt, passed: completed });
+        executions.push({ ...publicExecution(execution), stage, attempt, passed: completed,
+          ...(stage === "guide" ? { synthesisReviewMs: execution.synthesisReviewMs, agentElapsedMs: execution.agentElapsedMs } : {}) });
         if (completed) break;
       }
       if (!completed && !signal?.aborted) { failure = "round_learning_not_verified"; break; }

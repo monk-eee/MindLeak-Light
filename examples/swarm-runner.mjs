@@ -11,9 +11,15 @@ const require = createRequire(import.meta.url);
 
 export function ownedBuildWorkspace(workspace, role) {
   let lastTests = null;
+  const sourceReads = new Map();
   return {
-    ...workspace, editablePaths: [...role.editable],
+    ...workspace, editablePaths: [...role.editable], sourceReads,
     get lastTests() { return lastTests; },
+    async read(path) {
+      const source = await workspace.read(path);
+      if (typeof source === "string") sourceReads.set(path, digest(source));
+      return source;
+    },
     async write(path, content) {
       if (!role.editable.includes(path)) throw new Error("fixture_edit_not_allowed");
       lastTests = null;
@@ -63,6 +69,7 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
     model: (agentsByRole?.[role.id] ?? agent)?.configuration?.model ?? null,
     provider: (agentsByRole?.[role.id] ?? agent)?.configuration?.provider ?? null, state: "queued", attempts: [] }]));
   const sourceOwners = new Map();
+  const currentHandoffs = new Map();
   const seenMemories = new Set();
   const inherited = memoryEnabled && parent ? structuredClone(parent.memoryExhibits ?? []) : [];
   if (memoryEnabled && parent && (parent.kind !== "swarm_build" || parent.status !== "completed" || !inherited.length
@@ -79,12 +86,12 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
     events.push(event);
     onEvent(structuredClone(event));
   };
-  const register = (receipt, owner) => {
+  const register = (receipt, owner, handoff = null) => {
     for (const fragment of receipt.fragments) sourceOwners.set(fragment.fragmentId, owner);
     const replayed = seenMemories.has(receipt.memoryId);
     seenMemories.add(receipt.memoryId);
     if (!replayed) {
-      const exhibit = { memoryId: receipt.memoryId, agent: owner, scope, fragments: receipt.fragments.map(({ fragmentId, text }) => ({ fragmentId, text })) };
+      const exhibit = { memoryId: receipt.memoryId, agent: owner, scope, fragments: receipt.fragments.map(({ fragmentId, text }) => ({ fragmentId, text })), ...(handoff ? { handoff } : {}) };
       memoryExhibits.push(exhibit);
       onMemory(structuredClone(exhibit));
     }
@@ -95,6 +102,8 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
     emit(event);
   }) : null;
   emit({ type: "run_started", runId, title: "Session Desk", agents: swarmRoles.length, concurrency, expectedTests: fixture.testCount,
+    memoryPolicy: memoryEnabled ? "knowledge-first-handoff-v5" : "no-memory-control", requiredPublications: memoryEnabled ? swarmRoles.length : 0,
+    requiredDependencyHandoffs: memoryEnabled ? swarmRoles.reduce((total, role) => total + role.dependencies.length, 0) : 0,
     models: Object.fromEntries(Object.entries(roles).map(([id, role]) => [id, role.model])) });
   let workspace;
   let baselineTests;
@@ -125,30 +134,62 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
       const memorySessionId = randomUUID();
       const requests = new Map();
       const received = new Set();
+      const receivedDependencies = () => role.dependencies.filter(id => currentHandoffs.get(id)?.fragmentIds.some(fragmentId => received.has(fragmentId) && memory?.observations.inspections.has(fragmentId)));
+      const checkedDependencySources = async () => {
+        const checked = [];
+        for (const id of role.dependencies) {
+          const sources = currentHandoffs.get(id)?.sourceFiles;
+          if (!sources?.length) continue;
+          let current = true;
+          for (const { path, sha256 } of sources) if (owned.sourceReads.get(path) !== sha256 || digest(await workspace.read(path)) !== sha256) {
+            current = false; break;
+          }
+          if (current) checked.push(id);
+        }
+        return checked;
+      };
       const recorded = memoryEnabled ? { ...memory, async write(text) {
-        if (!owned.lastTests?.passed) throw new Error("component_tests_required");
+        const verification = owned.lastTests;
+        if (!verification?.passed || verification.tests !== fixture.testGroups[role.group] || verification.passedTests !== fixture.testGroups[role.group]) throw new Error("component_tests_required");
+        if ((await checkedDependencySources()).length !== role.dependencies.length) throw new Error("dependency_source_files_required");
         if (seenMemories.size >= 100) throw new Error("memory_exhibit_budget");
         if (typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > 3072) throw new Error("invalid_handoff_brief");
-        const key = digest(text);
+        if (!text.includes("Session Desk") || !role.editable.every(path => text.includes(path))) throw new Error("handoff_module_required");
+        const key = digest({ text, sourceSha256: verification.sourceSha256 ?? null });
         if (!requests.has(key)) requests.set(key, randomUUID());
+        const sourceFiles = await Promise.all(role.editable.map(async path => ({ path, sha256: digest(await workspace.read(path)) })));
         const receipt = await memory.write(text, { requestId: requests.get(key),
-          context: { sessionId: memorySessionId, source: `swarm-demo/${role.id}/tests:${owned.lastTests.sourceSha256 ?? "test-double"}` } });
-        register(receipt, role.id);
+          context: { sessionId: memorySessionId, source: `swarm-demo/${role.id}/tests:${verification.sourceSha256 ?? "test-double"}` } });
+        const handoff = { memoryId: receipt.memoryId, fragmentIds: receipt.fragments.map(fragment => fragment.fragmentId), modulePaths: [...role.editable], sourceFiles,
+          verification: { group: role.group, passedTests: verification.passedTests, expectedTests: fixture.testGroups[role.group], sourceSha256: verification.sourceSha256 ?? null } };
+        currentHandoffs.set(role.id, handoff); state.handoff = structuredClone(handoff);
+        register(receipt, role.id, handoff);
         return receipt;
       } } : null;
       state.state = "running";
       emit({ type: "agent_state", agent: role.id, state: "running" });
       for (let attempt = 1; attempt <= maxAttempts && !signal?.aborted; attempt += 1) {
         try {
+          owned.sourceReads.clear();
           emit({ type: "attempt_started", agent: role.id, attempt });
-          const tools = agentTools(recorded, owned, { recall: memoryEnabled, write: memoryEnabled }).map(tool => ({ ...tool, async invoke(args, invocation = {}) {
+          const tools = agentTools(recorded, owned, { recall: memoryEnabled, write: memoryEnabled,
+            onEvent: event => emit({ ...event, agent: role.id, attempt }) }).map(tool => ({ ...tool, async invoke(args, invocation = {}) {
             const shownArguments = Object.fromEntries(Object.entries(args).filter(([key]) => ["path", "query", "fragmentId", "includeInactive", "matchMode", "contextLimit", "diagnostics", "groupDuplicates"].includes(key)));
             if (toolExhibits.length < 2000) {
               const detail = { toolCallId: invocation.toolCallId ?? randomUUID(), agent: role.id, tool: tool.definition.function.name,
                 arguments: shownArguments, atMs: performance.now() - started };
               toolExhibits.push(detail); onToolDetail(structuredClone(detail));
             }
+            if (memoryEnabled && tool.definition.function.name === "write_file" && receivedDependencies().length !== role.dependencies.length) throw new Error("dependency_handoffs_required");
+            if (memoryEnabled && tool.definition.function.name === "write_file" && (await checkedDependencySources()).length !== role.dependencies.length) throw new Error("dependency_source_files_required");
+            if (memoryEnabled && tool.definition.function.name === "assess_experience" && ["apply", "adapt"].includes(args.decision)) {
+              const handoff = currentHandoffs.get(sourceOwners.get(args.lessonId));
+              const evidencePaths = handoff?.fragmentIds.includes(args.lessonId) ? handoff.modulePaths
+                : role.dependencies.flatMap(id => currentHandoffs.get(id)?.modulePaths ?? []);
+              if (evidencePaths.length && !evidencePaths.includes(args.evidence?.path)) throw new Error("dependency_source_evidence_required");
+            }
             const result = await tool.invoke(args);
+            if (memoryEnabled && tool.definition.function.name === "write_file") { currentHandoffs.delete(role.id); state.handoff = null; }
             if (["recall_memory", "inspect_source"].includes(tool.definition.function.name)) {
               const counts = new Map();
               for (const identifier of memory.observations.exposed) {
@@ -168,24 +209,43 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
           const memoryTool = tools.find(tool => tool.definition.function.name === "write_memory");
           if (memoryTool) {
             memoryTool.definition.function.parameters.properties.text = { type: "string", minLength: 1, maxLength: 3072 };
-            memoryTool.definition.function.description += " Run your component tests first. Start each finding with Session Desk and name the module. Only your own component tests justify your verification claim.";
+            memoryTool.definition.function.description += ` Required component handoff after run_tests passes: name Session Desk and all owned module paths (${role.editable.join(", ")}), explain the interface/conditions and what your tests exercised. Do not copy whole source files or claim another component passed. The successful memoryId receipt completes publication; another edit invalidates the handoff and needs fresh verification.`;
           }
           const memoryRequirement = !memoryEnabled ? "This is the Dalek control team. No MindLeak tools, past conversations or memory findings are available. The README collaboration section's memory instructions do not apply to this arm. Use only the current files in your team's isolated project; do not attempt memory access or publication."
             : role.dependencies.length
-            ? `MindLeak is available for earlier dependency findings (${role.dependencies.join(", ")}). You may recall a relevant finding when useful; inspect it against the current files. Memory use is optional. Search short keywords in the advertised mode and use at most one focused refinement after a miss.`
-            : "You have no earlier component dependency. Investigate independently. Memory publication is optional and only useful new verified findings should be retained.";
-          const task = `You are ${state.name}, responsible for ${role.title} in a five-agent build of Session Desk. ${role.task}\nRequested problem: ${problem}\nRead README.md and tests/specification.mjs for the shared interfaces and checks. You own only ${role.editable.join(", ")}. Other agents in your team own the other files. The requested problem may refine appearance, not remove the fixed interfaces, tests, ownership restrictions, or safety boundaries. ${memoryRequirement} Use the tools to implement the code and run_tests to verify your component.${memoryEnabled ? " You may then use write_memory for a concise reusable finding. The README collaboration guidance describes available memory mechanisms, not a requirement to retrieve or publish." : ""} Code correctness alone decides success; no lookup, handoff or note is required.\n${attempt > 1 ? `The previous attempt did not meet the completion checks. Current failed checks: ${(state.attempts.at(-1)?.verification?.failedTests ?? []).join(", ") || "verify your component against the immutable tests"}. Continue from the current files; earlier failure is retained in the report.\n` : ""}Finish with JSON containing completed (boolean).`;
+            ? `Before editing, read the current verified findings from every dependency (${role.dependencies.join(", ")}) through inspect_source using the supplied fragment IDs. Those IDs are pointers, not delivered knowledge. Use read_file on every listed dependency modulePath and compare its actual code with the original handoff; the read hash must match the published source. For apply/adapt, quote relevant dependency code in assess_experience, not your own pending stub. Reading shared code or a search excerpt alone does not complete this source handoff. recall_memory is also available; use short subject terms and at most one focused refinement after a miss. If search misses, inspect the exact source pointers. Missing or failed delivery or unchecked dependency files block edits; report it rather than invent a handoff.`
+            : `You have no earlier component dependency. Investigate independently.${inherited.length ? " Earlier run findings are available; inspect applicable experience against the new task rather than assume it is current." : ""}`;
+          const dependencySources = memoryEnabled ? role.dependencies.map(id => ({ agent: id, memoryId: currentHandoffs.get(id)?.memoryId,
+            fragmentId: currentHandoffs.get(id)?.fragmentIds[0], modulePaths: currentHandoffs.get(id)?.modulePaths })) : [];
+          const startup = memoryEnabled ? "START with recall_memory using the short task subject Session Desk to check prior art and earlier lessons. Source pointers are not a substitute for searching. Inspect a returned result's original source, read the current relevant file, then assess_experience with its fragment ID, apply/adapt/reject, a reason and an exact current-file quote before editing. Assess a real empty search as no_match or a failed search as unavailable, with null lessonId; a generic or irrelevant hit can be rejected after inspection. Do not treat extracted claims as verified facts. Continue locally after an assessed miss; current dependency handoffs remain required. " : "";
+          const task = `You are ${state.name}, responsible for ${role.title} in a five-agent build of Session Desk. ${role.task}\nRequested problem: ${problem}\n${startup}Read README.md and tests/specification.mjs for the shared interfaces and checks. You own only ${role.editable.join(", ")}. Other agents in your team own the other files. The requested problem may refine appearance, not remove the fixed interfaces, tests, ownership restrictions, or safety boundaries. ${memoryRequirement}\nDependency handoff sources: ${JSON.stringify(dependencySources)}\nUse the tools to implement the code and run_tests to verify your component.${memoryEnabled ? " After passing tests, use write_memory to publish a concise component handoff naming Session Desk, every owned module path, the verified interface/conditions and the checks exercised. Wait for its successful receipt before finishing. Dependents start only after that handoff is stored. Do not manufacture new claims or repeated notes; one current verified handoff is enough. Component correctness and collaboration completion are measured separately." : " Code correctness decides control-team success; no memory lookup, handoff or note is required."}\n${attempt > 1 ? `The previous attempt did not meet all completion checks. Failed code checks: ${(state.attempts.at(-1)?.verification?.failedTests ?? []).join(", ") || "none recorded"}.${memoryEnabled ? " Verify current code and ensure all dependency sources were received and your post-test handoff has a successful receipt." : " Recheck your component against the immutable tests."} Continue from the current files; earlier failure is retained in the report.\n` : ""}Finish with JSON containing completed (boolean).`;
           const execution = await actor.run(task, tools, "", answerSchemaFor("rediscovery_demo"), {
             signal, onEvent: event => emit({ ...event, agent: role.id, attempt }),
           });
           const verification = await owned.test();
           const publishedMemories = new Set(memory?.observations.writes.map(receipt => receipt.memoryId) ?? []).size;
-          const memoryChecked = memory?.observations.calls.some(call => call.tool === "recall_memory") ?? false;
-          const dependencyMemoryReceived = [...memory?.observations.exposed ?? []].some(id => role.dependencies.includes(sourceOwners.get(id)));
-          const memoryRequired = false;
-          const passed = execution.status === "completed" && verification.passed;
-          state.attempts.push({ ...publicExecution(execution), verification, publishedMemories, memoryChecked, memoryRequired, dependencyMemoryReceived, passed });
+          const memoryChecked = memory?.observations.calls.some(call => ["recall_memory", "inspect_source"].includes(call.tool)) ?? false;
+          const deliveredDependencies = receivedDependencies();
+          const checkedDependencies = memoryEnabled ? await checkedDependencySources() : [];
+          const dependencyMemoryReceived = memoryEnabled && role.dependencies.length > 0 && deliveredDependencies.length === role.dependencies.length;
+          const memoryRequired = memoryEnabled;
+          const codePassed = execution.status === "completed" && verification.passed;
+          const knowledgeWorkflow = memoryEnabled ? structuredClone(memory.observations.knowledgeWorkflow) : null;
+          const priorKnowledgeChecked = Boolean(knowledgeWorkflow?.searches.some(search => search.status !== "pending"));
+          const priorKnowledgeAssessed = Boolean(knowledgeWorkflow?.assessment);
+          const collaboration = memoryEnabled ? { required: true, requiredDependencies: [...role.dependencies], receivedDependencies: deliveredDependencies,
+            checkedDependencies,
+            published: currentHandoffs.has(role.id), memoryId: currentHandoffs.get(role.id)?.memoryId ?? null,
+            priorKnowledgeChecked, priorKnowledgeAssessed,
+            completed: priorKnowledgeAssessed && currentHandoffs.has(role.id) && deliveredDependencies.length === role.dependencies.length
+              && checkedDependencies.length === role.dependencies.length } : null;
+          const passed = codePassed && (!memoryEnabled || collaboration.completed);
+          state.collaboration = collaboration;
+          state.attempts.push({ ...publicExecution(execution), verification, publishedMemories, memoryChecked, memoryRequired, dependencyMemoryReceived, codePassed, collaboration, knowledgeWorkflow, passed });
           emit({ type: "tests", agent: role.id, attempt, phase: "verification", ...verification });
+          if (collaboration) emit({ type: "collaboration_checked", agent: role.id, attempt, codePassed, published: collaboration.published,
+            memoryId: collaboration.memoryId, receivedDependencies: deliveredDependencies, checkedDependencies, requiredDependencies: role.dependencies,
+            priorKnowledgeChecked, priorKnowledgeAssessed, completed: collaboration.completed });
           if (passed) { state.state = "passed"; break; }
         } catch {
           state.attempts.push({ status: "error", reason: "agent_stage_failed", passed: false });
@@ -225,14 +285,25 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
   const tokenTotal = field => executions.length && executions.every(execution => Number.isFinite(execution[field]))
     ? executions.reduce((total, execution) => total + execution[field], 0) : null;
   const status = signal?.aborted ? "cancelled" : !failure && application ? "completed" : "partial";
+  const collaboration = memoryEnabled ? { policy: "knowledge-first-handoff-v5", requiredPublications: swarmRoles.length,
+    publishedComponents: currentHandoffs.size,
+    priorKnowledgeChecked: Object.values(roles).filter(role => role.collaboration?.priorKnowledgeChecked).length,
+    priorKnowledgeAssessed: Object.values(roles).filter(role => role.collaboration?.priorKnowledgeAssessed).length,
+    requiredDependencyHandoffs: swarmRoles.reduce((total, role) => total + role.dependencies.length, 0),
+    receivedDependencyHandoffs: Object.values(roles).reduce((total, role) => total + (role.collaboration?.receivedDependencies.length ?? 0), 0),
+    checkedDependencySources: Object.values(roles).reduce((total, role) => total + (role.collaboration?.checkedDependencies.length ?? 0), 0),
+    completed: Object.values(roles).every(role => role.state === "passed" && role.collaboration?.completed),
+    interpretation: "Verified component publications and actual current-source delivery; not independent evidence that memory caused better code or lower cost." } : null;
   emit({ type: "run_finished", status });
+  const codePassedComponents = Object.values(roles).filter(role => role.attempts.at(-1)?.codePassed).length;
   return { reportVersion: 1, kind: "swarm_build", title: "Session Desk", runId, createdAt, status, failure,
+    codeComplete: finalTests?.passed === true && codePassedComponents === swarmRoles.length,
     agents: Object.values(roles), events, baselineTests, finalTests, application, handoffs: [...transfers.values()], memoryExhibits, toolExhibits,
-    problem, scope: memoryEnabled ? scope : null, inheritedMemories: inherited.length, memoryPolicy: "optional-use-v2", memoryAccess: memoryEnabled ? "read-write" : "none", memoryProcessing: { model: memoryEnabled ? driver.configuration?.decompositionModel ?? null : null,
+    problem, scope: memoryEnabled ? scope : null, inheritedMemories: inherited.length, memoryPolicy: memoryEnabled ? "knowledge-first-handoff-v5" : "no-memory-control", collaboration, memoryAccess: memoryEnabled ? "read-write" : "none", memoryProcessing: { model: memoryEnabled ? driver.configuration?.decompositionModel ?? null : null,
       mode: memoryEnabled ? driver.configuration?.decomposition ?? "sentences" : "off", workload: "memory", modelClass: "slm", calls: memoryUsage.length,
       inputTokens: memoryUsage.every(call => Number.isSafeInteger(call.inputTokens)) ? memoryUsage.reduce((sum, call) => sum + call.inputTokens, 0) : null,
       outputTokens: memoryUsage.every(call => Number.isSafeInteger(call.outputTokens)) ? memoryUsage.reduce((sum, call) => sum + call.outputTokens, 0) : null },
-    summary: { agents: swarmRoles.length, agentsPassed: Object.values(roles).filter(role => role.state === "passed").length,
+    summary: { agents: swarmRoles.length, agentsPassed: Object.values(roles).filter(role => role.state === "passed").length, codePassedComponents,
       inputTokens: tokenTotal("inputTokens"), outputTokens: tokenTotal("outputTokens"),
       toolCalls: executions.reduce((total, execution) => total + (execution.toolCalls ?? 0), 0), memoriesStored: seenMemories.size,
       crossAgentHandoffs: [...transfers.values()].filter(transfer => transfer.from !== "brief" && transfer.from !== transfer.to).length },
@@ -245,7 +316,7 @@ export async function runSwarmBuild({ driver, agent, agentsByRole, code, concurr
 
 export async function runSwarmComparison(options = {}) {
   const started = performance.now(); const runId = randomUUID(); const createdAt = new Date().toISOString();
-  const events = []; const toolExhibits = []; const memoryExhibits = [];
+  const events = []; const toolExhibits = [];
   const mapAgent = (id, condition) => condition === "withoutMemory" ? controlRoles.find(role => role.pairedWith === id)?.id ?? id : id;
   const emit = record => { const event = { ...record, id: events.length + 1, atMs: performance.now() - started }; events.push(event); options.onEvent?.(structuredClone(event)); };
   emit({ type: "run_started", runId, title: "Session Desk / Memory vs Daleks", agents: 10, expectedTests: 36, concurrency: (options.concurrency ?? 2) * 2 });
@@ -258,7 +329,7 @@ export async function runSwarmComparison(options = {}) {
           : condition === "withoutMemory" && event.type === "application_ready" ? "control_application_ready" : event.type;
       emit({ ...event, type, condition, agent: mapAgent(event.agent, condition), from: mapAgent(event.from, condition) });
     },
-    onMemory: memory => { memoryExhibits.push(memory); options.onMemory?.(memory); },
+    onMemory: memory => options.onMemory?.(memory),
     onToolDetail: detail => { const item = { ...detail, condition, agent: mapAgent(detail.agent, condition) }; toolExhibits.push(item); options.onToolDetail?.(item); },
   })));
   const [withMemory, withoutMemory] = outcomes;
@@ -268,15 +339,15 @@ export async function runSwarmComparison(options = {}) {
   const status = outcomes.some(report => report.status === "cancelled") ? "cancelled" : outcomes.every(report => report.status === "completed") ? "completed" : "partial";
   const finalTests = { passed: outcomes.every(report => report.finalTests?.passed), passedTests: outcomes.reduce((sum, report) => sum + (report.finalTests?.passedTests ?? 0), 0), expectedTests: 36 };
   emit({ type: "tests", agent: "system", phase: "final", ...finalTests }); emit({ type: "run_finished", status });
-  const result = report => ({ ...report.summary, elapsedMs: report.elapsedMs, status: report.status, memoryAccess: report.memoryAccess,
-    finalTests: report.finalTests, fixtureSha256: report.fixtureSha256, memoryProcessing: report.memoryProcessing, inheritedMemories: report.inheritedMemories });
+  const result = report => ({ ...report.summary, elapsedMs: report.elapsedMs, status: report.status, memoryAccess: report.memoryAccess, memoryPolicy: report.memoryPolicy, collaboration: report.collaboration,
+    finalTests: report.finalTests, codeComplete: report.codeComplete, fixtureSha256: report.fixtureSha256, memoryProcessing: report.memoryProcessing, inheritedMemories: report.inheritedMemories });
   return { ...withMemory, reportVersion: 2, experiment: 1, title: "Session Desk / Memory vs Daleks", runId, createdAt, status,
-    failure: status === "partial" ? "one_or_both_builds_incomplete" : null, agents, events, toolExhibits, memoryExhibits, finalTests,
+    failure: status === "partial" ? "one_or_both_builds_incomplete" : null, agents, events, toolExhibits, memoryExhibits: withMemory.memoryExhibits, finalTests,
     controlApplication: withoutMemory.application, elapsedMs: performance.now() - started,
     summary: { ...withMemory.summary, agents: 10, agentsPassed: agents.filter(actor => actor.state === "passed").length,
       inputTokens: total("inputTokens"), outputTokens: total("outputTokens"), toolCalls: total("toolCalls") },
     buildComparison: { withMemory: result(withMemory), withoutMemory: result(withoutMemory), concurrentTeams: true,
       identicalFixture: withMemory.fixtureSha256 === withoutMemory.fixtureSha256, matchingModels: swarmRoles.every((role, index) => withMemory.agents[index].model === withoutMemory.agents[index].model),
       concurrencyPerTeam: options.concurrency ?? 2, maxAttemptsPerAgent: options.maxAttempts ?? 2 },
-    interpretation: "Two five-agent teams build isolated copies of the same Session Desk fixture with matched roles, models, dependencies, budgets and eighteen identical tests each. Only the memory team has optional MindLeak tools. Neither lookup nor publication is required for correctness. Both teams can read their own team's evolving files. Reported costs include memory writes and failed attempts; shared provider contention limits causal speedup claims." };
+    interpretation: "Two five-agent teams build isolated copies of the same Session Desk fixture with matched roles, models, dependencies, budgets and eighteen identical tests each. The memory team must publish verified component handoffs and receive current dependency sources through MCP before edits; controls have no memory access. Code correctness and collaboration completion are separate. Both teams can read their own team's evolving files. This explicitly guided sharing workflow is not an optional-adoption experiment or proof of memory-only benefit. Costs include handoffs and failed attempts; shared provider contention limits causal speedup claims." };
 }

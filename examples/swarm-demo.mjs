@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { isIP } from "node:net";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
@@ -18,6 +19,28 @@ import { runMemoryLab, memoryLabRoles } from "./memory-lab.mjs";
 import { memoryLabProblem } from "./memory-lab-fixture.mjs";
 import { controlRoles, runMemoryControl, learnFromControlRound, combineControlReport, preparationEvent, continueMemoryPreparation } from "./memory-control.mjs";
 import { rediscoveryArms, rediscoveryPlan, rediscoveryProblem, runRediscoveryLab } from "./rediscovery-lab.mjs";
+import { investigationPlan, runInvestigationLab } from "./investigation-lab.mjs";
+
+function validateLabListener(listenHost, publicOrigin) {
+  if (listenHost === "127.0.0.1" && publicOrigin === null) return;
+  try {
+    const address = new URL(publicOrigin);
+    const [first, second] = address.hostname.split(".").map(Number);
+    const privateAddress = isIP(address.hostname) === 4 && (first === 10 || first === 172 && second >= 16 && second <= 31 || first === 192 && second === 168);
+    if (listenHost === "0.0.0.0" && privateAddress && address.protocol === "http:" && !address.username && !address.password
+      && (publicOrigin === address.origin || publicOrigin === `${address.origin}/`)) return;
+  } catch {}
+  throw new Error("invalid_lab_listener_requires_explicit_private_lan_origin");
+}
+
+function allowedLabRequest(request, localOrigin, publicOrigin) {
+  if (Object.keys(request.headers).some(name => name === "forwarded" || name === "via" || name.startsWith("x-forwarded-"))) return false;
+  const local = new URL(localOrigin);
+  const origins = new Set([local.origin, `http://localhost${local.port ? `:${local.port}` : ""}`]);
+  if (publicOrigin) origins.add(new URL(publicOrigin).origin);
+  const requestedOrigin = `http://${request.headers.host}`;
+  return origins.has(requestedOrigin) && (request.headers.origin === undefined || request.headers.origin === requestedOrigin);
+}
 
 export function selectDemoParameters(profiles, input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)
@@ -27,10 +50,11 @@ export function selectDemoParameters(profiles, input = {}) {
     || !Number.isInteger(parameters.concurrency) || parameters.concurrency < 1 || parameters.concurrency > 5
     || !Number.isInteger(parameters.attempts) || parameters.attempts < 1 || parameters.attempts > 3
     || !Number.isInteger(parameters.rounds) || parameters.rounds < 1 || parameters.rounds > 3
-    || !["smoke", "learning", "pilot"].includes(parameters.rediscoveryProfile) || !Number.isSafeInteger(parameters.querySeed) || parameters.querySeed < 0 || parameters.querySeed > 0xffffffff
+  || !["smoke", "learning", "pilot", "adoption", "mechanism"].includes(parameters.rediscoveryProfile) || !Number.isSafeInteger(parameters.querySeed) || parameters.querySeed < 0 || parameters.querySeed > 0xffffffff
     || parameters.continueFrom !== null && (typeof parameters.continueFrom !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(parameters.continueFrom))
     || !parameters.agentModels || typeof parameters.agentModels !== "object" || Array.isArray(parameters.agentModels)
     || Object.keys(parameters.agentModels).some(id => !swarmRoles.some(role => role.id === id))) throw new Error("invalid_demo_parameters");
+  if (parameters.rediscoveryProfile === "mechanism" && parameters.continueFrom !== null) throw new Error("fresh_investigation_required");
   if (profiles) {
     if (profiles.experiment === 2 && parameters.concurrency !== 1) throw new Error("memory_lab_requires_sequential_stages");
     if (profiles.experiment === 3 && (parameters.concurrency !== 1 || parameters.attempts !== 1)) throw new Error("rediscovery_requires_serial_schedule");
@@ -41,8 +65,10 @@ export function selectDemoParameters(profiles, input = {}) {
 }
 
 export async function createDemoServer({ runBuild, outputDirectory, port = 0, model = "Not configured", profiles = null, initialReport = null,
-  basePath = "", origin = null, mount = null, navigation = null, beforeRun = () => null, busy = () => false } = {}) {
+  basePath = "", origin = null, mount = null, navigation = null, beforeRun = () => null, busy = () => false,
+  listenHost = "127.0.0.1", publicOrigin = null } = {}) {
   if (typeof runBuild !== "function" || !outputDirectory || !Number.isInteger(port) || port < 0 || port > 65535) throw new Error("invalid_demo_server_configuration");
+  validateLabListener(listenHost, publicOrigin);
   if (initialReport) {
     normalizeRecording(initialReport);
     if (!["completed", "partial", "cancelled"].includes(initialReport.status) || Buffer.byteLength(JSON.stringify(initialReport)) > 16 * 1024 * 1024) throw new Error("invalid_saved_demo_recording");
@@ -77,11 +103,13 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
     active = run;
     const memoryLab = profiles?.experiment === 2;
     const rediscovery = profiles?.experiment === 3;
-    const planned = rediscovery ? rediscoveryPlan({ profile: parameters.rediscoveryProfile, seed: parameters.querySeed }) : null;
-    const newFamilies = planned ? new Set(planned.sessions.map(session => session.family).filter(family => !parent?.knowledge?.lessons?.some(lesson => lesson.family === family))).size : 0;
+    const planned = rediscovery ? parameters.rediscoveryProfile === "mechanism" ? investigationPlan({ seed: parameters.querySeed })
+      : rediscoveryPlan({ profile: parameters.rediscoveryProfile, seed: parameters.querySeed }) : null;
+    const newFamilies = planned?.profile === "mechanism" ? planned.discovery.length
+      : planned ? new Set(planned.sessions.map(session => session.family).filter(family => !parent?.knowledge?.lessons?.some(lesson => lesson.family === family))).size : 0;
     const roles = rediscovery ? rediscoveryArms : [...(memoryLab ? memoryLabRoles : swarmRoles), ...controlRoles];
     report = { reportVersion: 1, kind: rediscovery ? "rediscovery_lab" : memoryLab ? "memory_lab" : "swarm_build", experiment: rediscovery ? 3 : memoryLab ? 2 : 1,
-      title: rediscovery ? "Rediscovery" : memoryLab ? "Memory vs Daleks" : "Session Desk / Memory vs Daleks", expectedTests: rediscovery ? (newFamilies + planned.sessions.length) * 3 : memoryLab ? (parent ? 0 : 35) + parameters.rounds * 70 : 36, runId: randomUUID(), createdAt: new Date().toISOString(),
+  title: rediscovery ? parameters.rediscoveryProfile === "mechanism" ? "Investigation Learning" : "Rediscovery" : memoryLab ? "Memory vs Daleks" : "Session Desk / Memory vs Daleks", expectedTests: rediscovery ? (newFamilies + planned.sessions.length) * 3 : memoryLab ? (parent ? 0 : 35) + parameters.rounds * 70 : 36, runId: randomUUID(), createdAt: new Date().toISOString(),
       status: "recording", agents: roles.map(({ task, ...role }) => ({ ...role, state: "queued", model: parameters.agentModels[role.pairedWith ?? role.id] ?? model })), events: [], elapsedMs: 0,
       problem: parameters.problem, parameters, memoryExhibits: [], toolExhibits: [],
       knowledgeBaseline: Object.fromEntries([["observations", "memoryId"], ["chains", "chainId"], ["principles", "chainId"]].map(([kind, key]) => [kind,
@@ -171,8 +199,7 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
   }
   const handleRequest = async (request, response) => {
     const json = (status, data) => { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); response.end(JSON.stringify(data)); };
-    const address = new URL(url);
-    if (request.headers.host !== address.host || request.headers.origin && request.headers.origin !== address.origin) { json(403, { error: "local_origin_required" }); return; }
+    if (!allowedLabRequest(request, url, publicOrigin)) { json(403, { error: "local_origin_required" }); return; }
     const path = new URL(request.url, url).pathname.slice(basePath.length) || "/";
     try {
       if (request.method === "GET" && ["/", "/replay", "/learnings"].includes(path)) {
@@ -215,24 +242,25 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
     server.requestTimeout = 15000;
     await new Promise((resolveListen, reject) => {
       server.once("error", reject);
-      server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolveListen(); });
+      server.listen(port, listenHost, () => { server.removeListener("error", reject); resolveListen(); });
     });
     url = `http://127.0.0.1:${server.address().port}`;
   }
-  return { url, startRun, snapshot, get lastRun() { return lastRun; }, async close() {
+  return { url, publicOrigin, startRun, snapshot, get lastRun() { return lastRun; }, async close() {
     if (active) { active.controller.abort(); await active.promise; }
     for (const response of clients) response.end(); clients.clear();
     if (server) { server.closeIdleConnections(); await new Promise(resolveClose => server.close(resolveClose)); }
   } };
 }
 
-export async function createLabHub({ labs, port = 54584 } = {}) {
+export async function createLabHub({ labs, port = 54584, listenHost = "127.0.0.1", publicOrigin = null } = {}) {
   if (!Array.isArray(labs) || !labs.length || labs.some(lab => ![1, 2, 3].includes(lab.id))
     || new Set(labs.map(lab => lab.id)).size !== labs.length || !Number.isInteger(port) || port < 0 || port > 65535) throw new Error("invalid_lab_hub");
+  validateLabListener(listenHost, publicOrigin);
   const handlers = new Map(); const applications = new Map();
   let url; let activeLab = null;
   const server = createServer((request, response) => {
-    if (request.headers.host !== new URL(url).host || request.headers.origin && request.headers.origin !== url) { response.writeHead(403); response.end(); return; }
+    if (!allowedLabRequest(request, url, publicOrigin)) { response.writeHead(403); response.end(); return; }
     const path = new URL(request.url, url).pathname;
     if (path === "/" || path === "/learnings") {
       response.writeHead(302, { location: path === "/learnings" ? "/lab2/learnings" : `/lab${applications.has(2) ? 2 : labs[0].id}/` }); response.end(); return;
@@ -243,24 +271,24 @@ export async function createLabHub({ labs, port = 54584 } = {}) {
     void handle(request, response);
   });
   server.requestTimeout = 15000;
-  await new Promise((resolveListen, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolveListen(); }); });
+  await new Promise((resolveListen, reject) => { server.once("error", reject); server.listen(port, listenHost, () => { server.removeListener("error", reject); resolveListen(); }); });
   url = `http://127.0.0.1:${server.address().port}`;
-  const navigation = Object.fromEntries(labs.map(lab => [`lab${lab.id}`, `${url}/lab${lab.id}/`]));
+  const navigation = Object.fromEntries(labs.map(lab => [`lab${lab.id}`, `/lab${lab.id}/`]));
   const close = async () => {
     for (const application of applications.values()) await application.close();
     server.closeIdleConnections(); await new Promise(resolveClose => server.close(resolveClose));
   };
   try {
-    for (const lab of labs) applications.set(lab.id, await createDemoServer({ ...lab, basePath: `/lab${lab.id}`, origin: url, navigation,
+    for (const lab of labs) applications.set(lab.id, await createDemoServer({ ...lab, basePath: `/lab${lab.id}`, origin: url, navigation, listenHost, publicOrigin,
       profiles: lab.profiles ? { ...lab.profiles, navigation } : null, mount: handle => handlers.set(`/lab${lab.id}`, handle), busy: () => activeLab !== null,
       beforeRun: () => { if (activeLab !== null) throw new Error("demo_already_running"); activeLab = lab.id; return () => { activeLab = null; }; } }));
   } catch (error) { await close(); throw error; }
-  return { url, labs: applications, close };
+  return { url, publicOrigin, labs: applications, close };
 }
 
 async function main() {
   const { values } = parseArgs({ options: { help: { type: "boolean" }, binary: { type: "string" }, "output-dir": { type: "string" },
-    port: { type: "string" }, run: { type: "boolean" }, once: { type: "boolean" }, concurrency: { type: "string" }, attempts: { type: "string" },
+    port: { type: "string" }, "listen-host": { type: "string" }, "public-origin": { type: "string" }, run: { type: "boolean" }, once: { type: "boolean" }, concurrency: { type: "string" }, attempts: { type: "string" },
     "code-engine": { type: "string" }, "code-image": { type: "string" }, "agent-max-steps": { type: "string" },
     "agent-timeout-ms": { type: "string" }, "agent-reasoning-effort": { type: "string" }, "agent-max-output-tokens": { type: "string" },
     "input-usd-per-million": { type: "string" }, "output-usd-per-million": { type: "string" },
@@ -268,8 +296,16 @@ async function main() {
     lab: { type: "string" }, rounds: { type: "string" }, "lab-one-recording": { type: "string" }, "lab-two-recording": { type: "string" }, "lab-three-recording": { type: "string" },
     "rediscovery-profile": { type: "string" }, "query-seed": { type: "string" }, plan: { type: "boolean" },
     "lab-one-url": { type: "string" }, "lab-two-url": { type: "string" } } });
-  if (values.help) { console.log("Set MINDLEAK_TEST_DATABASE_URL and use your Copilot login. Run node examples/swarm-demo.mjs --binary PATH --code-engine podman --port 54584 --output-dir target/swarm-labs. One dashboard serves /lab1, /lab2, /lab3 and /learnings. Labs 1 and 2 include five matched Dalek controls with no MindLeak access. Lab 3 compares fresh, notebook and MindLeak arms with a separate direct-lesson diagnostic; --rediscovery-profile smoke|learning|pilot defaults to learning (five families, 30 main + 10 diagnostic), smoke covers one family (6 main + 2 diagnostic), and pilot schedules 120 main + 40 diagnostic sessions. --plan prints the frozen Lab 3 plan without inference or database access. --rounds 1..3 controls Lab 2. --lab 1|2|3 selects a standalone lab; --run starts Lab 2 in the shared dashboard. Use --lab-one-recording, --lab-two-recording and --lab-three-recording to reopen saved reports. Lab 1/2 models default to three GPT-6 Astra and two Claude Opus 5 with matched Daleks; all Lab 3 arms use one selected model. Memory extraction defaults to local glm-4.7-flash:latest. Only 127.0.0.1 is bound; learning outcomes lead the page and recorded costs remain available."); return; }
-  if (values.plan) { console.log(JSON.stringify(rediscoveryPlan({ profile: values["rediscovery-profile"] ?? "pilot", seed: Number(values["query-seed"] ?? 20260917), model: values["agent-model"] ?? "gpt-6-astra" }), null, 2)); return; }
+  if (values.help) { console.log("Set MINDLEAK_TEST_DATABASE_URL and use your Copilot login. Run node examples/swarm-demo.mjs --binary PATH --code-engine podman --port 54584 --output-dir target/swarm-labs. One dashboard serves /lab1, /lab2, /lab3 and /learnings. Labs 1 and 2 include five matched Dalek controls with no MindLeak access. Lab 3 compares fresh, notebook and MindLeak arms with a separate direct-lesson diagnostic; --rediscovery-profile smoke|learning|pilot|adoption|mechanism defaults to learning (five families, 30 main + 10 diagnostic), smoke covers one family (6 main + 2 diagnostic), and pilot schedules 120 main + 40 diagnostic sessions. These main profiles use v5 knowledge-first: notebook and MindLeak agents search and assess applicability before editing, then apply, adapt or reject prior knowledge and verify the fix. The adoption profile retains the v3 optional-lookup diagnostic on the Learning schedule; old recordings keep their original scoring. The v4 mechanism profile adds two discovery cases, reserved validation, 12 main + 4 diagnostic sessions and post-comparison review; it requires a fresh run. --plan prints the selected frozen Lab 3 plan without inference or database access. --rounds 1..3 controls Lab 2. --lab 1|2|3 selects a standalone lab; --run starts Lab 2 in the shared dashboard. Use --lab-one-recording, --lab-two-recording and --lab-three-recording to reopen saved reports. Lab 1/2 models default to three GPT-6 Astra and two Claude Opus 5 with matched Daleks; all Lab 3 arms use one selected model. Memory extraction defaults to local glm-4.7-flash:latest; --memory-model off uses model-free storage. Listening defaults to 127.0.0.1. Explicit trusted-LAN HTTP: --listen-host 0.0.0.0 --public-origin http://PRIVATE_LAN_IP:PORT (no authentication or TLS; exact LAN and localhost Host/Origin guards remain). Learning outcomes lead the page and recorded costs remain available."); return; }
+  if (values.plan) {
+    const plan = values["rediscovery-profile"] === "mechanism"
+      ? investigationPlan({ seed: Number(values["query-seed"] ?? 20260918), model: values["agent-model"] ?? "gpt-6-astra" })
+      : rediscoveryPlan({ profile: values["rediscovery-profile"] ?? "pilot", seed: Number(values["query-seed"] ?? 20260917), model: values["agent-model"] ?? "gpt-6-astra" });
+    console.log(JSON.stringify(plan, null, 2)); return;
+  }
+  const listenHost = values["listen-host"] ?? "127.0.0.1";
+  const publicOrigin = values["public-origin"] ?? null;
+  validateLabListener(listenHost, publicOrigin);
   benchmarkSettings(process.env, {});
   const selectedLab = values.lab ?? "all";
   if (!["all", "1", "2", "3"].includes(selectedLab)) throw new Error("invalid_lab");
@@ -290,7 +326,7 @@ async function main() {
     navigation: { lab1: values["lab-one-url"] ?? "/lab1/", lab2: values["lab-two-url"] ?? "/lab2/" },
     memory: [{ id: memoryModel, name: memoryModel, provider: "local", modelClass: "slm" }, { id: "off", name: "Model-free", provider: "none" }],
     defaults: { problem: lab === 3 ? rediscoveryProblem : lab === 2 ? memoryLabProblem : swarmProblem, concurrency: Number(values.concurrency ?? (lab >= 2 ? 1 : 2)), attempts: lab === 3 ? 1 : Number(values.attempts ?? 2), rounds: Number(values.rounds ?? (lab === 2 ? 2 : 1)), memoryModel,
-      rediscoveryProfile: values["rediscovery-profile"] ?? "learning", querySeed: Number(values["query-seed"] ?? 20260917),
+  rediscoveryProfile: values["rediscovery-profile"] === "mechanism" && lab !== 3 ? "learning" : values["rediscovery-profile"] ?? "learning", querySeed: Number(values["query-seed"] ?? (values["rediscovery-profile"] === "mechanism" ? 20260918 : 20260917)),
       agentModels: Object.fromEntries(swarmRoles.map((role, index) => [role.id, values["agent-model"] ?? (provider ? index < 3 ? "gpt-6-astra" : "claude-opus-5" : available[0].id)])) } };
   selectDemoParameters(profiles);
   let initialReport = null;
@@ -322,7 +358,7 @@ async function main() {
               maxSteps: Number(values["agent-max-steps"] ?? 20), timeoutMs: Number(values["agent-timeout-ms"] ?? 120000),
               maxOutputTokens: Number(values["agent-max-output-tokens"] ?? 4096), reasoningEffort: values["agent-reasoning-effort"] ?? null }));
         }
-        const execute = lab === 3 ? runRediscoveryLab : lab === 2 ? runMemoryLab : runSwarmComparison;
+        const execute = lab === 3 ? parameters.rediscoveryProfile === "mechanism" ? runInvestigationLab : runRediscoveryLab : lab === 2 ? runMemoryLab : runSwarmComparison;
         const executionOptions = { driver, agent: actors.atlas, agentsByRole: actors, code, concurrency: parameters.concurrency,
           profile: parameters.rediscoveryProfile, seed: parameters.querySeed,
           maxAttempts: parameters.attempts, problem: parameters.problem, ...options,
@@ -349,9 +385,10 @@ async function main() {
       } finally { if (driver) await driver.close(); if (observer) await observer.close(); }
     } });
   }
-  const server = selectedLab === "all" ? await createLabHub({ labs, port: Number(values.port ?? 54584) })
-    : await createDemoServer({ ...labs[0], port: Number(values.port ?? 54584) });
+  const server = selectedLab === "all" ? await createLabHub({ labs, port: Number(values.port ?? 54584), listenHost, publicOrigin })
+    : await createDemoServer({ ...labs[0], port: Number(values.port ?? 54584), listenHost, publicOrigin });
   console.log(`MindLeak Learning Labs: ${server.url}`);
+  if (publicOrigin) console.log(`MindLeak trusted-LAN lab: ${publicOrigin}`);
   let closing = false;
   const close = async () => { if (closing) return; closing = true; try { await server.close(); } finally { if (provider) await provider.close(); } };
   process.once("SIGINT", () => { void close(); }); process.once("SIGTERM", () => { void close(); });
