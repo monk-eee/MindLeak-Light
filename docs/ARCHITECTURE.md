@@ -38,6 +38,12 @@ Application-level policy chooses this workflow; ordinary wire defaults do not
 change. Formation integrity, demonstrated later use, and measured comparative
 improvement have separate [verification criteria](VALIDATION.md#learning-acceptance).
 
+The opt-in [v4 lab protocol](VALIDATION.md#lab-3-v4-investigation-learning) evaluates
+those boundaries without changing them: executed observations may outlive an
+unfinished task; chains belong to discovery cases; principles have separately
+recorded predictions and reserved validation; evaluation is frozen before later
+challenge/revision. This orchestration lives only in the example lab runner.
+
 ![System overview: one MCP executable, optional model providers, and three PostgreSQL tables](../assets/architecture-overview.svg)
 
 ## Local and Shared Access

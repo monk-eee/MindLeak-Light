@@ -34,6 +34,33 @@ export function studyProgress(report, parent = null) {
     interpretation: "Continuation uses fresh sessions and source workspaces with retained experience. Repeated tasks are exposed; improvement is not guaranteed or independent held-out evidence. Costs and unsuccessful outcomes remain in the run history." };
 }
 
+export function buildCollaboration(report = {}) {
+  if (report.kind !== "swarm_build" || report.memoryAccess === "none") return null;
+  const actors = (report.agents ?? []).filter(actor => !actor.control);
+  const events = (report.events ?? []).filter(event => event.condition !== "withoutMemory");
+  const started = events.find(event => ["run_started", "build_team_started"].includes(event.type) && event.memoryPolicy);
+  const policy = report.memoryPolicy ?? started?.memoryPolicy ?? null;
+  const checks = [...new Map(events.filter(event => event.type === "collaboration_checked").map(event => [event.agent, event])).values()];
+  const knowledgeFirst = ["knowledge-first-handoff-v4", "knowledge-first-handoff-v5"].includes(policy);
+  const measured = report.collaboration ?? (knowledgeFirst || policy === "verified-handoff-v3" ? { requiredPublications: started?.requiredPublications ?? actors.length,
+    publishedComponents: checks.filter(check => check.published).length, requiredDependencyHandoffs: started?.requiredDependencyHandoffs ?? null,
+    priorKnowledgeChecked: knowledgeFirst ? checks.filter(check => check.priorKnowledgeChecked).length : null,
+    priorKnowledgeAssessed: knowledgeFirst ? checks.filter(check => check.priorKnowledgeAssessed).length : null,
+    checkedDependencySources: policy === "knowledge-first-handoff-v5" ? checks.reduce((total, check) => total + (check.checkedDependencies?.length ?? 0), 0) : null,
+    receivedDependencyHandoffs: checks.reduce((total, check) => total + (check.receivedDependencies?.length ?? 0), 0), completed: false } : null);
+  const legacyPublications = actors.every(actor => Number.isInteger(actor.attempts?.at(-1)?.publishedMemories))
+    ? actors.filter(actor => actor.attempts.at(-1).publishedMemories > 0).length : null;
+  return { policy, status: measured ? measured.completed ? "completed" : report.status === "recording" ? "running" : "incomplete" : policy === "optional-use-v2" ? "optional" : "not_measured",
+    requiredPublications: measured?.requiredPublications ?? null, publishedComponents: measured?.publishedComponents ?? legacyPublications,
+    priorKnowledgeChecked: measured?.priorKnowledgeChecked ?? null, priorKnowledgeAssessed: measured?.priorKnowledgeAssessed ?? null,
+    checkedDependencySources: measured?.checkedDependencySources ?? null,
+    requiredDependencyHandoffs: measured?.requiredDependencyHandoffs ?? null, receivedDependencyHandoffs: measured?.receivedDependencyHandoffs ?? null,
+    crossAgentHandoffs: report.summary?.crossAgentHandoffs ?? new Set(events.filter(event => event.type === "memory_delivered" && event.from && event.from !== "brief" && event.from !== event.agent)
+      .map(event => `${event.from}:${event.agent}`)).size,
+    codePassedComponents: report.summary?.codePassedComponents ?? (report.status === "recording" ? checks.filter(check => check.codePassed).length
+      : actors.filter(actor => actor.attempts?.at(-1)?.codePassed ?? actor.attempts?.at(-1)?.passed).length), components: actors.length };
+}
+
 export function labCompletion(report = {}) {
   const items = [];
   const add = (id, label, outcome, tests, correct = outcome?.passed, expected = tests?.expectedTests) => {
@@ -60,11 +87,11 @@ export function labCompletion(report = {}) {
   } else if (report.kind === "swarm_build") {
     for (const actor of report.agents ?? []) {
       const attempt = actor.attempts?.at(-1);
-      add(actor.id, actor.name, attempt, attempt?.verification, actor.state === "passed" && attempt?.passed === true);
+      add(actor.id, actor.name, attempt, attempt?.verification, attempt?.codePassed ?? (actor.state === "passed" && attempt?.passed === true));
     }
     if (report.buildComparison) for (const [condition, label] of [["withMemory", "MindLeak integration"], ["withoutMemory", "Dalek integration"]]) {
       const team = report.buildComparison[condition];
-      add(condition, label, team, team?.finalTests, team?.status === "completed", 18);
+      add(condition, label, team?.codeComplete ? { ...team, status: "completed" } : team, team?.finalTests, team?.codeComplete ?? team?.status === "completed", 18);
     }
     else if (report.finalTests) add("integration", "Full application integration", { status: report.status }, report.finalTests, report.finalTests.passed, 18);
   } else if (report.kind === "memory_lab") {
@@ -96,7 +123,8 @@ export function labCompletion(report = {}) {
     return ["Browser behaviour", "Responsive layout"].includes(area) ? [[1440, 1080], [390, 844]].every(([width, height]) =>
       passedReviews.some(review => review.viewport?.width === width && review.viewport?.height === height)) : passedReviews.length > 0;
   }));
-  const observedUses = (report.outcomes ?? []).filter(outcome => outcome.arm === "mindleak" && !outcome.diagnostic && outcome.correct === true && outcome.reuseObserved === true).length;
+  const observedUses = report.kind === "memory_lab" ? knowledgeMetrics(report).reuse.tasks
+    : (report.outcomes ?? []).filter(outcome => outcome.arm === "mindleak" && !outcome.diagnostic && outcome.correct === true && outcome.reuseObserved === true).length;
   return { execution: { status: executionStatus },
     requirements: { status: requirementsStatus, passed, failed, incomplete, scheduled: items.length, unresolved: items.length - passed, items },
     quality: { status: qualityChecks.some(review => review.passedChecks !== review.checks) ? "failed" : !qualityChecks.length ? "not_reviewed" : unreviewed.length ? "partial_review" : "reviewed",
@@ -170,6 +198,18 @@ export function knowledgeCapital(report = {}) {
     interpretation: "Weighted observed-reuse index, not a measure of intelligence or a causal productivity claim. Records count once; only current accepted revisions with prior exposure before a changed passing task qualify. Stored observations are shown separately from observations used." };
 }
 
+function recordedGuideUse(event, applications) {
+  if (event.passed !== true || event.condition !== "withMemory" || event.guideApplied !== true
+    || typeof event.caseId !== "string" || !Number.isFinite(event.atMs)) return false;
+  if (event.type === "control_arm_finished") return event.guideRetrievedBeforeAssessment === true && event.sourceEvidenceVerified === true
+    && event.sourceObservationsRead >= 1 && typeof event.guideUsed?.chainId === "string" && event.guideUsed.chainId.length > 0
+    && Number.isSafeInteger(event.guideUsed.revision) && event.guideUsed.revision > 0;
+  return event.type === "assessment_finished" && applications.some(application => application.agent === event.agent
+    && application.caseId === event.caseId && typeof application.memoryId === "string" && application.memoryId.length > 0
+    && typeof application.chainId === "string" && application.chainId.length > 0 && Number.isSafeInteger(application.revision) && application.revision > 0
+    && application.steps >= 2 && application.sourceObservations >= 2 && Number.isFinite(application.atMs) && application.atMs <= event.atMs);
+}
+
 export function knowledgeMetrics(report = {}) {
   const unique = (records, field) => new Map((records ?? []).filter(record => typeof record?.[field] === "string").map(record => [record[field], record]));
   const knowledge = report.knowledge ?? {};
@@ -213,7 +253,22 @@ export function knowledgeMetrics(report = {}) {
       transfer: { attempts: live.filter(event => event.stage !== "irrelevant" && event.priorKnowledgeDelivered).length, successful: live.filter(event => event.correct && event.reuseObserved).length },
       usedChainIds: [], firstVerifiedFixMedianMs: null, knownFailureCandidates: live.reduce((total, event) => total + (event.knownFailureCandidates ?? 0), 0) } : null);
     const fresh = report.metrics?.arms?.fresh;
+    const usageRecords = report.outcomes ? report.outcomes.filter(outcome => outcome.arm === "mindleak") : live;
+    const usageKnown = usageRecords.length > 0 && usageRecords.every(outcome => typeof outcome.knowledgeWorkflow?.lookedUp === "boolean"
+      || Array.isArray(outcome.knowledgeWorkflow?.searches) || Array.isArray(outcome.experienceAccesses) && Array.isArray(outcome.experienceErrors));
+    const attempted = outcome => outcome.knowledgeWorkflow?.lookedUp ?? Boolean(outcome.knowledgeWorkflow?.searches?.length || outcome.experienceAccesses?.length || outcome.experienceErrors?.length);
+    const assessed = outcome => outcome.knowledgeWorkflow?.assessment?.decision ?? outcome.knowledgeWorkflow?.decision;
+    const lookedUp = usageRecords.filter(attempted).length;
+    const usage = usageKnown ? { policy: report.plan?.memoryUse ?? "not_recorded", evaluated: usageRecords.length,
+      lookedUp, notConsulted: usageRecords.length - lookedUp, received: usageRecords.filter(outcome => outcome.priorKnowledgeDelivered).length,
+      assessed: report.plan?.memoryUse === "knowledge_first" ? usageRecords.filter(assessed).length : null,
+      rejected: usageRecords.filter(outcome => assessed(outcome) === "reject").length,
+      verifiedUse: usageRecords.filter(outcome => outcome.correct && outcome.reuseObserved).length,
+      misses: usageRecords.every(outcome => Array.isArray(outcome.experienceAccesses)) ? usageRecords.reduce((total, outcome) => total + outcome.experienceAccesses.filter(access => access.lessonIds.length === 0).length, 0) : null,
+      errors: usageRecords.every(outcome => Array.isArray(outcome.experienceErrors)) ? usageRecords.reduce((total, outcome) => total + outcome.experienceErrors.length, 0) : null,
+    } : null;
     return { evaluatedTasks: memory?.completed ?? 0, successfulTasks: memory?.correct ?? 0,
+      usage,
       reuse: { kind: "temporal_change", tasks: memory?.knowledgeReuse.successful ?? 0, rate: memory?.knowledgeReuse.rate ?? null, evidence: memory?.knowledgeReuse.evidence ?? "Prior exposure before a changed passing candidate" },
       transfer: { attempts: memory?.transfer.attempts ?? 0, successful: memory?.transfer.successful ?? 0, rate: memory?.transfer.attempts ? memory.transfer.successful / memory.transfer.attempts : null,
         evidence: "A new transfer task with prior experience delivered before a changed passing implementation. All retrieval misses remain in the main-arm correctness result." },
@@ -222,7 +277,9 @@ export function knowledgeMetrics(report = {}) {
       compression: { observations: observations.size, chains: chains.size, principles: principles.size, observationsPerPrinciple: principles.size ? observations.size / principles.size : null, semanticQuality: "not_measured" },
       mistakesAvoided: { rate: null, count: null, status: "known_failure_candidates_only", withMemory: memory?.knownFailureCandidates ?? null, withoutMemory: fresh?.knownFailureCandidates ?? null },
       timeToCorrectHypothesis: { medianMs: memory?.firstVerifiedFixMedianMs ?? null, status: "verified_fix_time_only" },
-      capital: knowledgeCapital(report), formation,
+      capital: knowledgeCapital(report), formation, investigation: report.plan?.profile === "mechanism" ? {
+        ...report.metrics?.learning, predictions: report.plan.validation ? report.plan.validation.length * 2 : report.metrics?.learning?.predictions,
+      } : null,
       curve: (report.metrics?.curve ?? []).map(point => ({ ...point, withMemory: point.mindleak, withoutMemory: point.fresh, tasksPerArm: point.mindleakScheduled })),
       evidenceScope: report.plan ? `${report.plan.profile} / ${report.plan.mainSessions} main + ${report.plan.diagnosticSessions} diagnostic sessions` : "Frozen rediscovery protocol",
       caseFamilies: report.plan?.families ?? null };
@@ -242,9 +299,12 @@ export function knowledgeMetrics(report = {}) {
   if (!tasks.length && report.status === "recording") {
     const events = report.events ?? [];
     const controls = events.some(event => event.type === "control_arm_finished");
+    const applications = events.filter(event => event.type === "guide_applied");
     tasks = [...new Map(events.filter(event => controls ? event.type === "control_arm_finished" && event.condition === "withMemory"
-      : event.type === "assessment_finished" || event.type === "tests" && event.phase === "verification" && event.condition !== "withoutMemory")
-      .map(event => [`${event.round ?? 0}:${event.agent}`, { ...event, verification: { passed: event.passed } }])).values()];
+      : event.condition !== "withoutMemory" && (event.type === "assessment_finished" || event.type === "tests" && event.phase === "verification"))
+      .map(event => [`${event.round ?? 0}:${event.agent}`, { ...event, verification: { passed: event.passed },
+        guideLinked: recordedGuideUse(event, applications),
+      }])).values()];
   }
   const successful = tasks.filter(assessed);
   const reused = successful.filter(outcome => rounds.length ? outcome.frozen && sourceLinked(outcome) : outcome.guideLinked);
@@ -337,7 +397,8 @@ export function memoryActivity(recording, position, enabled = true, playbackRate
   const pending = new Map(); const processing = new Set(); const pulses = new Map();
   const types = { recall_memory: "read", recall_guide: "read", recall_experience: "read", inspect_source: "read", inspect_knowledge: "read",
     inspect_observation: "read", inspect_experience: "read", inspect_guide_sources: "read", write_memory: "write", record_observation: "write",
-    apply_guide: "write", retain_lesson: "form", propose_chain: "form", propose_guide: "form", accept_knowledge: "form" };
+    apply_guide: "write", retain_lesson: "form", propose_chain: "form", propose_guide: "form", accept_knowledge: "form",
+    capture_observation: "write", propose_principle: "form", accept_chain: "form", accept_principle: "form", challenge_principle: "form", propose_revision: "form" };
   for (const event of recording.events ?? []) {
     if (event.atMs > position) break;
     if (event.type === "run_finished") { pending.clear(); processing.clear(); pulses.clear(); continue; }
@@ -354,7 +415,9 @@ export function memoryActivity(recording, position, enabled = true, playbackRate
     if (position - event.atMs < 2200 * Math.max(1, playbackRate) && ["memory_saved", "knowledge_written", "memory_delivered", "experience_access"].includes(event.type)) {
       const kind = event.type === "memory_delivered" || event.type === "experience_access" ? "read" : event.kind ?? "observation";
       const id = event.memoryId ?? event.chainId ?? `${event.type}:${event.id ?? event.atMs}`;
-      pulses.set(id, { id, agent: event.agent, kind, nodeId: event.nodeId ?? event.chainId ?? event.memoryId, atMs: event.atMs });
+      const previous = pulses.get(id);
+      pulses.set(id, { id, agent: event.agent ?? previous?.agent, kind: event.type === "memory_saved" ? previous?.kind ?? kind : kind,
+        nodeId: event.nodeId ?? event.chainId ?? previous?.nodeId ?? event.memoryId, atMs: event.atMs });
     }
   }
   const flows = [...pending.values()].slice(-12); const recent = [...pulses.values()].slice(-12);
@@ -370,7 +433,8 @@ export function replayState(recording, position) {
     guideApplications: [], inspectedObservations: new Set(),
     memories: new Set(), handoffs: new Set(), transfers: [], lastTransfer: null, visibleEvents: [], applicationReady: false, controlApplicationReady: false,
     agents: Object.fromEntries(recording.agents.map(agent => [agent.id, { state: "queued", inputTokens: 0, outputTokens: 0,
-      storedMemories: new Set(), linkedUses: new Set(), useMeasured: false, action: "Waiting", inference: null, unknown: false }])) };
+      storedMemories: new Set(), receivedHandoffs: new Set(), pendingTools: new Set(), linkedUses: new Set(), useMeasured: false, action: "Waiting", inference: null, unknown: false }])) };
+  const memoryExcluded = new Set(recording.agents.filter(agent => agent.control || agent.connectToMemory === false).map(agent => agent.id));
   const tests = new Map();
   const usage = new Set();
   let finalTests = null;
@@ -378,9 +442,14 @@ export function replayState(recording, position) {
     if (event.atMs > position) break;
     state.visibleEvents.push(event);
     const agent = state.agents[event.agent];
-    if (event.type === "agent_state" && agent) agent.state = event.state;
+    if (event.type === "agent_state" && agent) {
+      agent.state = event.state;
+      if (["passed", "failed", "cancelled", "blocked"].includes(event.state)) { agent.inference = null; agent.pendingTools.clear(); }
+    }
     if (event.type === "stage_started" && agent) agent.state = "running";
     if (event.type === "stage_finished" && agent) agent.state = event.success ? "passed" : "failed";
+    if (event.type === "rediscovery_task_started" && agent) { agent.state = "running"; agent.action = "Investigating"; }
+    if (event.type === "rediscovery_task_finished" && agent) { agent.state = event.correct ? "passed" : "failed"; agent.inference = null; }
     if (event.type === "inference_started" && agent) { agent.inference = event.atMs; agent.action = "Generating"; }
     if (event.type === "inference_started" && event.workload === "memory") state.memoryInferences.add(event.requestId ?? event.turn);
     if (event.type === "inference_finished") {
@@ -398,10 +467,10 @@ export function replayState(recording, position) {
       }
       if (agent) { agent.inference = null; agent.action = event.errorCode ? "Provider error" : "Response received"; }
     }
-    if (event.type === "tool_started" && agent) agent.action = event.tool.replaceAll("_", " ");
+    if (event.type === "tool_started" && agent) { agent.action = event.tool.replaceAll("_", " "); agent.pendingTools.add(event.toolCallId); }
     if (event.type === "tool_finished") {
       state.toolCalls += 1;
-      if (agent) agent.action = event.fixturePath ?? event.tool?.replaceAll("_", " ") ?? "Tool complete";
+      if (agent) { agent.action = event.fixturePath ?? event.tool?.replaceAll("_", " ") ?? "Tool complete"; agent.pendingTools.delete(event.toolCallId); }
       if (event.tool === "write_memory" && event.ok && event.memoryId) state.memories.add(event.memoryId);
     }
     if (event.type === "memory_saved" && event.memoryId) { state.memories.add(event.memoryId); agent?.storedMemories.add(event.memoryId); }
@@ -417,10 +486,14 @@ export function replayState(recording, position) {
     }
     if (event.type === "persistence_verified") state.persistenceChecks.push(event);
     if (event.type === "guide_applied") state.guideApplications.push(event);
+    if (["assessment_finished", "control_arm_finished"].includes(event.type) && agent && !memoryExcluded.has(event.agent)) {
+      agent.useMeasured = event.type === "assessment_finished" || typeof event.sourceEvidenceVerified === "boolean";
+      if (recordedGuideUse(event, state.guideApplications)) agent.linkedUses.add(`${event.type}:${event.round ?? 0}:${event.caseId}`);
+    }
     if (event.type === "observation_inspected") state.inspectedObservations.add(`${event.agent}:${event.memoryId}`);
-    if (event.type === "memory_delivered") {
+    if (event.type === "memory_delivered" && !memoryExcluded.has(event.agent) && !memoryExcluded.has(event.from)) {
       const key = `${event.from}:${event.agent}`;
-      if (event.from !== "brief" && event.from !== event.agent) state.handoffs.add(key);
+      if (event.from && event.from !== "brief" && event.from !== event.agent) { state.handoffs.add(key); agent?.receivedHandoffs.add(event.from); }
       state.lastTransfer = event;
       if (position - event.atMs < 2300) state.transfers.push(event);
     }
@@ -433,6 +506,7 @@ export function replayState(recording, position) {
     }
     if (event.type === "application_ready") state.applicationReady = true;
     if (event.type === "control_application_ready") state.controlApplicationReady = true;
+    if (event.type === "run_finished") for (const actor of Object.values(state.agents)) { actor.inference = null; actor.pendingTools.clear(); }
   }
   state.checks = finalTests ?? [...tests.values()].reduce((total, count) => total + count, 0);
   return state;
@@ -448,6 +522,9 @@ export function runActivity(recording, position, state = replayState(recording, 
     if (nodeId) latestWrites.set(nodeId, event);
     if (event.type === "tool_started") pending.set(event.toolCallId, event);
     if (event.type === "tool_finished") pending.delete(event.toolCallId);
+    if (event.type === "agent_state" && ["passed", "failed", "cancelled", "blocked"].includes(event.state)) {
+      for (const [id, tool] of pending) if (tool.agent === event.agent) pending.delete(id);
+    }
     if (event.type === "run_finished") pending.clear();
     if (event.type === "rediscovery_task_finished") {
       tasks.set(event.caseId, Boolean(event.correct));
@@ -477,8 +554,8 @@ export function runActivity(recording, position, state = replayState(recording, 
   const scheduledTasks = recording.rediscovery ? (recording.report.plan?.preparationTasks ?? 0) + (recording.report.plan?.sessions?.length ?? 0)
     : recording.memoryLab ? expectedTests > 0 && expectedTests % 7 === 0 ? expectedTests / 7 : null : recording.agents.length;
   const memory = memoryActivity(recording, position);
-  const active = recording.agents.filter(agent => state.agents[agent.id]?.state === "running");
   const finished = state.visibleEvents.at(-1)?.type === "run_finished";
+  const active = finished ? [] : recording.agents.filter(agent => state.agents[agent.id]?.state === "running");
   const phase = finished ? "finished" : memory.forming ? "forming" : memory.writing ? "capturing" : memory.reading ? "retrieving"
     : memory.processing ? "extracting" : pending.size ? "working" : active.length ? "thinking" : "ready";
   return { knowledge, gained, inherited, actions: state.toolCalls, completedTasks: tasks.size,
@@ -487,7 +564,132 @@ export function runActivity(recording, position, state = replayState(recording, 
     phase, activeAgents: active, currentTools: [...pending.values()], memory,
     milestones: state.visibleEvents.filter(event => event.type === "knowledge_written" || event.type === "persistence_verified"
       || event.type === "rediscovery_task_finished" || event.type === "control_arm_finished" || event.type === "assessment_finished" || event.type === "candidate_changed"
-      || event.type === "tool_finished").slice(-6).reverse() };
+      || event.type === "collaboration_checked" || event.type === "tool_finished").slice(-6).reverse() };
+}
+
+export function lab3Story(recording, position) {
+  if (recording?.report?.kind !== "rediscovery_lab") return null;
+  const report = recording.report;
+  const cases = new Map(); const sessions = new Map();
+  const titles = { "retry-identity": "The duplicate delivery", "lease-expiry": "The disappearing lease", "page-stream": "The missing page",
+    "batch-correlation": "The mixed-up results", "path-boundary": "The escaped path", "continuation-contract": "The missing records" };
+  for (const session of report.plan?.sessions ?? []) {
+    const id = session.matchId ?? session.caseId ?? session.id;
+    if (!cases.has(id)) cases.set(id, { id, title: titles[session.family] ?? session.family ?? session.caseId ?? "Investigation",
+      stage: session.stage, label: session.caseId ?? session.family ?? id, arms: [], firstAt: null, lastAt: null });
+    const actor = { id: session.id, arm: session.arm, diagnostic: session.diagnostic === true || session.arm === "direct", state: "queued", reused: false, retrieval: "not_used", atMs: null };
+    cases.get(id).arms.push(actor); sessions.set(session.id, { actor, item: cases.get(id) });
+  }
+  const chapters = [
+    { id: "discover", label: "Discover", icon: "scan-search" }, { id: "form", label: "Connect", icon: "git-branch" },
+    { id: "validate", label: "Test the rule", icon: "flask-conical" }, { id: "transfer", label: "New cases", icon: "route" },
+    { id: "review", label: "Learn again", icon: "lightbulb" },
+  ].map(chapter => ({ ...chapter, atMs: null }));
+  let phase = "discover"; let currentCase = null; let prediction = null; let nextMoment = null;
+  for (const event of recording.events ?? []) {
+    const step = event.type === "run_started" ? "discover"
+      : event.type === "stage_started" ? ({ formation: "form", acceptance: "form", validation: "validate", review: "review" })[event.phase]
+        : event.type === "rediscovery_review_started" ? event.round === 0 ? "form" : "review"
+          : event.type === "rediscovery_round_started" ? "transfer"
+            : event.type === "rediscovery_task_started" ? event.phaseScope === "preparation" ? "discover" : "transfer"
+              : event.type === "knowledge_written" && ["chain", "principle"].includes(event.kind) && event.operation === "propose" ? "form" : null;
+    if (step) {
+      const chapter = chapters.find(item => item.id === step);
+      if (chapter.atMs === null) chapter.atMs = event.atMs;
+    }
+    const moment = ["validation_completed", "validation_failed", "rediscovery_task_finished", "rediscovery_round_started", "exception_checked"].includes(event.type)
+      || event.type === "knowledge_written" && event.kind === "principle";
+    if (event.atMs > position) { if (moment && nextMoment === null) nextMoment = event.atMs; continue; }
+    if (step) phase = step;
+    const match = sessions.get(event.caseId);
+    if (match && ["rediscovery_task_started", "rediscovery_task_finished"].includes(event.type)) {
+      currentCase = match.item.id; match.item.firstAt ??= event.atMs; match.item.lastAt = event.atMs;
+      match.actor.state = event.type.endsWith("started") ? "working" : event.correct === true ? "passed" : "unresolved";
+      match.actor.reused = event.reuseObserved === true; match.actor.atMs = event.atMs;
+      if (event.priorKnowledgeDelivered && match.actor.retrieval !== "received") match.actor.retrieval = "received";
+    }
+    if (match && event.type === "experience_access") match.actor.retrieval = event.lessonIds?.length ? "received" : match.actor.retrieval === "received" ? "received" : "miss";
+    if (["prospective_prediction", "prediction_recorded"].includes(event.type)) prediction = { caseId: event.caseId, arm: event.agent ?? "mindleak",
+      expectedPass: event.expectedPass, applicable: event.applicable, verdict: null, actualPass: null, atMs: event.atMs };
+    if (prediction && event.caseId === prediction.caseId && (event.agent ?? "mindleak") === prediction.arm
+      && ["validation_completed", "validation_failed"].includes(event.type)) {
+      prediction.verdict = event.type === "validation_failed" ? "execution_failed" : event.correct ? "matched" : "mismatch";
+      prediction.actualPass = event.type === "validation_completed" ? event.passed : null;
+    }
+    if (event.type === "run_finished") phase = "finished";
+  }
+  return { phase, chapters, cases: [...cases.values()], currentCase, prediction, nextMoment };
+}
+
+export function knowledgeFocus(knowledge = {}, selectedId = null) {
+  const nodes = [...(knowledge.principles ?? []), ...(knowledge.chains ?? [])];
+  const choices = [...(knowledge.principles?.length ? knowledge.principles : knowledge.chains ?? [])].map(node => ({ id: node.chainId, claim: node.document?.claim ?? "Recorded knowledge" }));
+  const selected = nodes.find(node => node.chainId === selectedId) ?? nodes.find(node => node.chainId === choices.at(-1)?.id);
+  if (!selected) return { selected: null, choices, supports: [], sources: [], counterexamples: [], unavailableEvidence: 0 };
+  if (!choices.some(choice => choice.id === selected.chainId)) choices.unshift({ id: selected.chainId, claim: selected.document?.claim ?? "Recorded knowledge" });
+  const owners = new Map((knowledge.observations ?? []).flatMap(source => (source.fragments ?? []).map(fragment => [fragment.fragmentId, { source, fragment }])));
+  const chainMap = new Map((knowledge.chains ?? []).map(node => [node.chainId, node]));
+  const references = [...selected.document?.evidence ?? []];
+  const supports = (selected.document?.supportedBy ?? []).map(reference => {
+    const chain = chainMap.get(reference.chainId); const available = Boolean(chain && chain.revision === reference.revision);
+    if (available) references.push(...chain.document?.evidence ?? []);
+    return { id: reference.chainId, revision: reference.revision, currentRevision: chain?.revision ?? null, available,
+      claim: available ? chain.document?.claim : "Supporting revision unavailable", conclusion: available ? chain.document?.conclusion : null };
+  });
+  const sourceIds = new Set(); const sources = []; const missing = new Set(); const counters = new Map();
+  for (const reference of references) {
+    const owner = owners.get(reference.fragmentId);
+    if (!owner) missing.add(reference.fragmentId);
+    else if (!sourceIds.has(owner.source.memoryId)) {
+      sourceIds.add(owner.source.memoryId); sources.push({ id: owner.source.memoryId, label: owner.source.source ?? owner.source.caseId ?? owner.fragment.text, text: owner.fragment.text });
+    }
+    if (reference.role === "counterexample") {
+      const counter = counters.get(reference.fragmentId) ?? { fragmentId: reference.fragmentId, memoryId: owner?.source.memoryId ?? null, reasons: [] };
+      if (!counter.reasons.includes(reference.reason)) counter.reasons.push(reference.reason);
+      counters.set(reference.fragmentId, counter);
+    }
+  }
+  return { selected: { id: selected.chainId, kind: selected.document?.kind ?? "chain", state: selected.state, review: selected.review,
+    revision: selected.revision, requiresReview: selected.requiresReview, claim: selected.document?.claim, conclusion: selected.document?.conclusion,
+    applicability: selected.document?.applicability, assumptions: selected.document?.assumptions ?? [] }, choices, supports, sources,
+    counterexamples: [...counters.values()], unavailableEvidence: missing.size + supports.filter(support => !support.available).length };
+}
+
+export function knowledgeReviewQueue(knowledge = {}, decisions = []) {
+  const records = [...new Map([...(knowledge.principles ?? []), ...(knowledge.chains ?? [])].map(node => [node.chainId, node])).values()];
+  const chains = new Map((knowledge.chains ?? []).map(node => [node.chainId, node]));
+  const sources = new Map((knowledge.observations ?? []).map(node => [node.memoryId, node]));
+  const validDecisions = (Array.isArray(decisions) ? decisions : []).filter(decision => decision && typeof decision.id === "string"
+    && typeof decision.reviewer === "string" && decision.reviewer.trim().length > 0 && decision.reviewer.length <= 100
+    && typeof decision.note === "string" && decision.note.trim().length > 0 && decision.note.length <= 2000
+    && Number.isFinite(Date.parse(decision.reviewedAt)) && ["approve", "request_revision", "defer"].includes(decision.decision)
+    && (decision.decision !== "approve" || decision.evidenceReviewed === true));
+  const statuses = { approve: "approved", request_revision: "revision_requested", defer: "deferred" };
+  const items = records.map(record => {
+    const focus = knowledgeFocus(knowledge, record.chainId);
+    const supports = focus.supports.map(reference => chains.get(reference.id) ?? null);
+    const snapshot = JSON.stringify({ record, supports, sources: focus.sources.map(source => sources.get(source.id)) });
+    const blockedReasons = [];
+    if (!Number.isSafeInteger(record.revision) || record.revision < 1) blockedReasons.push("Recorded revision unavailable");
+    if (!["candidate", "accepted"].includes(record.state)) blockedReasons.push("Record is not a current candidate or accepted revision");
+    if (!record.document?.claim || !record.document?.conclusion) blockedReasons.push("Claim or conclusion unavailable");
+    if (record.requiresReview || record.review?.requiresReview) blockedReasons.push("Recorded evidence requires revision");
+    if (focus.unavailableEvidence) blockedReasons.push(`${focus.unavailableEvidence} evidence references unavailable`);
+    if (!focus.sources.length) blockedReasons.push("Source observations unavailable");
+    if (record.document?.kind === "principle" && new Set(focus.supports.map(reference => reference.id)).size < 2) blockedReasons.push("Fewer than two supporting chains");
+    if (supports.some(support => support?.state !== "accepted" || support.requiresReview || support.review?.requiresReview)) blockedReasons.push("Supporting chain is not accepted or needs review");
+    const history = validDecisions.filter(decision => decision.chainId === record.chainId);
+    const decision = history.findLast(entry => entry.revision === record.revision && entry.snapshot === snapshot);
+    const status = decision && !(decision.decision === "approve" && blockedReasons.length) ? statuses[decision.decision] : "pending";
+    return { id: record.chainId, revision: record.revision, kind: record.document?.kind ?? "chain", claim: record.document?.claim ?? "Untitled knowledge",
+      agentState: record.state, status, decision: decision ?? null, history, snapshot, blockedReasons, staleReview: history.length > 0 && !decision,
+      sourceCount: focus.sources.length, supportCount: focus.supports.length, counterexampleCount: focus.counterexamples.length };
+  });
+  const priority = item => item.status === "pending" && item.blockedReasons.length ? 0 : ({ revision_requested: 1, pending: 2, deferred: 3, approved: 4 })[item.status];
+  items.sort((left, right) => priority(left) - priority(right) || (left.kind === "principle" ? 0 : 1) - (right.kind === "principle" ? 0 : 1) || left.claim.localeCompare(right.claim));
+  const counts = { pending: 0, approved: 0, revisionRequested: 0, deferred: 0 };
+  for (const item of items) counts[item.status === "revision_requested" ? "revisionRequested" : item.status] += 1;
+  return { items, counts };
 }
 
 export function formatElapsed(milliseconds) {
@@ -538,10 +740,22 @@ function initializeReplay() {
   let activityProjection = null;
   let lastRenderAt = 0;
   let timelineKey = "";
+  let networkLayoutKey = "";
+  let lab3StoryKey = "";
+  let lab3NextMoment = null;
   const stageAgents = new Map();
+  const knowledgeMilestones = new Map([...document.querySelectorAll(".stage-milestone")].map(badge => [badge.dataset.stage, [...badge.childNodes].map(node => node.cloneNode(true))]));
   let displayedGraphIds = new Set();
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   let inspectedNodeId = null;
+  let focusedKnowledgeId = null;
+  let knowledgeInspector = null;
+  let replayKnowledgeAt = null;
+  let humanReviews = [];
+  let reviewFilter = "pending";
+  let currentReviewItem = null;
+  let reviewStorageError = null;
+  let pendingReview = null;
   const icon = name => { const value = element("i"); value.dataset.lucide = name; return value; };
   const notify = message => { byId("toast").textContent = message; byId("toast").classList.remove("hidden"); clearTimeout(toastTimer); toastTimer = setTimeout(() => byId("toast").classList.add("hidden"), 4500); };
   const save = (text, name, type) => { const url = URL.createObjectURL(new Blob([text], { type })); const link = element("a"); link.href = url; link.download = name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
@@ -570,7 +784,21 @@ function initializeReplay() {
   byId("stage-controls").prepend(byId("replay-activity"));
   byId("stage-run-controls").append(document.querySelector(".study-mode"), byId("rediscovery-profile-control"));
   byId("stage-run-controls").classList.toggle("hidden", !initial.live);
+  byId("stage-run-controls").after(byId("lab3-story-template").content.cloneNode(true));
+  document.querySelector(".knowledge-heading h1").textContent = "Knowledge Control";
+  byId("knowledge-focus").querySelector("h2").textContent = "Principle playbook";
+  byId("review-document").prepend(byId("knowledge-focus"));
+  const originalRecords = document.querySelector(".knowledge-lower");
+  byId("review-guide-export").append(byId("guide-document").parentElement);
+  byId("review-raw-slot").append(byId("knowledge-inspector").parentElement);
+  originalRecords.remove();
   for (const id of ["capital-panel", "knowledge-capital-panel"]) byId(id).append(byId("capital-template").content.cloneNode(true));
+  byId("knowledge-outcomes").prepend(byId("investigation-template").content.cloneNode(true));
+  byId("outcome-scope").parentElement.after(byId("knowledge-use-summary"));
+  document.querySelector(".verification-panel").after(byId("build-sharing-summary"));
+  const reuseResults = element("section"); reuseResults.id = "knowledge-reuse-results";
+  const reuseHeading = byId("outcome-scope").parentElement; reuseHeading.before(reuseResults);
+  reuseResults.append(reuseHeading, byId("knowledge-use-summary"), byId("reuse-rate").closest(".outcome-meters"), byId("knowledge-curve").closest(".learning-chart"));
   const options = (select, models, value) => {
     select.replaceChildren();
     for (const model of models) { const choice = element("option", "", model.name ?? model.id); choice.value = model.id; choice.disabled = model.available === false; select.append(choice); }
@@ -619,26 +847,35 @@ function initializeReplay() {
   }
   function configureStudyMode() {
     const report = recording?.report;
-    const available = report?.status === "completed" && (report.kind === "swarm_build" ? report.memoryExhibits?.length > 0
+    const investigation = report?.plan?.profile === "mechanism" || draft.rediscoveryProfile === "mechanism";
+    const available = !investigation && report?.status === "completed" && (report.kind === "swarm_build" ? report.memoryExhibits?.length > 0
       : report.kind === "memory_lab" ? Boolean(report.guide) : report.knowledge?.lessons?.length > 0);
     if (!available && !runActive) continueLearning = false;
     byId("study-fresh").disabled = runActive || !initial.live;
     byId("study-continue").disabled = runActive || !initial.live || !available;
     byId("study-fresh").checked = !continueLearning;
     byId("study-continue").checked = continueLearning;
-    byId("study-continue").title = available ? `Retain experience from run ${report.runId}; start fresh agent sessions and source workspaces` : "A completed run with retained experience is required";
+    byId("study-continue").title = investigation ? "Investigation studies require fresh validation cases" : available ? `Retain experience from run ${report.runId}; start fresh agent sessions and source workspaces` : "A completed run with retained experience is required";
     if (continueLearning) byId("run").querySelector("span").textContent = "Continue learning";
     else byId("run").querySelector("span").textContent = recording?.memoryLab || recording?.rediscovery || profiles?.experiment >= 2 ? "Run experiment" : "Run build";
   }
   function navigateView() {
     const lab = recording?.rediscovery || profiles?.experiment === 3 ? 3 : recording?.memoryLab || profiles?.experiment === 2 ? 2 : 1;
     const learning = location.hash === "#learnings" || !location.hash && location.pathname.endsWith("/learnings");
+    const enteringReview = learning && byId("knowledge-page").classList.contains("hidden");
+    if (enteringReview && recording && !runActive && recording.report.status !== "recording") { following = false; playing = false; position = recording.durationMs; }
     byId("experiment-page").classList.toggle("hidden", learning);
     byId("knowledge-page").classList.toggle("hidden", !learning);
+    byId("knowledge-outcomes").before(byId("live-stage"));
+    byId(learning ? "machine-lineage" : "stage-graph").append(knowledgeHero);
+    byId(learning ? "machine-activity" : "stage-activity").append(byId("memory-activity"));
+    byId(learning ? "machine-playback" : "stage-playback").append(playback);
     if (learning) {
-      byId("knowledge-page").querySelector(".knowledge-heading").after(byId("live-stage"));
+      byId("machine-controls").append(byId("stage-controls"));
+      byId("machine-run-controls").append(byId("stage-run-controls"));
     } else {
-      byId("knowledge-outcomes").before(byId("live-stage"));
+      byId("live-stage").querySelector(".stage-footer").append(byId("stage-controls"));
+      byId("live-stage").querySelector(".stage-heading").after(byId("stage-run-controls"));
     }
     activityKey = "";
     byId("lab-brand").textContent = `LEARNING LAB / 0${lab}`;
@@ -653,7 +890,7 @@ function initializeReplay() {
     const labTwo = (initial.navigation ?? profiles?.navigation)?.lab2;
     byId("nav-learnings").href = lab === 1 && labTwo ? `${labTwo.replace(/\/$/, "")}/learnings` : "#learnings";
     if (learning) byId("nav-learnings").setAttribute("aria-current", "page"); else byId("nav-learnings").removeAttribute("aria-current");
-    if (learning) renderKnowledge();
+    if (recording) render(true); else renderKnowledge();
   }
   function renderKnowledge() {
     const knowledge = activityProjection?.knowledge ?? recording?.report.knowledge ?? {};
@@ -665,18 +902,26 @@ function initializeReplay() {
     const applications = knowledge.applications ?? [];
     const guide = recording?.report.guide ?? knowledge.guide;
     const lastOutcome = recording?.events.findLast(event => ["rediscovery_task_finished", "rediscovery_round_finished", "control_arm_finished", "run_finished"].includes(event.type))?.id;
-    const key = JSON.stringify([recording?.report.runId, operations.length, observations.length, [...chains, ...principles].map(node => [node.chainId, node.revision, node.state]), durability.length, applications.length, guide?.revision, lastOutcome]);
+    const key = JSON.stringify([recording?.report.runId, focusedKnowledgeId, humanReviews.length, reviewFilter, byId("review-search").value, byId("knowledge-page").classList.contains("hidden"), operations.length, observations.length, [...chains, ...principles].map(node => [node.chainId, node.revision, node.state, node.requiresReview]), durability.length, applications.length, guide?.revision, lastOutcome]);
     if (key === knowledgeKey) return;
     knowledgeKey = key;
     const all = new Map([...observations.map(node => [node.memoryId, { ...node, kind: "observation" }]), ...[...chains, ...principles].map(node => [node.chainId, { ...node, kind: node.document.kind }])]);
     const fragmentOwners = new Map(observations.flatMap(node => node.fragments.map(fragment => [fragment.fragmentId, node.memoryId])));
-    const inspect = id => {
+    const inspect = (id, reveal = true) => {
       const node = all.get(id); if (!node) return;
       inspectedNodeId = id; byId("inspected-node-kind").textContent = node.kind;
       const content = node.kind === "observation" ? { memoryId: node.memoryId, author: nameFor(node.actor), savedAt: node.savedAt, source: node.source, rawText: node.rawText, fragments: node.fragments }
         : { chainId: node.chainId, revision: node.revision, state: node.state, author: nameFor(node.actor), ...node.document };
       byId("knowledge-inspector").textContent = JSON.stringify(content, null, 2);
+      byId("source-preview-title").textContent = node.document?.claim ?? node.source ?? "Source observation";
+      byId("source-preview-meta").textContent = `${node.kind} / ${id}${node.revision ? ` / r${node.revision}` : ""} / ${nameFor(node.actor)}`;
+      byId("source-preview-body").textContent = (node.kind === "observation" ? node.rawText : node.document?.conclusion) ?? "Source wording unavailable";
+      if (reveal) { byId("source-preview").classList.remove("hidden"); byId("source-preview").scrollIntoView({ block: "nearest", behavior: "auto" }); }
     };
+    knowledgeInspector = inspect;
+    renderKnowledgeFocus(knowledge, inspect);
+    renderHumanReview(knowledge);
+    renderMachineRecords(knowledge, inspect);
     renderKnowledgeHero(knowledge, inspect);
     for (const [target, nodes, kind] of [["observation-nodes", observations, "observation"], ["chain-nodes", chains, "chain"], ["principle-nodes", principles, "principle"]]) {
       const list = byId(target); list.replaceChildren();
@@ -729,9 +974,211 @@ function initializeReplay() {
       const source = element("button", "small-command", "Inspect stored application"); source.addEventListener("click", () => inspect(application.memoryId));
       card.append(source); applied.append(card);
     }
-    if (inspectedNodeId && all.has(inspectedNodeId)) inspect(inspectedNodeId);
+    if (inspectedNodeId && all.has(inspectedNodeId)) inspect(inspectedNodeId, false);
+    else { inspectedNodeId = null; byId("source-preview").classList.add("hidden"); byId("knowledge-inspector").textContent = "No source selected"; }
     icons();
   }
+  function renderHumanReview(knowledge) {
+    const queue = knowledgeReviewQueue(knowledge, humanReviews);
+    const selected = queue.items.find(item => item.id === byId("knowledge-focus").dataset.nodeId) ?? null;
+    if (selected?.snapshot !== currentReviewItem?.snapshot) { byId("review-note").value = ""; byId("review-evidence-check").checked = false; }
+    currentReviewItem = selected;
+    for (const [id, value] of [["pending", queue.counts.pending], ["approved", queue.counts.approved], ["revision", queue.counts.revisionRequested], ["deferred", queue.counts.deferred], ["total", queue.items.length]]) byId(`review-${id}-count`).textContent = count(value);
+    const labels = { pending: "Awaiting your review", approved: "Human approved", revision_requested: "Revision requested", deferred: "Review deferred" };
+    for (const button of byId("review-filters").querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.reviewFilter === reviewFilter));
+    const list = byId("review-queue"); list.replaceChildren(); const query = byId("review-search").value.trim().toLowerCase();
+    for (const item of queue.items.filter(item => (reviewFilter === "all" || item.status === reviewFilter) && item.claim.toLowerCase().includes(query))) {
+      const button = element("button", "review-item"); button.dataset.knowledgeId = item.id; button.dataset.status = item.status; button.setAttribute("aria-pressed", String(item.id === selected?.id));
+      button.append(element("strong", "", item.claim), element("small", "", `${item.kind.toUpperCase()} / r${item.revision} / ${item.sourceCount} sources`), element("small", "", item.blockedReasons.length ? "Evidence needs attention" : labels[item.status]));
+      button.addEventListener("click", () => { focusedKnowledgeId = item.id; knowledgeKey = ""; renderKnowledge(); }); list.append(button);
+    }
+    if (!list.childElementCount) list.append(element("p", "review-empty", queue.items.length ? "No knowledge matches this view." : "No chains or principles recorded yet."));
+    byId("review-decision-status").textContent = selected ? labels[selected.status] : "Awaiting a claim"; byId("review-decision-status").dataset.status = selected?.status ?? "pending";
+    byId("review-selection").textContent = selected ? `${selected.kind.toUpperCase()} / r${selected.revision} / recorded ${selected.agentState}${selected.staleReview ? " / evidence changed since review" : ""}` : "No recorded knowledge selected";
+    const blockers = byId("review-blockers"); blockers.replaceChildren(); for (const reason of selected?.blockedReasons ?? []) blockers.append(element("li", "", reason)); blockers.classList.toggle("hidden", !blockers.childElementCount);
+    const history = byId("review-history"); history.replaceChildren();
+    for (const decision of [...selected?.history ?? []].reverse()) { const entry = element("article"); entry.append(element("strong", "", { approve: "Approved", request_revision: "Revision requested", defer: "Deferred" }[decision.decision]), element("small", "", `${decision.reviewer} / r${decision.revision} / ${decision.reviewedAt}`), element("p", "", decision.note)); history.append(entry); }
+    if (!history.childElementCount) history.append(element("p", "review-empty", "No human decision recorded."));
+    renderReviewControls();
+  }
+  const reviewStoragePrefix = () => recording?.report.runId ? `mindleak:human-review:v1:${recording.report.runId}:` : null;
+  function readHumanReviews() {
+    const prefix = reviewStoragePrefix(); if (!prefix) return [];
+    const keys = Object.keys(localStorage).filter(key => key.startsWith(prefix));
+    if (keys.length > 200) throw new Error("review_limit");
+    let bytes = 0;
+    const decisions = keys.map(key => {
+      const text = localStorage.getItem(key); if (text === null) return null;
+      bytes += new TextEncoder().encode(text).byteLength;
+      if (bytes > 4 * 1024 * 1024) throw new Error("review_budget");
+      const decision = JSON.parse(text);
+      if (decision?.format !== "mindleak-human-review" || decision.version !== 1 || decision.runId !== recording.report.runId
+        || key !== `${prefix}${decision.id}`) throw new Error("review_invalid");
+      return decision;
+    }).filter(Boolean);
+    return decisions.sort((left, right) => String(left.reviewedAt).localeCompare(String(right.reviewedAt)) || left.id.localeCompare(right.id));
+  }
+  function refreshHumanReviews() {
+    try { humanReviews = readHumanReviews(); reviewStorageError = null; }
+    catch { humanReviews = []; reviewStorageError = "Local review storage is unavailable, damaged, or full."; }
+    byId("review-feedback").textContent = reviewStorageError ?? "Local human review / recorded knowledge unchanged";
+    byId("review-feedback").dataset.error = String(Boolean(reviewStorageError));
+    knowledgeKey = "";
+  }
+  const reviewIsCurrent = () => Boolean(recording && !playing && !following && !runActive && recording.report.status !== "recording" && position >= recording.durationMs);
+  function renderReviewControls() {
+    const current = reviewIsCurrent();
+    const reviewer = byId("reviewer-name").value.trim(); const note = byId("review-note").value.trim();
+    const ready = current && currentReviewItem && !reviewStorageError && reviewer.length > 0 && reviewer.length <= 100 && note.length > 0 && note.length <= 2000;
+    byId("review-approve").disabled = !ready || !byId("review-evidence-check").checked || currentReviewItem?.blockedReasons.length > 0 || currentReviewItem?.status === "approved";
+    byId("review-revise").disabled = !ready; byId("review-defer").disabled = !ready;
+    byId("review-export").disabled = !humanReviews.length;
+    byId("review-view-state").textContent = current ? "Latest recorded snapshot" : recording?.report.status === "recording" || runActive ? "Live experiment / review locked" : "Historical playback / review locked";
+    byId("review-current").disabled = !recording || runActive || recording.report.status === "recording";
+  }
+  function beginHumanReview(decision) {
+    renderReviewControls();
+    const button = byId({ approve: "review-approve", request_revision: "review-revise", defer: "review-defer" }[decision]);
+    if (button.disabled) return;
+    const reviewId = Array.from(crypto.getRandomValues(new Uint32Array(4)), part => part.toString(16).padStart(8, "0")).join("");
+    pendingReview = { format: "mindleak-human-review", version: 1, id: reviewId, runId: recording.report.runId,
+      chainId: currentReviewItem.id, revision: currentReviewItem.revision, snapshot: currentReviewItem.snapshot, decision,
+      reviewer: byId("reviewer-name").value.trim(), note: byId("review-note").value.trim(), evidenceReviewed: byId("review-evidence-check").checked };
+    byId("review-confirm-title").textContent = { approve: "Approve this knowledge?", request_revision: "Request a revision?", defer: "Defer this review?" }[decision];
+    byId("review-confirm-claim").textContent = currentReviewItem.claim;
+    byId("review-confirm-meta").textContent = `${pendingReview.reviewer} / r${pendingReview.revision} / browser-local decision`;
+    byId("review-confirm-note").textContent = pendingReview.note;
+    byId("review-confirm-feedback").textContent = "Recorded lab results and MCP knowledge stay unchanged.";
+    byId("review-confirm").showModal();
+  }
+  byId("review-confirm-save").addEventListener("click", () => {
+    if (!pendingReview) return;
+    const fail = message => { byId("review-confirm-feedback").textContent = message; byId("review-feedback").textContent = message; byId("review-feedback").dataset.error = "true"; };
+    const item = knowledgeReviewQueue(recording?.report.knowledge ?? {}, humanReviews).items.find(item => item.id === pendingReview.chainId);
+    if (!reviewIsCurrent() || pendingReview.runId !== recording.report.runId || item?.snapshot !== pendingReview.snapshot
+      || pendingReview.decision === "approve" && (!pendingReview.evidenceReviewed || item.blockedReasons.length)) {
+      fail("Decision not saved. The selected evidence or experiment state changed."); return;
+    }
+    try {
+      const existing = readHumanReviews();
+      if (existing.length >= 200 && !existing.some(decision => decision.id === pendingReview.id)) throw new Error("review_limit");
+      pendingReview.reviewedAt ??= new Date().toISOString();
+      const text = JSON.stringify(pendingReview); const key = `${reviewStoragePrefix()}${pendingReview.id}`;
+      if (new TextEncoder().encode(JSON.stringify([...existing, pendingReview])).byteLength > 4 * 1024 * 1024) throw new Error("review_budget");
+      const previous = localStorage.getItem(key); if (previous !== null && previous !== text) throw new Error("review_conflict");
+      localStorage.setItem(key, text);
+      if (localStorage.getItem(key) !== text) throw new Error("review_unverified");
+      humanReviews = readHumanReviews(); reviewStorageError = null;
+    } catch { fail("Decision not saved or verified. Browser storage is unavailable or full."); return; }
+    pendingReview = null; byId("review-confirm").close(); byId("review-note").value = ""; byId("review-evidence-check").checked = false;
+    byId("review-feedback").textContent = "Human decision saved locally. Recorded knowledge unchanged."; byId("review-feedback").dataset.error = "false";
+    knowledgeKey = ""; render(true);
+  });
+  byId("review-confirm-cancel").addEventListener("click", () => { pendingReview = null; byId("review-confirm").close(); });
+  byId("review-confirm").addEventListener("cancel", () => { pendingReview = null; });
+  for (const [id, decision] of [["review-approve", "approve"], ["review-revise", "request_revision"], ["review-defer", "defer"]]) byId(id).addEventListener("click", () => beginHumanReview(decision));
+  for (const id of ["reviewer-name", "review-note", "review-evidence-check"]) byId(id).addEventListener("input", renderReviewControls);
+  byId("review-export").addEventListener("click", () => {
+    if (humanReviews.length) save(JSON.stringify({ format: "mindleak-human-reviews", version: 1, authority: "browser-local", runId: recording.report.runId,
+      exportedAt: new Date().toISOString(), decisions: humanReviews }, null, 2), `mindleak-human-reviews-${recording.report.runId}.json`, "application/json");
+  });
+  window.addEventListener("storage", event => {
+    const prefix = reviewStoragePrefix(); if (!prefix || event.key !== null && !event.key.startsWith(prefix)) return;
+    refreshHumanReviews(); if (recording) render(true);
+  });
+  for (const button of byId("review-filters").querySelectorAll("button")) button.addEventListener("click", () => { reviewFilter = button.dataset.reviewFilter; knowledgeKey = ""; renderKnowledge(); });
+  byId("review-search").addEventListener("input", () => { knowledgeKey = ""; renderKnowledge(); });
+  byId("review-current").addEventListener("click", () => { if (!recording) return; following = false; playing = false; position = recording.durationMs; render(true); });
+  function renderMachineRecords(knowledge, inspect) {
+    for (const [kind, key, symbol] of [["observations", "memoryId", "file-text"], ["chains", "chainId", "git-branch"], ["principles", "chainId", "book-open-check"]]) {
+      const records = [...new Map((knowledge[kind] ?? []).map(record => [record[key], record])).values()];
+      const list = byId(`machine-${kind}`); list.replaceChildren();
+      byId(`machine-${kind === "observations" ? "observation" : kind === "chains" ? "chain" : "principle"}-count`).textContent = count(records.length);
+      for (const [index, record] of records.slice(-3).entries()) {
+        const label = record.document?.claim ?? record.fragments?.[0]?.text ?? record.source ?? "Recorded source";
+        const button = element("button", "machine-record"); button.dataset.recordId = record[key]; button.title = `${label}\n${record.source ?? record[key]}`;
+        if (kind !== "observations") button.setAttribute("aria-pressed", String(record[key] === byId("knowledge-focus").dataset.nodeId));
+        const content = element("div");
+        content.append(element("strong", "", label),
+          element("small", "", `${String(Math.max(0, records.length - 3) + index + 1).padStart(3, "0")} / ${record.state ?? "source"}${record.revision ? ` / r${record.revision}` : ""}`));
+        button.append(icon(symbol), content);
+        button.addEventListener("click", () => {
+          if (kind === "observations") inspect(record[key]);
+          else { focusedKnowledgeId = record[key]; knowledgeKey = ""; renderKnowledge(); byId("knowledge-focus").scrollIntoView({ block: "nearest", behavior: "auto" }); }
+        });
+        list.append(button);
+      }
+      if (!records.length) list.append(element("p", "machine-empty", { observations: "Awaiting source material", chains: "No chains formed yet", principles: "No principles formed yet" }[kind]));
+      const more = byId(`machine-${kind}-more`); more.disabled = !records.length;
+      more.querySelector("span").textContent = records.length > 3 ? `${records.length - 3} more in library` : `${records.length} recorded`;
+    }
+  }
+  for (const [kind, target] of [["observations", "observation-nodes"], ["chains", "chain-nodes"], ["principles", "principle-nodes"]]) {
+    byId(`machine-${kind}-more`).addEventListener("click", () => {
+      const list = byId(target); const library = list.closest("details");
+      if (library) library.open = true;
+      list.scrollIntoView({ block: "start", behavior: "auto" });
+    });
+  }
+  function renderKnowledgeFocus(knowledge, inspect) {
+    const focus = knowledgeFocus(knowledge, focusedKnowledgeId);
+    const node = focus.selected; const panel = byId("knowledge-focus");
+    const previous = panel.dataset.revisionKey;
+    const revisionKey = node ? `${node.id}:${node.revision}:${node.state}` : "";
+    panel.dataset.nodeId = node?.id ?? ""; panel.dataset.state = node?.state ?? "empty";
+    panel.dataset.revisionKey = revisionKey;
+    panel.dataset.arriving = String(Boolean(node && previous !== revisionKey && !reducedMotion.matches && (playing || following)));
+    const select = byId("knowledge-focus-select"); select.replaceChildren();
+    for (const choice of focus.choices) { const option = element("option", "", choice.claim); option.value = choice.id; select.append(option); }
+    select.value = node?.id ?? ""; select.disabled = !focus.choices.length;
+    byId("knowledge-focus-empty").classList.toggle("hidden", Boolean(node));
+    byId("knowledge-focus-body").classList.toggle("hidden", !node);
+    byId("knowledge-focus-lineage").classList.toggle("hidden", !node);
+    byId("knowledge-focus-inspect").disabled = !node;
+    const born = node && recording?.events.find(event => event.type === "knowledge_written" && event.nodeId === node.id);
+    replayKnowledgeAt = born ? Math.max(0, born.atMs - 1200) : null;
+    byId("knowledge-focus-replay").disabled = replayKnowledgeAt === null;
+    if (!node) {
+      const count = knowledge.observations?.length ?? 0;
+      byId("knowledge-focus-empty").textContent = count ? `${count} source episodes recorded. No chain or principle has been formed at this point.` : "Awaiting the first source observation";
+      return;
+    }
+    byId("knowledge-focus-status").textContent = `${node.kind === "principle" ? "PRINCIPLE" : "CHAIN OF MEMORY"} / r${node.revision ?? "?"} / ${(node.state ?? "recorded").toUpperCase()}${node.requiresReview ? " / REVIEW REQUIRED" : ""}`;
+    byId("knowledge-focus-claim").textContent = node.claim ?? "Recorded knowledge";
+    byId("knowledge-focus-conclusion").textContent = node.conclusion ?? "Conclusion not recorded";
+    byId("knowledge-focus-applicability").textContent = node.applicability ?? "Conditions not recorded";
+    const assumptions = byId("knowledge-focus-assumptions"); assumptions.replaceChildren();
+    for (const text of node.assumptions.length ? node.assumptions : ["No explicit assumptions recorded"]) assumptions.append(element("li", "", text));
+    byId("knowledge-focus-lineage-count").textContent = `${focus.supports.length} linked chains / ${focus.sources.length} distinct source episodes`;
+    byId("evidence-route-sources").textContent = count(focus.sources.length); byId("evidence-route-chains").textContent = count(focus.supports.length);
+    byId("evidence-route-revision").textContent = `r${node.revision ?? "?"}`; byId("evidence-route-kind").textContent = node.kind.toUpperCase();
+    for (const id of ["evidence-chain-arrow", "evidence-chain-stop"]) byId(id).classList.toggle("hidden", node.kind !== "principle");
+    const supports = byId("knowledge-focus-supports"); supports.replaceChildren();
+    const inspectSource = id => inspect(id);
+    for (const support of focus.supports) {
+      const item = element("button", "knowledge-support"); item.disabled = !support.available;
+      const label = element("div", "knowledge-support-top"); label.append(icon("git-branch"), document.createTextNode(`CHAIN / PINNED r${support.revision}${support.currentRevision !== support.revision ? ` / CURRENT ${support.currentRevision ?? "UNKNOWN"}` : ""}`));
+      item.append(label, element("strong", "", support.claim));
+      if (support.conclusion) item.append(element("p", "", support.conclusion));
+      item.addEventListener("click", () => inspectSource(support.id)); supports.append(item);
+    }
+    const sources = byId("knowledge-focus-sources"); sources.replaceChildren();
+    for (const [index, source] of focus.sources.entries()) {
+      const button = element("button", "knowledge-source-link"); button.append(icon("file-search"), element("span", "", `Source ${index + 1} / ${source.label}`));
+      button.title = source.id; button.addEventListener("click", () => inspectSource(source.id)); sources.append(button);
+    }
+    const counterexamples = byId("knowledge-focus-counterexamples"); counterexamples.replaceChildren();
+    byId("knowledge-focus-counter").classList.toggle("hidden", !focus.counterexamples.length);
+    for (const counter of focus.counterexamples) {
+      const button = element("button", "knowledge-source-link"); button.append(icon("triangle-alert"), element("span", "", counter.reasons.filter(Boolean).join("; ") || "Recorded counterexample"));
+      button.disabled = !counter.memoryId; button.title = counter.fragmentId;
+      button.addEventListener("click", () => inspectSource(counter.memoryId)); counterexamples.append(button);
+    }
+    byId("knowledge-focus-caption").textContent = `Latest recorded wording / state at replay position. ${focus.unavailableEvidence ? `${focus.unavailableEvidence} evidence references unavailable. ` : ""}Acceptance is recorded validation, not proof of truth. Source counts are not independent confirmations.`;
+  }
+  byId("knowledge-focus-select").addEventListener("change", event => { focusedKnowledgeId = event.target.value; knowledgeKey = ""; renderKnowledge(); });
+  byId("knowledge-focus-replay").addEventListener("click", () => { if (replayKnowledgeAt === null) return; following = false; playing = !reducedMotion.matches; position = replayKnowledgeAt; render(true); });
+  byId("knowledge-focus-inspect").addEventListener("click", () => { const id = byId("knowledge-focus").dataset.nodeId; if (id) knowledgeInspector?.(id); });
   function renderKnowledgeHero(knowledge, inspect) {
     activityKey = "";
     const graph = knowledgeGraphData({ ...recording?.report, knowledge, events: recording?.events.filter(event => event.atMs <= position) ?? [] });
@@ -739,19 +1186,27 @@ function initializeReplay() {
     const chart = byId("knowledge-hero-graph"); chart.replaceChildren();
     const svg = (tag, attributes, text) => { const node = document.createElementNS("http://www.w3.org/2000/svg", tag); for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value)); if (text !== undefined) node.textContent = text; return node; };
     const colorsByKind = { observation: "#008655", chain: "#145ee0", principle: "#a16b00" };
-    for (const [label, x] of [["OBSERVATIONS", 70], ["CHAINS", 340], ["PRINCIPLES", 610]]) chart.append(svg("text", { x, y: 22, "text-anchor": "middle" }, label));
-    const positions = new Map(graph.nodes.map(node => [node.id, node]));
+    const assembled = !byId("knowledge-page").classList.contains("hidden");
+    const width = assembled ? Math.max(300, chart.clientWidth) : 680;
+    const height = assembled ? chart.clientHeight || 215 : 310;
+    const horizontal = { observation: assembled ? width / 6 : 70, chain: width / 2, principle: assembled ? width * 5 / 6 : 610 };
+    chart.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    for (const [kind, label] of [["observation", "OBSERVATIONS"], ["chain", "CHAINS"], ["principle", "PRINCIPLES"]]) chart.append(svg("text", { x: horizontal[kind], y: assembled ? 17 : 22, "text-anchor": "middle" }, label));
+    const positions = new Map(graph.nodes.map(node => [node.id, { ...node, x: horizontal[node.kind], y: node.y * height / 310 }]));
+    const focus = knowledgeFocus(knowledge, byId("knowledge-focus").dataset.nodeId);
+    const selected = new Set([focus.selected?.id, ...focus.supports.map(node => node.id), ...focus.sources.map(node => node.id)]);
     for (const edge of graph.edges) {
       const from = positions.get(edge.from); const to = positions.get(edge.to);
-      const path = svg("path", { d: `M ${from.x} ${from.y} C ${from.x + 100} ${from.y}, ${to.x - 100} ${to.y}, ${to.x} ${to.y}`,
-        class: "knowledge-hero-edge", "data-role": edge.role, "data-from": edge.from, "data-to": edge.to, fill: "none", stroke: edge.role === "counterexample" ? "#bd3b35" : "#a9b8cc", "stroke-width": 1.3 });
+      const bend = assembled ? (to.x - from.x) * 100 / 270 : 100;
+      const path = svg("path", { d: `M ${from.x} ${from.y} C ${from.x + bend} ${from.y}, ${to.x - bend} ${to.y}, ${to.x} ${to.y}`,
+        class: "knowledge-hero-edge", "data-role": edge.role, "data-from": edge.from, "data-to": edge.to, "data-selected": selected.has(edge.from) && selected.has(edge.to), fill: "none", stroke: edge.role === "counterexample" ? "#bd3b35" : "#a9b8cc", "stroke-width": 1.3 });
       path.append(svg("title", {}, `${edge.role}${edge.referenceRevision ? ` / pinned revision ${edge.referenceRevision}` : ""}`)); chart.append(path);
     }
-    for (const node of graph.nodes) {
-      const group = svg("g", { class: "knowledge-hero-node", role: "button", tabindex: 0, "aria-label": `${node.kind}: ${node.label}`, "data-node-id": node.id, "data-arriving": !displayedGraphIds.has(node.id) });
-      group.append(svg("circle", { cx: node.x, cy: node.y, r: { observation: 7, chain: 12, principle: 20 }[node.kind], fill: colorsByKind[node.kind], stroke: "#172333", "stroke-width": node.state === "candidate" ? 1 : 2 }),
+    for (const node of positions.values()) {
+      const group = svg("g", { class: "knowledge-hero-node", role: "button", tabindex: 0, "aria-label": `${node.kind}: ${node.label}`, "data-node-id": node.id, "data-arriving": !displayedGraphIds.has(node.id), "data-selected": selected.has(node.id) });
+      group.append(svg("circle", { cx: node.x, cy: node.y, r: { observation: 7, chain: 12, principle: 20 }[node.kind] * height / 310, fill: colorsByKind[node.kind], stroke: "#172333", "stroke-width": node.state === "candidate" ? 1 : 2 }),
         svg("title", {}, `${node.kind} / ${node.state}${node.revision ? ` / revision ${node.revision}` : ""}\n${node.label}\n${node.id}`));
-      const select = () => { inspect(node.id); byId("knowledge-inspector").scrollIntoView({ block: "nearest", behavior: "auto" }); };
+      const select = () => inspect(node.id);
       group.addEventListener("click", select); group.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } });
       chart.append(group);
     }
@@ -789,12 +1244,12 @@ function initializeReplay() {
         const level = formation[kind]; stage(kind).textContent = count(level.recordedAccepted);
         stage(note).textContent = `${level.accepted} ready / ${level.candidates} candidates / ${level.needsReview} need review${level.reviewUnknown ? ` / ${level.reviewUnknown} review unknown` : ""}`;
       }
-      field("score").textContent = count(capital.score);
+      field("score").textContent = capital.score === null ? "--" : count(capital.score);
       field("status").textContent = capital.score === null ? "Not measured in this recording" : "Evidence-backed reuse index";
       field("observations").textContent = count(capital.observations);
       field("observations-note").textContent = capital.usedObservations === null ? "Stored sources / use not measured" : `${count(capital.usedObservations)} used in verified work`;
-      field("chains").textContent = count(capital.usefulChains);
-      field("principles").textContent = count(capital.validatedPrinciples);
+      field("chains").textContent = capital.usefulChains === null ? "--" : count(capital.usefulChains);
+      field("principles").textContent = capital.validatedPrinciples === null ? "--" : count(capital.validatedPrinciples);
       field("principles-note").textContent = `${count(capital.acceptedPrinciples)} accepted / later-use validation required`;
       field("growth").textContent = capital.growthPercent === null ? "--" : `${capital.growthPercent > 0 ? "+" : ""}${capital.growthPercent.toFixed(1)}%`;
       field("trend").dataset.trend = capital.growthPercent > 0 ? "positive" : capital.growthPercent < 0 ? "negative" : "neutral";
@@ -804,9 +1259,22 @@ function initializeReplay() {
   }
   function renderCompletion() {
     const summary = labCompletion(recording?.report ?? {});
-    const key = JSON.stringify(summary);
+    const sharing = buildCollaboration(recording?.report ?? {});
+    const key = JSON.stringify([summary, sharing]);
     if (key === completionKey) return;
     completionKey = key;
+    byId("build-sharing-summary").classList.toggle("hidden", !sharing);
+    if (sharing) {
+      byId("build-sharing-policy").textContent = sharing.policy === "knowledge-first-handoff-v5" ? "SOURCE-CHECKED HANDOFFS / V5" : sharing.policy === "knowledge-first-handoff-v4" ? "KNOWLEDGE-FIRST HANDOFFS / V4" : sharing.policy === "verified-handoff-v3" ? "VERIFIED TEAM HANDOFFS / V3" : sharing.policy === "optional-use-v2" ? "OPTIONAL SHARING / RECORDED V2" : "RECORDED TEAM SHARING";
+      byId("build-sharing-status").textContent = { completed: "Component handoffs stored and received", running: "Component handoffs in progress", incomplete: "Sharing workflow incomplete", optional: "Publication and handoff were optional in this run", not_measured: "Handoff completion was not recorded" }[sharing.status];
+      const ratio = (value, required) => value === null ? "Not recorded" : required === null ? count(value) : `${value} / ${required}`;
+      byId("build-sharing-published").textContent = ratio(sharing.publishedComponents, sharing.requiredPublications);
+      byId("build-sharing-received").textContent = ratio(sharing.receivedDependencyHandoffs, sharing.requiredDependencyHandoffs);
+      byId("build-sharing-links").textContent = count(sharing.crossAgentHandoffs);
+      byId("build-sharing-code").textContent = ratio(sharing.codePassedComponents, sharing.components);
+      byId("build-sharing-startup").textContent = sharing.priorKnowledgeChecked === null ? "Prior-knowledge startup checks were not recorded in this run."
+        : `Prior knowledge: ${ratio(sharing.priorKnowledgeChecked, sharing.requiredPublications)} searched / ${ratio(sharing.priorKnowledgeAssessed, sharing.requiredPublications)} assessed.${sharing.checkedDependencySources === null ? "" : ` ${ratio(sharing.checkedDependencySources, sharing.requiredDependencyHandoffs)} dependency implementations checked against published hashes.`} Assessments are recorded decisions, not measured benefit.`;
+    }
     byId("verification-execution").textContent = { not_started: "Not started", running: "Running", finished: "Run finished", incomplete: "Run incomplete", stopped: "Run stopped" }[summary.execution.status];
     const requirements = summary.requirements;
     byId("verification-requirements").textContent = requirements.scheduled ? `${requirements.passed}/${requirements.scheduled} passed${requirements.unresolved ? ` / ${requirements.unresolved} unresolved` : ""}` : "Not measured";
@@ -827,34 +1295,76 @@ function initializeReplay() {
   }
   function renderKnowledgeOutcomes() {
     renderCompletion();
+    const build = recording?.report.kind === "swarm_build" || !recording && ![2, 3].includes(profiles?.experiment);
+    byId("knowledge-reuse-results").classList.toggle("hidden", build);
+    byId("capital-panel").classList.toggle("hidden", build);
+    byId("stage-graph").classList.toggle("hidden", build);
     const metrics = knowledgeMetrics(recording?.report ?? {});
     const key = JSON.stringify(metrics);
     if (key === outcomeKey) return;
     outcomeKey = key;
     renderCapital(metrics.capital, metrics.formation);
+    byId("investigation-evidence").classList.toggle("hidden", !metrics.investigation);
+    if (metrics.investigation) {
+      const learning = metrics.investigation;
+      byId("investigation-version").textContent = `v${recording?.report.plan?.protocolVersion ?? 4} / ONE FAMILY`;
+      byId("investigation-discoveries").textContent = count(learning.discoveriesRetained);
+      byId("investigation-unfinished").textContent = count(learning.unfinishedInvestigationsWithEvidence);
+      byId("investigation-predictions").textContent = `${count(learning.correctPredictions)} / ${count(learning.predictions)}`;
+      byId("investigation-exceptions").textContent = count(learning.exceptionsRetained);
+      const decisions = byId("investigation-decisions"); decisions.replaceChildren();
+      const names = { fresh: "Fresh Agent", notebook: "Notebook", mindleak: "MindLeak", direct: "Direct / diagnostic" };
+      for (const [arm, data] of Object.entries(recording?.report.metrics?.arms ?? {})) {
+        const row = element("tr");
+        for (const value of [names[arm], `${data.checkedDecisions} / ${data.scheduled}`, `${data.boundaryDecisions} / 2`, `${data.correct} / ${data.scheduled}`]) row.append(element("td", "", value));
+        decisions.append(row);
+      }
+      const validation = byId("investigation-validations"); validation.replaceChildren();
+      const checks = recording?.report.plan?.validation?.flatMap(entry => ["mindleak", "notebook"].map(arm =>
+        recording.report.validations?.find(item => item.caseId === entry.id && item.arm === arm)
+        ?? { caseId: entry.id, arm, status: "not_recorded", correct: null })) ?? recording?.report.validations ?? [];
+      for (const check of checks) {
+        const row = element("tr");
+        for (const value of [`${names[check.arm]} / ${check.caseId}`, check.prediction ? check.prediction.expectedPass ? "Pass" : "Fail" : "Not recorded",
+          check.status === "not_recorded" ? "Not recorded" : check.status === "execution_failed" ? "Execution failed" : check.verification ? check.verification.passed ? "Pass" : "Fail" : "Not executed",
+          check.correct === null ? "Not measured" : check.correct ? "Matched" : "Did not match"]) row.append(element("td", "", value));
+        validation.append(row);
+      }
+    }
     const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "--";
     byId("outcome-scope").textContent = metrics.evidenceScope;
     const sourceLinked = metrics.reuse.kind === "source_linked";
+    const usage = metrics.usage;
+    byId("knowledge-use-summary").classList.toggle("hidden", !usage);
+    if (usage) {
+      byId("knowledge-use-policy").textContent = usage.policy === "knowledge_first" ? "KNOWLEDGE-FIRST WORKFLOW" : usage.policy === "optional" ? "OPTIONAL-ADOPTION RECORDING" : "RECORDED KNOWLEDGE ACCESS";
+      byId("knowledge-use-status").textContent = !usage.lookedUp ? "Prior knowledge was not consulted" : !usage.received ? "Lookup attempted; no prior knowledge delivered"
+        : `${usage.verifiedUse} verified knowledge-linked fixes${usage.rejected ? ` / ${usage.rejected} lessons rejected` : ""}`;
+      for (const [id, value] of [["lookups", usage.lookedUp], ["received", usage.received], ["assessed", usage.assessed], ["verified", usage.verifiedUse]]) byId(`knowledge-use-${id}`).textContent = value === null ? "Not recorded" : `${value} / ${usage.evaluated}`;
+      byId("knowledge-use-note").textContent = `${usage.notConsulted} tasks without a lookup / ${count(usage.misses)} empty results / ${count(usage.errors)} retrieval errors. Formation, task correctness and reuse are separate measurements.`;
+    }
     byId("reuse-rate").previousElementSibling.textContent = sourceLinked ? "SOURCE-LINKED APPLICATIONS" : "OBSERVED KNOWLEDGE REUSE";
     byId("transfer-value").previousElementSibling.textContent = sourceLinked ? "NEW-CASE SOURCE LINKS" : "VERIFIED NEW-CASE USE";
-    byId("reuse-rate").textContent = percent(metrics.reuse.rate);
+    byId("reuse-rate").textContent = usage && !usage.lookedUp ? "Not consulted" : percent(metrics.reuse.rate);
     byId("reuse-rate").title = metrics.reuse.evidence;
-    byId("reuse-note").textContent = metrics.successfulTasks ? `${metrics.reuse.tasks} / ${metrics.successfulTasks} successful tasks${sourceLinked ? " / quotation evidence" : " with linked application"}` : "No verified applications yet";
-    byId("transfer-value").textContent = metrics.transfer.attempts ? count(metrics.transfer.successful) : "--";
+    byId("reuse-note").textContent = usage && !usage.lookedUp ? `${metrics.reuse.tasks} / ${usage.evaluated} knowledge-linked fixes; no lookup attempted` : metrics.investigation ? `${metrics.reuse.tasks} / ${recording?.report.metrics?.arms?.mindleak?.scheduled ?? "--"} scheduled tasks / prior evidence before decision`
+      : metrics.successfulTasks ? `${metrics.reuse.tasks} / ${metrics.successfulTasks} successful tasks${sourceLinked ? " / quotation evidence" : " with linked application"}` : "No verified applications yet";
+    byId("transfer-value").textContent = metrics.transfer.attempts ? count(metrics.transfer.successful) : usage && !usage.received ? "Not exercised" : "--";
     byId("transfer-value").title = metrics.transfer.evidence;
-    byId("transfer-note").textContent = metrics.transfer.attempts ? `${metrics.transfer.successful} / ${metrics.transfer.attempts} recorded new-case applications${sourceLinked ? " / not behavioral transfer" : ""}` : "No new-case applications recorded";
+    byId("transfer-note").textContent = metrics.transfer.attempts ? `${metrics.transfer.successful} / ${metrics.transfer.attempts} recorded new-case applications${sourceLinked ? " / not behavioral transfer" : ""}` : usage && !usage.received ? "No prior knowledge delivered to evaluation tasks" : "No new-case applications recorded";
     byId("verified-task-value").textContent = `${metrics.successfulTasks} / ${metrics.evaluatedTasks}`;
     byId("verified-task-note").textContent = recording?.report.kind === "swarm_build" ? "Memory-team components / immutable checks" : "Memory-team decisions / source + runtime checks";
     byId("chain-utility-value").textContent = metrics.chains.rate === null ? "--" : `${metrics.chains.used} / ${metrics.chains.created}`;
     byId("chain-utility-value").title = metrics.chains.evidence;
-    byId("chain-utility-note").textContent = metrics.chains.status === "observed" ? "Direct inspection before a passing change" : "Not measured";
+    byId("chain-utility-note").textContent = metrics.chains.status === "observed" ? "Direct chain inspection before a passing change; principle use is counted separately" : "Not measured";
     const fixTime = metrics.timeToCorrectHypothesis.status === "verified_fix_time_only";
     byId("hypothesis-time-value").previousElementSibling.textContent = fixTime ? "TIME TO VERIFIED FIX" : "TIME TO CORRECT HYPOTHESIS";
     byId("hypothesis-time-value").textContent = Number.isFinite(metrics.timeToCorrectHypothesis.medianMs) ? formatElapsed(metrics.timeToCorrectHypothesis.medianMs) : "--";
-    byId("hypothesis-time-note").textContent = fixTime ? "Median first passing changed candidate" : "Not measured";
+    const freshFix = recording?.report.metrics?.arms?.fresh?.firstVerifiedFixMedianMs;
+    byId("hypothesis-time-note").textContent = fixTime ? `Median first passing changed candidate${Number.isFinite(freshFix) ? ` / fresh-agent median ${formatElapsed(freshFix)}` : ""}` : "Not measured";
     const knownFailures = metrics.mistakesAvoided.status === "known_failure_candidates_only";
     byId("mistakes-avoided-value").previousElementSibling.textContent = knownFailures ? "KNOWN FAILURE CANDIDATES" : "REPEATED MISTAKES AVOIDED";
-    byId("mistakes-avoided-value").textContent = knownFailures && metrics.mistakesAvoided.withMemory !== null ? `${metrics.mistakesAvoided.withMemory} / ${metrics.mistakesAvoided.withoutMemory}` : "--";
+    byId("mistakes-avoided-value").textContent = knownFailures && metrics.mistakesAvoided.withMemory !== null ? `${metrics.mistakesAvoided.withMemory} vs ${metrics.mistakesAvoided.withoutMemory}` : "--";
     byId("mistakes-avoided-note").textContent = knownFailures ? "MindLeak / fresh agent; baseline checks excluded" : "Not measured";
     const chart = byId("knowledge-curve"); chart.replaceChildren();
     const legend = byId("knowledge-curve-legend"); legend.replaceChildren();
@@ -887,32 +1397,55 @@ function initializeReplay() {
     }
     for (const [index, point] of metrics.curve.entries()) chart.append(svg("text", { x: horizontal(index), y: 178, "text-anchor": "middle" }, `R${point.round}`));
   }
+  function makeAgentFace(control = false) {
+    const face = element("span", control ? "dalek-face" : "agent-face");
+    face.setAttribute("aria-hidden", "true");
+    face.append(element("span", control ? "dalek-eye" : "agent-eye"), element("span", control ? "dalek-base" : "agent-eye"));
+    return face;
+  }
+  function layoutNetwork() {
+    const network = byId("network"); const bounds = network.getBoundingClientRect();
+    if (!bounds.width || !byId("agents").offsetHeight) return;
+    const cards = [...agentElements.values()].filter(view => !view.control).map(view => ({ view, bounds: view.card.getBoundingClientRect() }));
+    if (!cards.length) return;
+    const hub = network.querySelector(".hub");
+    const hubTop = Math.ceil(Math.max(...cards.map(card => card.bounds.bottom - bounds.top)) + 22);
+    const height = Math.ceil(hubTop + hub.offsetHeight + 15);
+    const positions = cards.map(({ view, bounds: card }) => ({ id: view.card.dataset.agent, x: card.x - bounds.x + card.width / 2, y: card.bottom - bounds.top }));
+    const key = JSON.stringify([bounds.width, hubTop, height, positions]); if (key === networkLayoutKey) return; networkLayoutKey = key;
+    network.style.height = `${height}px`; hub.style.top = `${hubTop}px`;
+    byId("last-transfer").style.top = `${hubTop + hub.offsetHeight / 2 - 6}px`;
+    byId("connections").setAttribute("viewBox", `0 0 ${bounds.width} ${height}`); byId("connections").style.height = `${height}px`;
+    for (const { id, x, y } of positions) paths.get(id)?.setAttribute("d", `M ${x} ${y} C ${x} ${hubTop - 8}, ${bounds.width / 2} ${hubTop - 14}, ${bounds.width / 2} ${hubTop}`);
+    activityKey = "";
+    if (recording) renderActivity(replayState(recording, position));
+  }
+  new ResizeObserver(layoutNetwork).observe(byId("agents"));
   function makeRoster(agents) {
     activityKey = "";
+    networkLayoutKey = "";
     stageFeedKey = ""; stageAgents.clear(); byId("stage-roster").replaceChildren();
     const featured = agents.filter(agent => !agent.control);
     byId("stage-roster").style.setProperty("--stage-agents", featured.length);
     for (const agent of featured) {
       const item = element("div", "stage-agent"); item.style.setProperty("--agent-color", agent.color); item.dataset.agent = agent.id;
       const avatar = element("div", "stage-avatar");
-      if (defaultAgents.some(role => role.id === agent.id)) { const face = element("span", "agent-face"); face.append(element("span", "agent-eye"), element("span", "agent-eye")); avatar.append(face); }
-      else avatar.append(icon(agent.icon ?? "bot"));
+      avatar.append(makeAgentFace());
       const action = element("div", "stage-agent-action", "Waiting");
       item.append(avatar, element("div", "stage-agent-name", agent.name), action); byId("stage-roster").append(item); stageAgents.set(agent.id, { item, action });
     }
     agentElements.clear(); laneElements.clear(); paths.clear(); byId("agents").replaceChildren(); byId("control-agents").replaceChildren(); byId("timeline").replaceChildren(); byId("connections").replaceChildren();
     byId("agent-cost-body").replaceChildren();
     const memoryAgents = agents.filter(agent => !agent.control); const controls = agents.filter(agent => agent.control);
+    const build = recording?.report.kind === "swarm_build" || !recording && ![2, 3].includes(profiles?.experiment);
     byId("control-section").classList.toggle("hidden", controls.length === 0);
     byId("agents").style.setProperty("--agents", memoryAgents.length); byId("control-agents").style.setProperty("--agents", Math.max(1, controls.length));
     byId("timeline").style.setProperty("--agents", agents.length); byId("timeline").style.height = `${agents.length * 26}px`;
     for (const [index, agent] of agents.entries()) {
-      const card = element("article", "agent-card"); card.style.setProperty("--agent-color", agent.color ?? colors[index]); card.dataset.state = "queued";
-      const top = element("div", "agent-top"); const symbol = element("span", "agent-symbol"); const face = element("span", agent.control ? "dalek-face" : "agent-face");
-      face.setAttribute("aria-hidden", "true");
-      if (agent.control) { face.append(element("span", "dalek-eye"), element("span", "dalek-base")); symbol.title = "Dalek control: no MindLeak access"; }
-      else face.append(element("span", "agent-eye"), element("span", "agent-eye"));
-      if (["fresh", "notebook", "mindleak", "direct"].includes(agent.id)) symbol.append(icon(agent.icon)); else symbol.append(face);
+      const card = element("article", "agent-card"); card.style.setProperty("--agent-color", agent.color ?? colors[index]); card.dataset.state = "queued"; card.dataset.agent = agent.id;
+      const top = element("div", "agent-top"); const symbol = element("span", "agent-symbol");
+      symbol.append(makeAgentFace(agent.control));
+      if (agent.control) symbol.title = "Dalek control: no MindLeak access";
       const status = element("span", "agent-state", "Queued"); top.append(symbol, status); card.append(top, element("h3", "agent-name", agent.name), element("p", "agent-title", agent.title));
       const model = element("div", "agent-model"); const modelText = element("span", "agent-model-name", modelName(agent.model ?? draft.agentModels[agent.pairedWith ?? agent.id]));
       const select = element("select", "agent-model-select"); select.setAttribute("aria-label", `${agent.name} model for next run`);
@@ -925,7 +1458,7 @@ function initializeReplay() {
       });
       model.append(element("span", "agent-model-label", agent.control ? "MATCHED LLM / NO MEMORY" : "AGENT LLM"), modelText, select); card.append(model);
       const memoryCounts = element("div", "agent-memory-counts"); const stored = element("strong", "", "0"); const used = element("strong", "", agent.control ? "0" : "--");
-      for (const [value, label] of [[stored, "RECORDS SAVED"], [used, "LINKED TASK USES"]]) { const item = element("div"); item.append(value, element("small", "", label)); memoryCounts.append(item); }
+      for (const [value, label] of [[stored, "RECORDS SAVED"], [used, build ? agent.control ? "NO MEMORY ACCESS" : "HANDOFFS RECEIVED" : "LINKED TASK USES"]]) { const item = element("div"); item.append(value, element("small", "", label)); memoryCounts.append(item); }
       const value = element("td", "agent-token-value", "0"); const inputValue = element("td", "", "0"); const outputValue = element("td", "", "0");
       const costRow = element("tr"); costRow.append(element("td", "", agent.name), inputValue, outputValue, value); byId("agent-cost-body").append(costRow);
       const action = element("div", "agent-action", "Waiting"); card.append(memoryCounts, action); byId(agent.control ? "control-agents" : "agents").append(card);
@@ -938,6 +1471,7 @@ function initializeReplay() {
     }
     configureProfiles(profiles);
     icons();
+    layoutNetwork();
   }
   function load(report, live = false) {
     const next = normalizeRecording(report);
@@ -950,10 +1484,11 @@ function initializeReplay() {
       playing = !following && !reducedMotion.matches && next.events.length > 0;
       activityProjection = null; displayedGraphIds.clear(); knowledgeKey = ""; timelineKey = "";
       lastEventCount = -1; artifactShown = false; selectedId = null; makeRoster(next.agents);
+      refreshHumanReviews();
     }
     if (following) { position = next.durationMs; playing = false; }
     else if (wasFollowing) { position = next.durationMs; playing = false; }
-    byId("project-title").textContent = next.memoryLab ? "Knowledge Formation" : next.rediscovery ? "Knowledge Reuse"
+    byId("project-title").textContent = next.memoryLab ? "Knowledge Formation" : next.rediscovery ? report.plan?.profile === "mechanism" ? "Investigation Learning" : "Knowledge Reuse"
       : report.title ?? next.source.protocol?.title ?? "Session expiry investigation";
     byId("project-kicker").textContent = next.control ? "LEARNING TRANSFER / A + B + C" : "SHARED BUILD / FIVE AGENTS";
     if (next.memoryLab) byId("project-kicker").textContent = next.agents.some(agent => agent.control) ? "FIVE INVESTIGATORS / FIVE DALEK CONTROLS" : "DURABLE KNOWLEDGE / FIVE INVESTIGATORS";
@@ -962,7 +1497,7 @@ function initializeReplay() {
       ? "Investigate and fix session expiry. A and B work independently; C repeats the task with no memory, A-only memory, and A+B memory. The same immutable checks decide correctness."
       : report.problem ?? "Build a session-expiry app: create named sessions, count down their lifetime, validate inputs, remove sessions, and clear expired entries. Five owners. Eighteen fixed checks.";
     for (const agent of next.agents) agentElements.get(agent.id).modelText.textContent = modelName(agent.model ?? report.agent?.model);
-    byId("run-meta").textContent = `${report.agent?.model ?? "Model not recorded"} / ${String(report.runId ?? "recording").slice(0, 8)}`;
+    byId("run-meta").textContent = `${report.agent?.model ?? report.plan?.model ?? "Model not recorded"} / ${String(report.runId ?? "recording").slice(0, 8)}`;
     byId("provenance").textContent = `${report.realMcpProcess && report.realModel !== false ? "MCP CAPTURE" : "TEST DOUBLE / NOT A LIVE-MODEL RESULT"} / ${report.createdAt ?? "Date not recorded"}`;
     byId("fingerprint").textContent = `BINARY ${String(report.binarySha256 ?? "not recorded").slice(0, 16)} / ${next.events.length} EVENTS`;
     byId("comparisons").style.display = next.control ? "block" : "none";
@@ -985,7 +1520,8 @@ function initializeReplay() {
     byId("study-cost-summary").classList.toggle("hidden", !history?.runs?.length);
     if (!history?.runs?.length) return;
     byId("study-status").textContent = `Study ${String(history.studyId).slice(0, 8)} / ${history.runs.length} recorded runs`;
-    byId("study-note").textContent = history.taskExposure === "previously_exposed"
+    byId("study-note").textContent = recording?.report.plan?.profile === "mechanism" ? "Fresh-case investigation study. Revised principles require new validation cases; this profile does not continue exposed runs."
+      : history.taskExposure === "previously_exposed"
       ? "Continued experience with fresh sessions. Repeated tasks are exposed, not independent holdouts; improvement is not guaranteed. All earlier outcomes remain recorded."
       : "Fresh study. Continue learning retains this experience for later fresh agent sessions.";
     const names = { mindleak: "MindLeak", fresh: "Fresh agent", notebook: "Notebook", daleks: "Daleks", direct: "Direct diagnostic" };
@@ -1019,16 +1555,19 @@ function initializeReplay() {
     if (recording?.rediscovery) {
       const report = recording.report; const body = byId("rediscovery-result-body"); body.replaceChildren();
       const names = { fresh: "Fresh Agent", notebook: "Notebook", mindleak: "MindLeak", direct: "Direct / diagnostic" };
-      byId("rediscovery-protocol-status").textContent = report.plan ? `${report.plan.profile} / ${report.plan.mainSessions} main + ${report.plan.diagnosticSessions} diagnostic / frozen v${report.plan.protocolVersion}` : "Preparing frozen protocol";
+      byId("rediscovery-protocol-status").textContent = report.plan ? `${report.plan.profile} / ${report.plan.memoryUse === "knowledge_first" ? "knowledge-first" : report.plan.memoryUse === "optional" ? "optional adoption" : "recorded policy"} / ${report.plan.mainSessions} main + ${report.plan.diagnosticSessions} diagnostic / frozen v${report.plan.protocolVersion}` : "Preparing frozen protocol";
       const results = report.outcomes ?? recording.events.filter(event => event.type === "rediscovery_task_finished" && event.phaseScope === "evaluation")
         .map(event => ({ ...event, id: event.caseId, arm: event.agent }));
       for (const outcome of results) {
         const row = element("tr"); row.tabIndex = 0;
-        for (const value of [outcome.id, names[outcome.arm], outcome.correct ? "Passed" : "Unresolved", outcome.reuseObserved ? "Before verified change" : outcome.priorKnowledgeDelivered ? "Retrieved only" : "Not used",
+        const disposition = outcome.knowledgeWorkflow?.assessment?.decision ?? outcome.knowledgeWorkflow?.decision;
+        for (const value of [outcome.id, names[outcome.arm], outcome.correct ? "Passed" : "Unresolved", outcome.reuseObserved ? disposition === "adapt" ? "Adapted / verified change" : "Before verified change" : ({ reject: "Rejected after assessment", no_match: "Lookup returned no match", unavailable: "Lookup failed / local fix" })[disposition] ?? (outcome.priorKnowledgeDelivered ? "Retrieved only" : "Not consulted"),
           Array.isArray(outcome.knownFailureCandidates) ? outcome.knownFailureCandidates.length : outcome.knownFailureCandidates ?? "--", Number.isFinite(outcome.firstVerifiedFixMs) ? formatElapsed(outcome.firstVerifiedFixMs) : "--"]) row.append(element("td", "", String(value)));
         const inspect = () => {
           byId("rediscovery-inspector").classList.remove("hidden");
           byId("rediscovery-inspector").textContent = JSON.stringify({ id: outcome.id, fixture: outcome.fixtureSha256, correct: outcome.correct,
+            decision: outcome.decision, decisionCorrect: outcome.decisionCorrect, observationIds: outcome.observationIds,
+            knowledgeWorkflow: outcome.knowledgeWorkflow,
             priorKnowledgeDelivered: outcome.priorKnowledgeDelivered, changedConditionAdaptation: outcome.changedConditionAdaptation,
             priorImplementationInvalidated: outcome.priorImplementationInvalidated, staleMistakeObserved: outcome.staleMistakeObserved,
             experienceAccesses: outcome.experienceAccesses, reads: outcome.reads, writes: outcome.writes, probes: outcome.probes, finalTests: outcome.finalTests,
@@ -1060,7 +1599,7 @@ function initializeReplay() {
       const body = byId("build-result-body"); body.replaceChildren();
       for (const [condition, label] of [["withMemory", "MindLeak Team"], ["withoutMemory", "Daleks"]]) {
         const team = builds[condition]; const row = element("tr");
-        for (const value of [label, `${team.agentsPassed}/5`, `${team.finalTests?.passedTests ?? 0}/18`, team.memoryAccess === "none" ? "None" : "Read + write", formatElapsed(team.elapsedMs)]) row.append(element("td", "", value));
+        for (const value of [label, `${team.codePassedComponents ?? team.agentsPassed}/5`, `${team.finalTests?.passedTests ?? 0}/18`, team.memoryAccess === "none" ? "None" : "Read + write", formatElapsed(team.elapsedMs)]) row.append(element("td", "", value));
         body.append(row);
       }
     }
@@ -1141,6 +1680,7 @@ function initializeReplay() {
       inference_finished: [event.errorCode ? "triangle-alert" : "cpu", `${modelName(event.model)} / ${event.finishReason ?? "response"}`, `${count(event.inputTokens)} in + ${count(event.outputTokens)} out / ${((event.elapsedMs ?? 0) / 1000).toFixed(1)}s`],
       memory_saved: ["database", event.replayed ? "Receipt replayed" : "Memory published", `${event.fragments ?? 0} fragments`],
       memory_delivered: ["git-merge", `${nameFor(event.from)} \u2192 ${nameFor(event.agent)}`, `${event.fragments} fragments delivered`],
+      collaboration_checked: [event.completed ? "handshake" : "triangle-alert", event.completed ? "Component handoff verified" : "Component handoff incomplete", `${event.published ? "Published" : "Not published"} / ${event.receivedDependencies?.length ?? 0} of ${event.requiredDependencies?.length ?? 0} dependency sources read`],
       memory_delivery: ["git-merge", "Memory exposure verified", `A: ${event.agentA ? "yes" : "no"} / B: ${event.agentB ? "yes" : "no"}`],
       confirmation: ["shield-check", "Independent result confirmed", `${event.confirmedSessionsBefore} \u2192 ${event.confirmedSessionsAfter} confirmations`],
       snapshot: ["copy", "A-only snapshot isolated", `${event.records} records`],
@@ -1199,7 +1739,7 @@ function initializeReplay() {
     if (!force && lastEventCount === state.visibleEvents.length && lastFilter === filter) return;
     lastEventCount = state.visibleEvents.length; lastFilter = filter;
     const selected = state.visibleEvents.filter(event => event.type !== "tool_started" && (filter === "all"
-      || filter === "memory" && (/memory|confirmation|snapshot|knowledge|persistence|guide_|observation_/.test(event.type) || event.workload === "memory")
+      || filter === "memory" && (/memory|confirmation|snapshot|knowledge|persistence|guide_|observation_|collaboration/.test(event.type) || event.workload === "memory")
       || filter === "code" && event.type === "tool_finished" && /file|search/.test(event.tool)
       || filter === "tests" && (["tests", "upgrade_probe", "control_arm_finished"].includes(event.type) || event.tool === "run_tests")
       || filter === "llm" && event.type.startsWith("inference") && event.workload !== "memory"
@@ -1282,7 +1822,10 @@ function initializeReplay() {
       const item = byId(`activity-${name}`); item.querySelector("strong").textContent = String(count); item.dataset.active = String(count > 0);
     }
     document.querySelector(".hub").dataset.active = String(moving && activity.active);
-    for (const [id, view] of agentElements) view.card.dataset.working = String(moving && state.agents[id]?.inference !== null && state.agents[id]?.state === "running");
+    for (const [id, view] of agentElements) {
+      const actor = state.agents[id];
+      view.card.dataset.working = String(moving && actor?.state === "running" && (actor.inference !== null || actor.pendingTools.size > 0));
+    }
     const key = JSON.stringify([moving, activity.flows, activity.pulses]);
     if (key === activityKey) return;
     activityKey = key;
@@ -1311,13 +1854,86 @@ function initializeReplay() {
     }
     byId("connections").append(group);
   }
+  function renderLab3Story(advancing) {
+    const story = lab3Story(recording, position);
+    byId("lab3-story").classList.toggle("hidden", !story);
+    if (!story) return;
+    const key = JSON.stringify(story);
+    if (key === lab3StoryKey) return;
+    const previousKey = lab3StoryKey; lab3StoryKey = key; lab3NextMoment = story.nextMoment;
+    const seek = atMs => { if (!Number.isFinite(atMs)) return; following = false; playing = false; position = atMs; render(true); };
+    const chapters = byId("lab3-chapters"); chapters.replaceChildren();
+    for (const chapter of story.chapters) {
+      const button = element("button", "lab3-chapter"); button.append(icon(chapter.icon), document.createTextNode(chapter.label));
+      button.disabled = chapter.atMs === null;
+      if (story.phase === chapter.id) button.setAttribute("aria-current", "step");
+      button.title = chapter.atMs === null ? "No recorded event yet" : `Jump to ${chapter.label.toLowerCase()} / ${formatElapsed(chapter.atMs)}`;
+      button.addEventListener("click", () => seek(chapter.atMs)); chapters.append(button);
+    }
+    const current = story.cases.find(item => item.id === story.currentCase) ?? story.cases[0];
+    const stages = { near: "FAMILIAR PATTERN", generalization: "A NEW ANGLE", changed: "CONTRACT CHANGED", irrelevant: "A DIFFERENT FAULT" };
+    const names = { fresh: "Fresh Agent", notebook: "Notebook", mindleak: "MindLeak", direct: "Direct / diagnostic" };
+    const armColors = { fresh: "#a33b32", notebook: "#008655", mindleak: "#145ee0", direct: "#a16b00" };
+    const inCases = story.phase === "transfer" || story.phase === "finished";
+    byId("lab3-case-eyebrow").textContent = inCases && current ? `${stages[current.stage] ?? "NEW CASE"} / ${story.cases.indexOf(current) + 1} OF ${story.cases.length}` : "INVESTIGATION IN PROGRESS";
+    byId("lab3-case-title").textContent = inCases && current ? current.title : { discover: "Find something worth keeping", form: "Connect the evidence", validate: "Does the rule survive?", review: "What changed what we know?" }[story.phase] ?? "The investigation begins";
+    const active = current?.arms.find(actor => actor.state === "working");
+    byId("lab3-case-meta").textContent = inCases && current ? `${current.label} / ${active ? `${names[active.arm]} investigating` : `${current.arms.filter(actor => ["passed", "unresolved"].includes(actor.state)).length} of ${current.arms.length} outcomes recorded`}`
+      : { discover: "SOURCE EVIDENCE", form: "OBSERVATIONS / CHAINS / PRINCIPLES", validate: "PREDICT / EXECUTE / CHECK", review: "EXCEPTIONS / REVISIONS / NO NEW LEARNING" }[story.phase] ?? "";
+    byId("lab3-next-moment").disabled = story.nextMoment === null;
+    const lanes = byId("lab3-case-lanes"); lanes.replaceChildren(); lanes.classList.toggle("hidden", !inCases || !current);
+    for (const actor of current?.arms ?? []) {
+      const lane = element("article", "lab3-lane"); lane.dataset.state = actor.state; lane.style.setProperty("--lane-color", armColors[actor.arm] ?? "#145ee0");
+      const title = element("div", "lab3-lane-name"); const avatar = element("span", "agent-symbol"); avatar.append(makeAgentFace());
+      title.append(avatar, element("span", "", names[actor.arm] ?? actor.arm));
+      lane.append(title, element("strong", "lab3-lane-state", { queued: "On deck", working: "Investigating", passed: "Checks passed", unresolved: "Unresolved" }[actor.state]),
+        element("p", "lab3-lane-note", actor.reused ? "Prior evidence before verified change" : actor.retrieval === "received" ? "Prior evidence received" : actor.retrieval === "miss" ? "Search returned no lesson" : actor.state === "queued" ? "No recorded attempt yet" : "No prior evidence recorded"));
+      lanes.append(lane);
+    }
+    const prediction = story.prediction; const predictionPanel = byId("lab3-prediction");
+    predictionPanel.classList.toggle("hidden", story.phase !== "validate" || !prediction);
+    if (prediction) {
+      predictionPanel.dataset.verdict = prediction.verdict ?? "pending";
+      predictionPanel.dataset.reveal = String(Boolean(advancing && previousKey && prediction.verdict));
+      byId("lab3-prediction-title").textContent = { matched: "Prediction matched the check", mismatch: "The check challenged the prediction", execution_failed: "The check could not complete" }[prediction.verdict] ?? "Prediction locked in";
+      byId("lab3-prediction-detail").textContent = `${names[prediction.arm] ?? prediction.arm} / ${prediction.caseId} / expected ${prediction.expectedPass ? "pass" : "failure"}${prediction.actualPass === null ? "" : ` / observed ${prediction.actualPass ? "pass" : "failure"}`}`;
+    }
+    const caseList = byId("lab3-case-list"); caseList.replaceChildren(); caseList.classList.toggle("hidden", !inCases);
+    for (const [index, item] of story.cases.entries()) {
+      const button = element("button", "lab3-case-button"); button.append(icon(item.arms.every(actor => actor.state === "passed") ? "circle-check" : "scan-search"), document.createTextNode(`${index + 1} / ${stages[item.stage] ?? item.stage ?? "Case"}`));
+      button.disabled = item.firstAt === null; button.setAttribute("aria-pressed", String(current?.id === item.id)); button.title = `${item.title} / ${item.label}`;
+      button.addEventListener("click", () => seek(item.lastAt)); caseList.append(button);
+    }
+    icons();
+  }
+  byId("lab3-next-moment").addEventListener("click", () => { if (lab3NextMoment === null) return; following = false; playing = false; position = lab3NextMoment; render(true); });
   function renderStage(state, activity) {
+    renderReviewControls();
+    const build = recording.report.kind === "swarm_build";
+    const memoryActors = recording.agents.filter(agent => !agent.control);
     const advancing = playing || following && recording.report.status === "recording";
     const moving = advancing && !reducedMotion.matches;
+    renderLab3Story(advancing && !reducedMotion.matches);
     const busy = moving && activity.phase !== "ready" && activity.phase !== "finished";
+    const memory = memoryActivity(recording, position, advancing, playing ? Number(byId("speed").value) : 1);
+    byId("knowledge-machine").dataset.active = String(moving && memory.active);
+    byId("machine-clock").textContent = formatElapsed(position);
+    byId("machine-clock-label").textContent = following ? "LIVE ELAPSED" : "RECORDED TIME";
+    byId("machine-mode").textContent = advancing ? following ? "LIVE" : "RECORDED REPLAY" : activity.phase === "finished" ? "RUN FINISHED" : "PAUSED";
+    const memoryOperation = memory.flows.at(-1);
+    const lastRecord = state.visibleEvents.findLast(event => event.type === "knowledge_written");
+    byId("machine-operation").textContent = memory.forming ? "Assembling knowledge" : memory.writing ? "Filing source evidence" : memory.reading ? "Following the evidence" : memory.processing ? "Extracting observations"
+      : lastRecord ? `${lastRecord.kind === "principle" ? "Principle" : lastRecord.kind === "chain" ? "Chain" : "Source episode"} ${lastRecord.operation === "accept" ? "accepted" : lastRecord.operation === "revise" ? "revised" : "recorded"}` : "Source collection ready";
+    byId("machine-operation-detail").textContent = memoryOperation ? `${nameFor(memoryOperation.agent)} / ${memoryOperation.kind} operation`
+      : `${activity.knowledge.observations.length} source episodes / ${activity.knowledge.chains.length} chains / ${activity.acceptedPrinciples} accepted principles`;
+    byId("machine-ledger-note").textContent = `${activity.gained.observations} new sources / ${activity.gained.chains} new chains / ${activity.gained.principles} new principles / ${advancing ? following ? "live recorded operations" : "replaying recorded operations" : position >= recording.durationMs ? "recording complete" : "recording paused"}`;
+    const acknowledged = new Set(moving ? memory.pulses.map(pulse => pulse.nodeId) : []);
+    for (const record of document.querySelectorAll(".machine-record")) record.dataset.pulse = String(acknowledged.has(record.dataset.recordId));
     byId("live-stage").dataset.busy = String(busy);
-    byId("stage-heading").textContent = { thinking: "Agents investigating", working: "Investigation in motion", capturing: "Capturing experience", extracting: "Extracting observations", forming: "Forming new knowledge", retrieving: "Knowledge in action", finished: "Run captured", ready: "MindLeak at work" }[activity.phase];
-    byId("stage-run").textContent = `RUN ${recording.report.study?.sequence ?? 1} / ${String(recording.report.runId ?? "").slice(0, 8)} / ${activity.activeAgents.length} ACTIVE`;
+    const memoryActive = activity.activeAgents.filter(agent => !agent.control).length;
+    const controlActive = activity.activeAgents.filter(agent => agent.control).length;
+    byId("stage-heading").textContent = build && !memoryActive && controlActive ? "Control team building" : { thinking: build ? "Agents building" : "Agents investigating", working: build ? "Build in motion" : "Investigation in motion", capturing: build ? "Publishing verified findings" : "Capturing experience", extracting: "Extracting observations", forming: "Forming new knowledge", retrieving: build ? "Reading dependency handoffs" : "Knowledge in action", finished: "Run captured", ready: "MindLeak at work" }[activity.phase];
+    byId("stage-run").textContent = `RUN ${recording.report.study?.sequence ?? 1} / ${String(recording.report.runId ?? "").slice(0, 8)} / ${build ? `${memoryActive} MEMORY + ${controlActive} CONTROL ACTIVE` : `${activity.activeAgents.length} ACTIVE`}`;
     byId("stage-clock").textContent = formatElapsed(position);
     byId("stage-clock-label").textContent = following ? "LIVE ELAPSED" : "RECORDED TIME";
     const number = (id, value) => {
@@ -1328,10 +1944,12 @@ function initializeReplay() {
       }
     };
     number("stage-tasks", `${activity.successfulTasks}/${activity.scheduledTasks ?? "?"}`);
-    number("stage-actions", activity.actions); number("stage-sources", activity.knowledge.observations.length); number("stage-principles", activity.acceptedPrinciples);
+    byId("stage-tasks").previousElementSibling.textContent = build ? "OWNERS READY" : "TASKS VERIFIED";
+    number("stage-actions", activity.actions); number("stage-sources", activity.knowledge.observations.length); number("stage-principles", build ? state.handoffs.size : activity.acceptedPrinciples);
+    byId("stage-principles").previousElementSibling.textContent = build ? "TEAM HANDOFFS" : "PRINCIPLES ACCEPTED";
     byId("stage-task-note").textContent = `${activity.completedTasks} checked / ${activity.completedTasks - activity.successfulTasks} unresolved`;
     byId("stage-source-note").textContent = `+${activity.gained.observations} new / ${activity.inherited.observations} inherited`;
-    byId("stage-principle-note").textContent = `+${activity.gained.principles} new / ${activity.inherited.principles} inherited`;
+    byId("stage-principle-note").textContent = build ? "Recorded cross-agent deliveries" : `+${activity.gained.principles} new / ${activity.inherited.principles} inherited`;
     byId("stage-progress").max = Math.max(1, activity.scheduledTasks ?? 1);
     byId("stage-progress").value = activity.completedTasks;
     for (const [id, view] of stageAgents) {
@@ -1344,8 +1962,22 @@ function initializeReplay() {
     const detail = current && recording.report.toolExhibits?.find(item => item.toolCallId === current.toolCallId);
     byId("stage-action").textContent = current ? `${nameFor(current.agent)} / ${current.tool.replaceAll("_", " ")}` : generating ? `${nameFor(generating.agent)} / ${generating.workload === "memory" ? "memory extraction" : "working on the next step"}` : activity.phase === "finished" ? "Recorded run complete" : "Between recorded operations";
     byId("stage-target").textContent = current ? detail?.arguments?.path ?? detail?.arguments?.query ?? `${formatElapsed(position - current.atMs)} request elapsed`
-      : generating ? `${modelName(generating.model)} / ${formatElapsed(position - generating.atMs)} elapsed` : `${activity.knowledge.chains.length} chains / ${activity.reusedTasks} verified reuses`;
-    const earned = { observations: activity.knowledge.observations.length > 0, chains: activity.knowledge.chains.length > 0, principles: activity.acceptedPrinciples > 0, reuse: activity.reusedTasks > 0 };
+      : generating ? `${modelName(generating.model)} / ${formatElapsed(position - generating.atMs)} elapsed` : build ? `${memoryActors.reduce((total, actor) => total + state.agents[actor.id].storedMemories.size, 0)} agent-published findings / ${state.handoffs.size} cross-agent deliveries` : `${activity.knowledge.chains.length} chains / ${activity.reusedTasks} verified reuses`;
+    const memberIds = new Set(memoryActors.map(agent => agent.id));
+    const earned = build ? { observations: state.visibleEvents.some(event => memberIds.has(event.agent) && event.type === "tool_finished" && event.tool === "write_file" && event.ok),
+      chains: state.visibleEvents.some(event => memberIds.has(event.agent) && (event.type === "tests" && event.passed && event.phase !== "baseline" || event.type === "tool_finished" && event.tool === "run_tests" && event.testsPassed)),
+      principles: memoryActors.some(actor => state.agents[actor.id].storedMemories.size > 0), reuse: state.handoffs.size > 0 }
+      : { observations: activity.knowledge.observations.length > 0, chains: activity.knowledge.chains.length > 0, principles: activity.acceptedPrinciples > 0, reuse: activity.reusedTasks > 0 };
+    const workflow = build ? "build" : "knowledge";
+    if (byId("live-stage").dataset.workflow !== workflow) {
+      byId("live-stage").dataset.workflow = workflow;
+      const labels = { observations: ["file-code", "CODED"], chains: ["flask-conical", "VERIFIED"], principles: ["database", "PUBLISHED"], reuse: ["git-merge", "SHARED"] };
+      for (const badge of document.querySelectorAll(".stage-milestone")) {
+        if (build) { const [symbol, label] = labels[badge.dataset.stage]; badge.replaceChildren(icon(symbol), document.createTextNode(label)); }
+        else badge.replaceChildren(...knowledgeMilestones.get(badge.dataset.stage).map(node => node.cloneNode(true)));
+      }
+      icons();
+    }
     for (const badge of document.querySelectorAll(".stage-milestone")) {
       const next = String(earned[badge.dataset.stage]);
       if (moving && next === "true" && badge.dataset.earned === "false") badge.animate([{ transform: "scale(1)" }, { transform: "scale(1.08)" }, { transform: "scale(1)" }], { duration: 650 });
@@ -1381,13 +2013,15 @@ function initializeReplay() {
     if (recording.memoryLab) byId("memory-note").textContent = `${state.guideApplications.length} guide applications / ${state.inspectedObservations.size} sources read`;
     byId("checks").textContent = `${state.checks} / ${recording.expectedTests}`;
     if (recording.memoryLab) byId("storage-counts").textContent = `${state.storageOperations.length} writes / ${state.observationIds.size} observations / ${state.chainIds.size} chains / ${state.principleIds.size} principles / ${state.persistenceChecks.length} verified restarts / ${state.guideApplications.length} guide applications`;
-    const active = Object.values(state.agents).filter(agent => agent.state === "running").length;
+    const networkAgents = recording.agents.filter(agent => !agent.control);
+    const controlAgents = recording.agents.filter(agent => agent.control);
+    const active = activityProjection.phase === "finished" ? 0 : networkAgents.filter(agent => state.agents[agent.id]?.state === "running").length;
     const generating = Object.values(state.agents).filter(agent => agent.inference !== null).length;
     byId("token-activity").dataset.active = String(generating > 0); byId("input-note").textContent = generating ? `${generating} inference${generating === 1 ? "" : "s"} in flight` : "Reported consumption";
     byId("output-note").textContent = `${state.toolCalls} tool calls`;
-    byId("network-meta").textContent = `${recording.agents.length} agents / ${active} active`;
+    byId("network-meta").textContent = `${networkAgents.length} agents / ${active} active`;
     const phase = [...state.visibleEvents].reverse().find(event => ["control_round_started", "control_round_finished", "round_learning_started", "round_learning_finished"].includes(event.type));
-    byId("control-phase").textContent = phase ? `ROUND ${phase.round} / ${phase.type.startsWith("round_learning") ? "LEARNING REVIEW" : phase.type.endsWith("started") ? "RUNNING" : "FINISHED"} / NO MINDLEAK` : "NO MINDLEAK";
+    byId("control-phase").textContent = phase ? `ROUND ${phase.round} / ${phase.type.startsWith("round_learning") ? "LEARNING REVIEW" : phase.type.endsWith("started") ? "RUNNING" : "FINISHED"} / NO MINDLEAK` : `${controlAgents.length} agents / ${activityProjection.phase === "finished" ? 0 : controlAgents.filter(agent => state.agents[agent.id]?.state === "running").length} active / NO MINDLEAK`;
     byId("hub-count").textContent = `MCP / ${state.memories.size} writes / ${state.handoffs.size} handoffs`;
     byId("last-transfer").textContent = state.lastTransfer ? `${nameFor(state.lastTransfer.from)} \u2192 ${nameFor(state.lastTransfer.agent)}` : "";
     for (const [id, view] of agentElements) {
@@ -1397,7 +2031,7 @@ function initializeReplay() {
       view.inputValue.textContent = `${count(agent.inputTokens)}${agent.unknown ? " + ?" : ""}`;
       view.outputValue.textContent = `${count(agent.outputTokens)}${agent.unknown ? " + ?" : ""}`;
       view.stored.textContent = count(agent.storedMemories.size);
-      view.used.textContent = view.control ? "0" : agent.useMeasured ? count(agent.linkedUses.size) : "--";
+      view.used.textContent = view.control ? "0" : recording.report.kind === "swarm_build" ? count(agent.receivedHandoffs.size) : agent.useMeasured ? count(agent.linkedUses.size) : "--";
       view.action.textContent = agent.inference === null ? agent.action : `Generating / ${((position - agent.inference) / 1000).toFixed(1)}s`;
       paths.get(id)?.classList.toggle("active", state.transfers.some(event => event.agent === id || event.from === id));
     }
@@ -1447,7 +2081,7 @@ function initializeReplay() {
   byId("concurrency-input").addEventListener("input", event => { draft.concurrency = Number(event.target.value); });
   byId("attempts-input").addEventListener("input", event => { draft.attempts = Number(event.target.value); });
   byId("rounds-input").addEventListener("input", event => { draft.rounds = Number(event.target.value); });
-  byId("rediscovery-profile-select").addEventListener("change", event => { draft.rediscoveryProfile = event.target.value; });
+  byId("rediscovery-profile-select").addEventListener("change", event => { draft.rediscoveryProfile = event.target.value; configureStudyMode(); });
   byId("study-fresh").addEventListener("change", () => { continueLearning = false; configureStudyMode(); });
   byId("study-continue").addEventListener("change", () => { continueLearning = true; configureStudyMode(); });
   for (const team of ["memory", "daleks"]) byId(`artifact-${team}`).addEventListener("click", () => {
@@ -1464,6 +2098,7 @@ function initializeReplay() {
   });
   byId("download-knowledge").addEventListener("click", () => { if (recording?.report.knowledge) save(JSON.stringify(recording.report.knowledge, null, 2), "mindleak-durable-knowledge.json", "application/json"); });
   window.addEventListener("hashchange", navigateView);
+  window.addEventListener("resize", () => { if (recording && !byId("knowledge-page").classList.contains("hidden")) { knowledgeKey = ""; render(true); } });
   byId("load").addEventListener("click", () => byId("file-input").click());
   byId("file-input").addEventListener("change", async event => { const file = event.target.files[0]; if (!file) return; try { if (file.size > 16 * 1024 * 1024) throw new Error("Recording exceeds 16 MiB"); load(JSON.parse(await file.text())); } catch { notify("Recording could not be opened"); } event.target.value = ""; });
   byId("download").addEventListener("click", () => { if (recording) save(JSON.stringify(recording.report, null, 2), `mindleak-${recording.report.runId}.json`, "application/json"); });
@@ -1474,11 +2109,11 @@ function initializeReplay() {
   byId("run").classList.toggle("hidden", !initial.live); byId("stop").classList.toggle("hidden", !initial.live); byId("go-live").classList.toggle("hidden", !initial.live); byId("download").disabled = true;
   makeRoster((profiles?.roles ?? defaultAgents).map((agent, index) => ({ ...agent, color: agent.color ?? colors[index % colors.length] })));
   if (profiles?.experiment === 3) {
-    byId("project-title").textContent = "Knowledge Reuse"; byId("project-kicker").textContent = "THREE MAIN ARMS / DIRECT-LESSON DIAGNOSTIC";
+    byId("project-title").textContent = draft.rediscoveryProfile === "mechanism" ? "Investigation Learning" : "Knowledge Reuse"; byId("project-kicker").textContent = "THREE MAIN ARMS / DIRECT-LESSON DIAGNOSTIC";
     byId("task-description").textContent = draft.problem; byId("run").querySelector("span").textContent = "Run experiment";
     byId("network-title").textContent = "Fresh Investigation Arms"; byId("network-meta").textContent = "Randomized / one session at a time";
     byId("app-frame").closest("section").classList.add("hidden"); byId("rediscovery-results").classList.remove("hidden");
-    byId("checks").textContent = `0 / ${draft.rediscoveryProfile === "pilot" ? 495 : draft.rediscoveryProfile === "learning" ? 135 : 27}`;
+  byId("checks").textContent = `0 / ${draft.rediscoveryProfile === "mechanism" ? 54 : draft.rediscoveryProfile === "pilot" ? 495 : ["learning", "adoption"].includes(draft.rediscoveryProfile) ? 135 : 27}`;
   } else if (profiles?.experiment === 2) {
     byId("project-title").textContent = "Knowledge Formation"; byId("project-kicker").textContent = "FIVE INVESTIGATORS / FIVE DALEK CONTROLS";
     byId("task-description").textContent = draft.problem; byId("run").querySelector("span").textContent = "Run experiment";

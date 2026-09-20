@@ -17,7 +17,7 @@ const supports = { type: "array", minItems: 2, maxItems: 8, items: { type: "obje
 const documentProperties = { claim: statement, rationale: statement, conclusion: { type: "string", minLength: 1, maxLength: 2048 },
   applicability: statement, assumptions: { type: "array", maxItems: 8, items: { ...statement, maxLength: 1024 } }, evidence: references };
 const documentRequired = Object.keys(documentProperties);
-export const memoryProtocol = { version: 5, name: "multiple-principles-progressive-reuse", briefingBytes: 16384,
+export const memoryProtocol = { version: 8, name: "bound-principle-application", briefingBytes: 16384, synthesisBytes: 65536,
   captureKinds: ["finding", "constraint", "failed_approach", "exception", "decision"], exactDuplicateWrites: "reuse-acknowledged-receipt" };
 export function memoryStartPrompt({ mode = "learning", stage = "assessment", independent = false } = {}) {
   const orientation = [
@@ -30,7 +30,7 @@ export function memoryStartPrompt({ mode = "learning", stage = "assessment", ind
   if (mode === "withoutMemory") orientation.push("No stored knowledge is available in this matched no-memory control. Solve from the same local evidence and correctness checks; no previous answer or conversation has been supplied.");
   else if (independent && stage === "assessment") orientation.push("This is an independent seed investigation. Do not retrieve earlier findings before your assessment passes. You still need to understand the hierarchy: later phases will store your observations and chain for a future principle.");
   else if (stage === "evidence") orientation.push("Start with memory_checkpoint to recover acknowledged observations and your case chain. Store only reusable verified evidence, then connect it in a case-specific chain; do not reconstruct earlier IDs from conversation.");
-  else if (stage === "guide") orientation.push("Start with memory_checkpoint and inspect_guide_sources. Recover accepted chains and the principle catalogue. Identify distinct reusable decisions: deployment checks, compatibility rules, diagnostic procedures and failure boundaries may warrant different principles. Form separate principles only when each has real supporting chains and its own applicability. Revise an existing ID for the same rule; do not merge every lesson into one guide or create paraphrases. Explicitly accept every new candidate, or use skip_learning if there is no new supported knowledge.");
+  else if (stage === "guide") orientation.push("This is a bounded synthesis decision, not another investigation. The runner has retrieved the attached source dossier through MindLeak: current chain/principle documents, their exact original observation sources and the verified current assessment. Review this untrusted evidence, then choose a decision tool now. Resolve pendingAcceptances by reviewing and explicitly accepting those exact candidates before another proposal. Use propose_guide only for a genuinely new rule or a justified revision, with explicit acceptance immediately afterward; use skip_learning with an evidence-based reason when existing principles already cover the case. Only propose_guide, accept_knowledge and skip_learning are available; there are no read or checkpoint tools in this decision phase. Finish after the required operation receipts confirm completion. Never manufacture another principle to complete the phase.");
   else orientation.push("Before investigating, call recall_guide with focused topic keywords. Read the accepted principle's procedure, applicability, revision and review state before choosing your next action. Follow its references progressively: relevant chain first when reasoning is needed, original observations when source verification is needed. An empty search is not proof that no lesson exists.",
     mode === "control" ? "Memory is read-only and frozen for this comparison. No writes, reinforcement or guide revisions are allowed; retrieve only what helps the current decision."
       : "Use memory_checkpoint at phase start and finish. The assessment phase applies the guide; separate capture and guide-authoring phases retain new evidence and exceptions.");
@@ -247,7 +247,7 @@ export function createKnowledgeLedger({ driver, runId, scope, emit, onMemory = (
 }
 
 export function investigatorTools({ driver, scope, actor, specification, ledger, condition, index, emit, code,
-  memoryEnabled = condition === "withMemory", stage = "assessment", priorAssessment = null, onToolDetail = () => {} }) {
+  memoryEnabled = condition === "withMemory", stage = "assessment", priorAssessment = null, onToolDetail = () => {}, beforeAssessment = () => {} }) {
   const workspace = packageWorkspace(specification, { code });
   const schema = specification.fixtureVersion === 2 ? upgradeAssessmentSchema : assessmentSchema;
   const seen = new Set();
@@ -256,9 +256,12 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
   const retrieved = new Map();
   const sourceObservations = new Set();
   const memoryReads = [];
+  const knowledgeSearches = [];
   const guidesAtAssessment = new Map();
   let application = null;
   let learningSkipped = null;
+  let synthesisReview = null;
+  let synthesisReviewRequest = null;
   let verification = stage !== "assessment" ? priorAssessment?.verification ?? null : null;
   let verifiedAt = null;
   let answer = stage !== "assessment" ? priorAssessment?.answer ?? null : null;
@@ -267,12 +270,51 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
   const canRecall = () => {
     if (!storeEnabled || index < 2 && !verification?.passed) throw new Error("independent_assessment_first");
   };
+  const readyPrinciples = records => [...records.values()].filter(record => record.snapshot.state === "accepted"
+    && record.snapshot.document.kind === "principle" && record.requiresReview === false
+    && Number.isSafeInteger(record.revision) && record.revision > 0);
+  const applicationGuides = (records = retrieved) => readyPrinciples(verifiedAt === null ? records : guidesAtAssessment)
+    .map(record => ({ chainId: record.chainId, revision: record.revision, kind: "principle" }));
+  const applicationState = (records = retrieved) => {
+    const guides = applicationGuides(records);
+    const pointers = guides.length ? [] : [...ledger.nodes.entries()].filter(([, node]) => node.document.kind === "principle" && node.state === "accepted"
+      && Number.isSafeInteger(node.revision) && node.revision > 0).map(([chainId, node]) => ({ chainId, revision: node.revision, kind: "principle", claim: node.document.claim }));
+    return { applicationGuides: guides,
+      ...(guides.length ? {} : { principleReferences: pointers,
+        guidance: "No eligible principle has been delivered. Case-chain and source IDs are evidence, not guides. These catalogue references are pointers only: inspect the chosen principle before probing or verifying; do not apply a case-chain ID.",
+        ...(pointers.length === 1 ? { nextAction: { tool: "inspect_knowledge", arguments: { chainId: pointers[0].chainId } } } : {}) }) };
+  };
+  const catalogueVersion = () => digest([...ledger.nodes.values()]);
+  const requireGuideReview = () => {
+    if (stage !== "guide") return;
+    if (!synthesisReview) throw new Error("guide_review_required");
+    if (synthesisReview.catalogueVersion !== catalogueVersion()) throw new Error("guide_review_changed");
+  };
+  const priorKnowledgeRequired = () => {
+    beforeAssessment();
+    if (!storeEnabled || stage !== "assessment" || index < 2) return;
+    if (!knowledgeSearches.length || knowledgeSearches.at(-1).status === "pending") throw new Error("prior_experience_search_required");
+    const guides = readyPrinciples(retrieved);
+    if (!guides.length) throw new Error("principle_required_before_assessment");
+    if (!guides.some(record => {
+      const sourceIds = new Set(record.snapshot.document.supportedBy.flatMap(reference => ledger.nodes.get(reference.chainId)?.document.evidence ?? [])
+        .map(reference => ledger.observations.find(observation => observation.fragments.some(fragment => fragment.fragmentId === reference.fragmentId))?.memoryId).filter(Boolean));
+      return [...sourceObservations].filter(id => sourceIds.has(id)).length >= 2;
+    })) throw new Error("inspect_two_guide_sources");
+  };
   const expose = result => {
-    if (Buffer.byteLength(JSON.stringify(result)) > 64 * 1024) throw new Error("agent_tool_result_budget");
     const records = result.kind === "knowledge" ? [...result.principles, ...result.chains] : result.chain ? [result] : [];
+    const pending = new Map(retrieved);
+    for (const record of records) {
+      if (record.chain?.snapshot?.state === "accepted") pending.set(record.chain.chainId, { ...structuredClone(record.chain), requiresReview: record.requiresReview !== false });
+      else if (record.chain?.chainId) pending.delete(record.chain.chainId);
+    }
+    const delivered = storeEnabled && stage === "assessment" && index >= 2 ? { ...result, ...applicationState(pending) } : result;
+    if (Buffer.byteLength(JSON.stringify(delivered)) > 64 * 1024) throw new Error("agent_tool_result_budget");
+    retrieved.clear();
+    for (const [chainId, record] of pending) retrieved.set(chainId, record);
     const owners = new Map();
     for (const record of records) {
-      if (record.chain?.snapshot?.state === "accepted") retrieved.set(record.chain.chainId, structuredClone(record.chain));
       const ids = [record.chain?.chainId, ...(record.supportingChains ?? []).filter(support => support.document).map(support => support.reference?.chainId)];
       for (const id of ids) if (ledger.nodes.has(id)) {
         accessedKnowledge.add(id);
@@ -281,16 +323,18 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
       }
     }
     for (const [owner, records] of owners) emit({ type: "memory_delivered", agent: actor, condition, from: owner, fragments: records, records, kind: "knowledge" });
-    return result;
+    return delivered;
   };
   const checkpoint = () => {
     const nextActions = [];
+    const reviewCurrent = synthesisReview?.catalogueVersion === catalogueVersion();
     const ownObservations = ledger.observations.filter(observation => observation.actor === actor && !observation.source?.endsWith("/guide-application"));
     const ownChain = [...ledger.nodes.values()].find(node => node.actor === actor && node.document.kind === "chain");
     const currentGuide = ledger.guideId ? ledger.nodes.get(ledger.guideId) : null;
     if (stage === "assessment") {
-      if (index >= 2) {
-        if (![...retrieved.values()].some(record => record.snapshot.document.kind === "principle")) nextActions.push("recall_guide");
+      if (storeEnabled && index >= 2) {
+        if (!knowledgeSearches.length) nextActions.push("recall_guide");
+        if (!readyPrinciples(retrieved).length) nextActions.push("recall_guide");
         if (sourceObservations.size < 2) nextActions.push("inspect_observation");
       }
       if (specification.fixtureVersion === 2 && !workspace.probes.length) nextActions.push("probe_upgrade");
@@ -302,16 +346,76 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
       if (ownChain?.state !== "accepted") nextActions.push("accept_knowledge");
     } else {
       const ownPrinciples = [...ledger.nodes.values()].filter(node => node.actor === actor && node.document.kind === "principle");
+      if (!reviewCurrent) nextActions.push("inspect_guide_sources");
       if (!ownPrinciples.length && !learningSkipped) nextActions.push("propose_guide");
       if (!learningSkipped && (!ownPrinciples.length || ownPrinciples.some(node => node.state !== "accepted"))) nextActions.push("accept_knowledge");
     }
     const summary = node => node ? { chainId: node.chainId, revision: node.revision, state: node.state } : null;
-    return { stage, ready: nextActions.length === 0, nextActions, assessmentVerified: Boolean(verification?.passed),
-      ...(stage === "assessment" ? { guideReceived: index >= 2 && retrieved.size > 0, sourceObservationsRead: sourceObservations.size,
+    return { stage, ready: nextActions.length === 0, nextActions: [...new Set(nextActions)], assessmentVerified: Boolean(verification?.passed),
+      pendingAcceptances: [...ledger.nodes.values()].filter(node => node.actor === actor && node.state === "candidate"
+        && node.document.kind === (stage === "guide" ? "principle" : "chain")).map(node => ({ chainId: node.chainId, expectedRevision: node.revision })),
+      ...(stage === "assessment" ? { guideReceived: index >= 2 && readyPrinciples(retrieved).length > 0, sourceObservationsRead: sourceObservations.size,
+        ...(storeEnabled && index >= 2 ? applicationState() : {}),
         guideApplied: Boolean(application) } : { observations: ownObservations.map(observation => ({ memoryId: observation.memoryId,
         source: observation.source, fragmentIds: observation.fragments.map(fragment => fragment.fragmentId) })), caseChain: summary(ownChain),
         ...(stage === "guide" ? { guide: summary(currentGuide), principles: [...ledger.nodes.values()].filter(node => node.document.kind === "principle")
-          .map(node => ({ ...summary(node), claim: node.document.claim })), learningOutcome: learningSkipped ? "no_new_learning" : null } : {}) }) };
+          .map(node => ({ ...summary(node), claim: node.document.claim })), learningOutcome: learningSkipped ? "no_new_learning" : null,
+          synthesis: { phase: !synthesisReview ? "review" : !reviewCurrent ? "invalidated" : nextActions.length === 0 ? "complete"
+            : [...ledger.nodes.values()].some(node => node.actor === actor && node.document.kind === "principle" && node.state === "candidate") ? "acceptance" : "decision",
+            reviewId: synthesisReview?.reviewId ?? null, sourceEpisodes: synthesisReview?.sourceEpisodes ?? 0 },
+          decisionOptions: [...ledger.nodes.values()].some(node => node.actor === actor && node.document.kind === "principle" && node.state === "candidate")
+            ? ["accept_knowledge"] : ["propose_guide", ...((synthesisReview ? synthesisReview.readyPrinciples.length > 0
+              : [...ledger.nodes.values()].some(node => node.document.kind === "principle" && node.state === "accepted")) ? ["skip_learning"] : [])],
+        } : {}) }) };
+  };
+  const reviewGuideSources = async () => {
+    canRecall();
+    if (stage !== "guide") return expose(await ledger.guideSources());
+    if (synthesisReview) {
+      requireGuideReview();
+      return { alreadyReviewed: true, reviewId: synthesisReview.reviewId, ...checkpoint() };
+    }
+    if (synthesisReviewRequest) return synthesisReviewRequest;
+    synthesisReviewRequest = (async () => {
+      const version = catalogueVersion();
+      const catalogue = await ledger.guideSources();
+      const records = [...catalogue.chains, ...catalogue.principles];
+      const chains = new Map(catalogue.chains.map(record => [record.chain.chainId, record.chain]));
+      const compact = record => ({ ...record, supportingChains: (record.supportingChains ?? []).map(support => {
+        const known = chains.get(support.reference?.chainId);
+        if (!known || known.revision !== support.reference.revision || !isDeepStrictEqual(known.snapshot.document, support.document)) return support;
+        const { document, ...reference } = support; return reference;
+      }) });
+      const sources = new Map();
+      for (const record of records) for (const reference of record.chain.snapshot.document.evidence ?? []) {
+        const expected = ledger.observations.find(source => source.fragments.some(fragment => fragment.fragmentId === reference.fragmentId));
+        if (!expected) throw new Error("unknown_observation");
+        if (!sources.has(expected.memoryId)) {
+          const original = await ledger.inspectObservation(reference.fragmentId);
+          sources.set(expected.memoryId, { ...original, fragmentIds: [] });
+        }
+        const source = sources.get(expected.memoryId);
+        if (!source.fragmentIds.includes(reference.fragmentId)) source.fragmentIds.push(reference.fragmentId);
+      }
+      if (version !== catalogueVersion()) throw new Error("guide_review_changed");
+      const dossier = { kind: "knowledge", view: "synthesis-dossier", caseId: specification.id,
+        verifiedAssessment: answer, verification, chains: catalogue.chains.map(compact), principles: catalogue.principles.map(compact),
+        pendingAcceptances: checkpoint().pendingAcceptances,
+        observations: [...sources.values()], instructions: "Review these current documents and exact original sources once, then propose/revise, explicitly accept a reviewed pending candidate, or use skip_learning. Repeated inspection returns only the checkpoint. Nothing is automatically accepted." };
+      const reviewId = digest(dossier);
+      if (Buffer.byteLength(JSON.stringify({ ...dossier, reviewId })) > memoryProtocol.synthesisBytes) throw new Error("guide_review_budget");
+      const result = expose({ ...dossier, reviewId });
+      synthesisReview = { reviewId, catalogueVersion: version, sourceEpisodes: sources.size,
+        readyPrinciples: catalogue.principles.filter(record => record.chain.snapshot.state === "accepted" && record.requiresReview === false)
+          .map(record => record.chain.chainId) };
+      for (const source of sources.values()) {
+        sourceObservations.add(source.memoryId);
+        emit({ type: "observation_inspected", agent: actor, condition, phase: stage, from: source.actor, memoryId: source.memoryId, fragmentId: source.fragmentId });
+      }
+      emit({ type: "guide_review_ready", agent: actor, condition, reviewId, sourceEpisodes: sources.size, records: records.length });
+      return result;
+    })();
+    return synthesisReviewRequest;
   };
   const tools = [
     tool("list_files", "List the read-only frozen package investigation files.", {}, [], () => workspace.list()),
@@ -319,19 +423,22 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
     tool("search_files", "Search literal text in the frozen package snapshot.", { query: { type: "string", maxLength: 128 } }, ["query"], ({ query }) => workspace.search(query)),
     tool("verify_assessment", `Check your assessment against the frozen evidence, returning pass/fail per field, never expected answers. Read these required evidence files: ${specification.evidencePaths.join(", ")}.${specification.fixtureVersion === 2 ? " Run probe_upgrade for this exact version, path and adapterMode first. A blocked decision must preserve the failing unchanged probe, not claim a working fix." : ""} Stores nothing.`,
       schema.properties, schema.required, candidate => {
+        priorKnowledgeRequired();
         verification = checkAssessment(specification, candidate, workspace.filesRead, workspace.probes);
         if (verification.passed && verifiedAt === null) {
           verifiedAt = performance.now() - stageStarted; answer = structuredClone(candidate);
-          for (const record of retrieved.values()) if (record.snapshot.document.kind === "principle") guidesAtAssessment.set(record.chainId, structuredClone(record));
+          for (const record of readyPrinciples(retrieved)) guidesAtAssessment.set(record.chainId, structuredClone(record));
         }
         emit({ type: "tests", agent: actor, condition, phase: "assessment", passed: verification.passed, passedTests: verification.passedTests,
           expectedTests: verification.expectedTests, checks: verification.checks, sourceSha256: verification.sourceSha256 });
-        return verification;
+        return storeEnabled && index >= 2 ? { ...verification, ...applicationState(),
+          ...(verification.passed ? { guidance: "Use an exact applicationGuides chainId and revision with apply_guide. Quote two steps from that principle and cite current evidence. Supporting case-chain IDs are not application guides." } : {}) } : verification;
       }),
   ];
   if (specification.fixtureVersion === 2) tools.push(tool("probe_upgrade", "Execute the same three immutable exporter tests in a fresh network-disabled container. Choose an installed branch-kit path and a vendored version, or null targetVersion to preserve it. Apply one transparent caller patch: unchanged, await-string, or await-value. Returns the actual caller source, test counts, failures and source hash. The original case stays read-only. Maximum eight probes per session; policy eligibility is checked separately by verify_assessment.",
     { targetPath: { type: ["string", "null"] }, targetVersion: { type: ["string", "null"] }, adapterMode: { type: "string", enum: adapterModes } },
     ["targetPath", "targetVersion", "adapterMode"], async selection => {
+      priorKnowledgeRequired();
       const result = await workspace.probeUpgrade(selection);
       emit({ type: "upgrade_probe", agent: actor, condition, targetPath: result.targetPath, targetVersion: result.targetVersion, adapterMode: result.adapterMode,
         passed: result.passed, passedTests: result.passedTests, expectedTests: result.expectedTests, sourceSha256: result.sourceSha256, failedTests: result.failedTests });
@@ -355,27 +462,46 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
         }
         return ledger.record(actor, specification, text, path, { kind, claim });
       }),
-    tool("recall_guide", "Retrieve a compact current guide from MindLeak using short topic keywords. Assessment responses preserve one accepted principle and sourceReferences for targeted inspection, rather than repeating every chain. Check applicability, revision and current evidence. The first two investigators must complete their independent assessment before reading earlier work. No search proves an exhaustive review.",
-      { query: { type: "string", minLength: 1, maxLength: 256 } }, ["query"], async ({ query }) => { canRecall(); return expose(await ledger.search(query, { brief: stage === "assessment" })); }),
+    tool("recall_guide", "Retrieve a compact current guide from MindLeak using short topic keywords. Start with branch-kit; extra AND terms may return only case chains. applicationGuides lists actual delivered principles with exact IDs/revisions; sourceReferences and chains are supporting evidence, never apply_guide targets. If no principle is delivered, inspect an explicit principleReferences pointer through inspect_knowledge before probing or verifying. Pointers do not count as retrieval or applicability. The first two investigators must complete their independent assessment before reading earlier work. No search proves an exhaustive review.",
+      { query: { type: "string", minLength: 1, maxLength: 256 } }, ["query"], async ({ query }) => {
+        canRecall();
+        const search = { status: "pending", querySha256: digest(query) }; knowledgeSearches.push(search);
+        try {
+          const result = expose(await ledger.search(query, { brief: stage === "assessment" }));
+          search.status = result.principles?.length || result.chains?.length || result.observations?.length ? "hit" : "miss";
+          return result;
+        } catch (error) { search.status = "error"; throw error; }
+      }),
     tool("inspect_knowledge", "Inspect a recalled chain or principle, including its stored source and revision. Do not infer persistence from the current conversation.",
-      { chainId: { type: "string" } }, ["chainId"], async ({ chainId }) => { canRecall(); return expose(await ledger.inspect(chainId)); }),
-    tool("inspect_guide_sources", "Read all stored case chains and the current solution principle from MindLeak by their stable IDs. Returns exact current documents and revisions without duplicate source/history payloads. Use this after your assessment to gather the accepted support IDs for the guide, including any of your own work already saved. Requires independent assessment for the first two investigators.",
-      {}, [], async () => { canRecall(); return expose(await ledger.guideSources()); }),
+      { chainId: { type: "string" } }, ["chainId"], async ({ chainId }) => {
+        canRecall();
+        const result = await ledger.inspect(chainId);
+        return expose(stage === "assessment" && result.chain?.snapshot?.document.kind === "principle"
+          && result.chain.snapshot.state === "accepted" && result.requiresReview === false
+          ? knowledgeBrief({ principles: [result], chains: [], observations: [] }) : result);
+      }),
+    tool("inspect_guide_sources", stage === "guide"
+      ? "Required one-time review: read a bounded dossier of current chains/principles and their exact original observation sources through MindLeak. It includes the verified current assessment. Review conditions, differences and counterevidence, then make a synthesis decision; repeated calls return only remaining actions, never the same evidence again. No automatic acceptance."
+      : "Read all stored case chains and the current solution principle from MindLeak by their stable IDs. Returns exact current documents and revisions without duplicate source/history payloads. Use this after your assessment to gather the accepted support IDs for the guide, including any of your own work already saved. Requires independent assessment for the first two investigators.",
+      {}, [], reviewGuideSources),
     tool("inspect_observation", "Read an exact source observation cited by a stored chain. Use the actual evidence fragment ID, not the chain ID. The response comes from MindLeak and includes the original source text.",
       { fragmentId: { type: "string" } }, ["fragmentId"], async ({ fragmentId }) => {
         canRecall(); const recovered = await ledger.inspectObservation(fragmentId); sourceObservations.add(recovered.memoryId);
-        emit({ type: "observation_inspected", agent: actor, condition, from: recovered.actor, memoryId: recovered.memoryId, fragmentId });
+        emit({ type: "observation_inspected", agent: actor, condition, phase: stage, from: recovered.actor, memoryId: recovered.memoryId, fragmentId });
         return recovered;
       }),
-    tool("apply_guide", "After verifying your answer, record how you used the guide retrieved BEFORE the assessment. Quote two distinct steps exactly from its conclusion, name current case evidence, and explain whether each applies or is an exception. Inspect at least two distinct source observations cited by the guide's supporting chains first. This records use against a checked case, not proof that every guide statement is true.",
-      { chainId: { type: "string" }, revision: { type: "integer", minimum: 1 }, steps: { type: "array", minItems: 2, maxItems: 4,
+    tool("apply_guide", "After verifying your answer, record how you used a principle retrieved BEFORE that assessment. Copy its exact chainId and revision from verify_assessment.applicationGuides or memory_checkpoint.applicationGuides; case-chain/source IDs are not valid targets. Quote two distinct steps exactly from that principle's conclusion, name current case evidence, and explain whether each applies or is an exception. Inspect at least two distinct source observations cited by its supporting chains first. This records use against a checked case, not proof that every guide statement is true.",
+      { chainId: { type: "string", description: "Exact principle chainId from the passing assessment's applicationGuides, not a supporting case-chain or memory ID." },
+        revision: { type: "integer", minimum: 1, description: "Exact revision returned beside that principle in applicationGuides." }, steps: { type: "array", minItems: 2, maxItems: 4,
         items: { type: "object", additionalProperties: false, properties: { quote: { type: "string", minLength: 12, maxLength: 700 },
           decision: { type: "string", enum: ["applies", "exception"] }, evidencePath: { type: "string" }, reason: { ...statement, maxLength: 700 } },
         required: ["quote", "decision", "evidencePath", "reason"] } } }, ["chainId", "revision", "steps"], async detail => {
         const guideAtAssessment = guidesAtAssessment.get(detail.chainId);
-        if (!verification?.passed || !guideAtAssessment || detail.chainId !== guideAtAssessment.chainId || detail.revision !== guideAtAssessment.revision) throw new Error("guide_must_precede_verified_assessment");
+        if (!verification?.passed || !guidesAtAssessment.size) throw new Error("guide_must_precede_verified_assessment");
+        if (!guideAtAssessment || detail.revision !== guideAtAssessment.revision) throw new Error("eligible_principle_reference_required");
         const current = await ledger.inspect(detail.chainId);
-        if (current.chain.revision !== detail.revision) throw new Error("stale_guide_revision");
+        if (current.chain?.revision !== detail.revision || current.chain.snapshot.state !== "accepted"
+          || current.chain.snapshot.document.kind !== "principle" || current.requiresReview !== false) throw new Error("stale_guide_revision");
         const guideDocument = guideAtAssessment.snapshot.document;
         const sourceIds = new Set(guideDocument.supportedBy.flatMap(reference => ledger.nodes.get(reference.chainId)?.document.evidence ?? [])
           .map(reference => ledger.observations.find(observation => observation.fragments.some(fragment => fragment.fragmentId === reference.fragmentId))?.memoryId).filter(Boolean));
@@ -397,19 +523,24 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
       { ...documentProperties, supportedBy: supports, chainId: { type: ["string", "null"] }, expectedRevision: { type: ["integer", "null"], minimum: 1 } },
       [...documentRequired, "supportedBy", "chainId", "expectedRevision"], async ({ chainId, expectedRevision, ...document }) => {
         if (!verification?.passed) throw new Error("assessment_required");
-        return ledger.propose(actor, { ...document, kind: "principle" }, chainId ? { chainId, expectedRevision } : null);
+        requireGuideReview();
+        if (stage === "guide" && [...ledger.nodes.values()].some(node => node.actor === actor && node.document.kind === "principle" && node.state === "candidate")) throw new Error("finish_pending_principle_first");
+        const receipt = await ledger.propose(actor, { ...document, kind: "principle" }, chainId ? { chainId, expectedRevision } : null);
+        return { ...receipt, nextAction: { tool: "accept_knowledge", arguments: { chainId: receipt.chainId, expectedRevision: receipt.revision } } };
       }),
     tool("accept_knowledge", "Explicitly accept your candidate after checking the assessment and reviewing its cited sources. Preserves its ID and adds a validation revision in MindLeak. This records your validation, not a universal truth claim.",
       { chainId: { type: "string" }, expectedRevision: { type: "integer", minimum: 1 } }, ["chainId", "expectedRevision"],
-      ({ chainId, expectedRevision }) => ledger.accept(actor, chainId, expectedRevision, specification, verification)),
+      ({ chainId, expectedRevision }) => { requireGuideReview(); return ledger.accept(actor, chainId, expectedRevision, specification, verification); }),
     tool("skip_learning", "Record that inspected existing principles already cover the verified evidence and no new principle or revision is justified. Requires actual knowledge inspection and an accepted principle. Stores no new knowledge.",
       { reason: { type: "string", minLength: 10, maxLength: 500 } }, ["reason"], ({ reason }) => {
+        requireGuideReview();
+        if (stage === "guide" && !synthesisReview.readyPrinciples.length) throw new Error("inspect_existing_principles_first");
         if (!verification?.passed || !accessedKnowledge.size || ![...ledger.nodes.values()].some(node => node.document.kind === "principle" && node.state === "accepted")) throw new Error("inspect_existing_principles_first");
         if ([...ledger.nodes.values()].some(node => node.actor === actor && node.document.kind === "principle" && node.state !== "accepted")) throw new Error("finish_pending_principle_first");
         learningSkipped = reason; return { stored: false, outcome: "no_new_learning", reason };
       }),
   );
-  const guideTools = new Set(["memory_checkpoint", "recall_guide", "inspect_knowledge", "inspect_guide_sources", "inspect_observation", "propose_guide", "accept_knowledge", "skip_learning"]);
+  const guideTools = new Set(["memory_checkpoint", "inspect_guide_sources", "propose_guide", "accept_knowledge", "skip_learning"]);
   const evidenceTools = new Set(["memory_checkpoint", "list_files", "read_file", "search_files", "record_observation", "inspect_guide_sources", "inspect_observation", "propose_chain", "accept_knowledge"]);
   const assessmentTools = new Set(["memory_checkpoint", "list_files", "read_file", "search_files", "verify_assessment", "probe_upgrade", "recall_guide", "inspect_knowledge", "inspect_observation", "apply_guide"]);
   const selected = tools.filter(entry => stage === "guide" ? guideTools.has(entry.definition.function.name)
@@ -417,10 +548,11 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
       : assessmentTools.has(entry.definition.function.name) && (index >= 2 || entry.definition.function.name !== "apply_guide"));
   const wrapped = selected.map(entry => ({ ...entry, invoke: async (args, context = {}) => {
     onToolDetail({ toolCallId: context.toolCallId ?? randomUUID(), agent: actor, condition, tool: entry.definition.function.name,
-      arguments: Object.fromEntries(Object.entries(args).filter(([key]) => ["path", "query", "chainId", "expectedRevision", "targetPath", "targetVersion", "adapterMode"].includes(key))) });
+      arguments: Object.fromEntries(Object.entries(args).filter(([key]) => ["path", "query", "chainId", "revision", "expectedRevision", "targetPath", "targetVersion", "adapterMode"].includes(key))) });
     const started = performance.now();
     const result = await entry.invoke(args);
-    if (["recall_guide", "inspect_knowledge", "inspect_guide_sources", "inspect_observation"].includes(entry.definition.function.name)) {
+    if (synthesisReview && ["propose_guide", "accept_knowledge"].includes(entry.definition.function.name)) synthesisReview.catalogueVersion = catalogueVersion();
+    if (!result.alreadyReviewed && ["recall_guide", "inspect_knowledge", "inspect_guide_sources", "inspect_observation"].includes(entry.definition.function.name)) {
       const read = { tool: entry.definition.function.name, bytes: Buffer.byteLength(JSON.stringify(result)), elapsedMs: performance.now() - started,
         view: result.view ?? "detail", distinctKnowledgeReceived: accessedKnowledge.size, distinctSourcesInspected: sourceObservations.size };
       memoryReads.push(read); emit({ type: "memory_read", agent: actor, condition, phase: stage, ...read });
@@ -428,9 +560,38 @@ export function investigatorTools({ driver, scope, actor, specification, ledger,
     return result;
   } }));
   return { tools: wrapped, workspace, accessedKnowledge, receivedOwners, sourceObservations, checkpoint, memoryReads,
+    async prepareSynthesis() {
+      if (stage !== "guide") throw new Error("guide_review_required");
+      const dossier = synthesisReview ? await synthesisReviewRequest
+        : await wrapped.find(entry => entry.definition.function.name === "inspect_guide_sources").invoke({});
+      requireGuideReview();
+      return { context: JSON.stringify(dossier), tools: wrapped.filter(entry => ["propose_guide", "accept_knowledge", "skip_learning"].includes(entry.definition.function.name)) };
+    },
     get learningSkipped() { return learningSkipped; },
     get application() { return application; },
     get verification() { return verification; }, get answer() { return answer; }, get investigationMs() { return verifiedAt; } };
+}
+
+export async function runGuideSynthesis({ author, agent, task, signal, onEvent = () => {} }) {
+  const started = performance.now();
+  let reviewMs = null; let modelStarted = false;
+  try {
+    signal?.throwIfAborted();
+    const prepared = await author.prepareSynthesis();
+    reviewMs = performance.now() - started;
+    signal?.throwIfAborted();
+    modelStarted = true;
+    const execution = await agent.run(task, prepared.tools, prepared.context,
+      { type: "object", properties: { completed: { type: "boolean" } }, required: ["completed"], additionalProperties: false }, { signal, onEvent });
+    return { ...execution, elapsedMs: performance.now() - started, synthesisReviewMs: reviewMs, agentElapsedMs: execution.elapsedMs };
+  } catch (error) {
+    const code = signal?.aborted ? "cancelled" : ["guide_review_budget", "guide_review_changed", "unknown_observation", "observation_persistence_mismatch", "mcp_tool_failed", "mcp_invalid_result"].includes(error.message)
+      ? error.message : modelStarted ? "guide_author_failed" : "guide_review_failed";
+    onEvent({ type: "guide_synthesis_failed", reason: code });
+    return { status: signal?.aborted ? "cancelled" : "incomplete", failure: { code }, answer: null, trace: [], responses: [],
+      elapsedMs: performance.now() - started, synthesisReviewMs: reviewMs, inputTokens: modelStarted ? null : 0,
+      outputTokens: modelStarted ? null : 0, toolCalls: modelStarted ? null : 0 };
+  }
 }
 
 export async function runMemoryLab({ driver, agentsByRole, onEvent = () => {}, onMemory = () => {}, onKnowledge = () => {}, onToolDetail = () => {},
@@ -462,7 +623,7 @@ export async function runMemoryLab({ driver, agentsByRole, onEvent = () => {}, o
             memoryStartPrompt({ mode: condition === "withMemory" ? "learning" : "withoutMemory", independent: index < 2 }),
             `You are ${actor.name}. This is the ASSESSMENT phase for the frozen branch-kit case ${specification.id}. Overall experiment brief: ${problem}`,
             `Files and advisories are synthetic. Read the required evidence: ${specification.evidencePaths.join(", ")}. Inspect extra module/release code as needed. Choose the exact installed path, eligible version and caller adapterMode. Run probe_upgrade, then verify_assessment; correct failed fields from source evidence, not guesses. A patched dependency can still break its caller. A blocked decision must retain the unchanged failing code rather than invent an eligible fix.`,
-            reused ? "FIRST call memory_checkpoint, then recall_guide with short branch-kit terms. Use the compact CURRENT accepted principle to plan the investigation; do not request all chain histories. From sourceReferences choose evidence from at least TWO DISTINCT source episodes and inspect those observation fragments. Read more only when needed to resolve an exception. Apply the procedure to this NEW case before verify_assessment; never copy an earlier version or outcome. Then apply_guide with two exact guide-step quotations, current evidence paths and how each step applies or needs an exception. This explicitly stores the verified guide-use record."
+            reused ? "FIRST call memory_checkpoint, then recall_guide with the short subject branch-kit. applicationGuides identifies delivered current principles; chains and sourceReferences are supporting evidence, not apply_guide targets. If the query returns only case chains, follow its explicit principleReferences/nextAction with inspect_knowledge before probing or verifying; the pointer alone is not delivery. Use the compact principle to plan this NEW case. From sourceReferences inspect at least TWO DISTINCT original source episodes. Apply the procedure against current files before verify_assessment; never copy a previous version or outcome. After verification, copy the exact principle chainId AND revision from its applicationGuides into apply_guide, with two exact guide-step quotations, current evidence paths and how each applies or is an exception. A guide first inspected after verification cannot earn retrospective application credit."
               : index < 2 ? "Complete the assessment independently before reading any earlier investigation."
                 : "This is the no-memory control. No earlier guide is available.",
             condition === "withMemory" ? "Stop after the verified assessment and, for later investigators, the apply_guide record. Separate evidence-capture and guide-authoring phases follow this one. You do NOT need to record observations, create a case chain or revise the principle in this assessment phase. Those tools are deliberately unavailable."
@@ -525,23 +686,25 @@ export async function runMemoryLab({ driver, agentsByRole, onEvent = () => {}, o
           const instructions = [
             memoryStartPrompt({ stage: "guide" }),
             `You are ${actor.name}, continuing as the guide author for branch-kit case ${specification.id}. Your independent case assessment passed and your case chain is already accepted in MindLeak.`,
-            "No earlier conversation is available. FIRST call memory_checkpoint, then inspect_guide_sources to retrieve current accepted case chains and the existing principle from MindLeak. Recover the findings and evidence from storage, not a previous conversation.",
-            "Use propose_guide for each distinct supported decision rule. Choose 2..8 relevant accepted chains for that principle; they need not include every case. Use null chainId/expectedRevision for new principles. For refinement of an existing rule, retain its ID/current revision and preserve known support and counterexamples. Deployment identity, API adaptation, policy limits and verification strategy can be different rules when the evidence justifies them. Several principles from one investigation are allowed; paraphrases and arbitrary quotas are not.",
+            "No earlier conversation is available. The attached one-time dossier contains current documents and complete original sources retrieved from MindLeak. Compare your case's new evidence with the existing principles; do not repeat the investigation. Missing or oversized evidence is an explicit failure, never permission to invent a conclusion.",
+            "After reviewing the dossier, choose an action immediately: accept an already reviewed pending candidate, propose/revise a justified principle, or skip_learning because the inspected catalogue covers the case. A new case-specific answer does not automatically require a new general rule. State a no-new-learning reason using the actual condition and existing procedure.",
+            "Choose 2..8 relevant accepted chains for a principle, not every case. Use null chainId/expectedRevision for a genuinely new decision rule, or retain the existing ID/current revision to refine that rule. Preserve conditions and counterexamples. Accept one reviewed candidate before proposing another; stop when the justified decisions are complete rather than filling a quota.",
             "Put a concise ordered procedure in conclusion (under 1800 characters), a branch-kit claim, auditable rationale, applicability and assumptions. Direct evidence may only be counterexamples; positive support comes from accepted chains. Do not fabricate certainty or independent corroboration.",
             "Explicitly call accept_knowledge for every returned candidate ID/revision. A proposed-but-unaccepted principle is unfinished. If existing inspected principles already cover the current evidence, use skip_learning instead of manufacturing another revision.",
-            "Finish with memory_checkpoint. Preserve an actionable short guide and the exceptions learned; raw observations stay in the source records rather than being copied into the procedure.",
-            'Finish with JSON {"completed":true} only after the guide acceptance succeeds, otherwise {"completed":false}.',
+            "Preserve an actionable short guide and the exceptions learned; raw observations stay in the source records rather than being copied into the procedure. The runner checks remaining actions after the decision; do not request unavailable inspection or checkpoint tools.",
+            'Finish with JSON {"completed":true} after explicit acceptance or an acknowledged skip_learning; otherwise {"completed":false}.',
           ].join("\n");
           emit({ type: "guide_phase_started", agent: actor.id, attempt, caseId: specification.id });
-          const execution = await agent.run(instructions, author.tools, "", { type: "object", properties: { completed: { type: "boolean" } }, required: ["completed"], additionalProperties: false },
-            { signal, onEvent: event => emit({ ...event, agent: actor.id, condition: "guide", attempt }) });
+          const execution = await runGuideSynthesis({ author, agent, task: instructions, signal,
+            onEvent: event => emit({ ...event, agent: actor.id, condition: "guide", attempt }) });
           const authored = [...ledger.nodes.values()].filter(node => node.document.kind === "principle" && node.actor === actor.id);
           const current = authored.at(-1) ?? ledger.nodes.get(ledger.guideId);
           guidePublished = execution.status === "completed" && author.checkpoint().ready && Boolean(current?.state === "accepted");
           actor.guideAttempts.push({ ...publicExecution(execution), phase: "guide", attempt, passed: Boolean(guidePublished),
+            synthesisReviewMs: execution.synthesisReviewMs, agentElapsedMs: execution.agentElapsedMs,
             selfReportedComplete: execution.answer?.completed === true,
             chainId: current?.chainId ?? null, revision: current?.revision ?? null, principleIds: authored.map(node => node.chainId),
-            learningOutcome: author.learningSkipped ? "no_new_learning" : "principles_retained", memoryReads: author.memoryReads, memoryCheckpoint: author.checkpoint() });
+            learningOutcome: author.learningSkipped ? "no_new_learning" : guidePublished ? "principles_retained" : "incomplete", memoryReads: author.memoryReads, memoryCheckpoint: author.checkpoint() });
           emit({ type: "guide_phase_finished", agent: actor.id, attempt, passed: Boolean(guidePublished), revision: current?.revision });
           if (guidePublished) break;
         }

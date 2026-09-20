@@ -1,5 +1,16 @@
 # Learning Evidence and Benchmark Results
 
+## Investigation Learning
+
+The initial [mechanism trial](VALIDATION.md#initial-real-model-trial) on
+2026-09-18 formed two source-backed chains and one explicitly accepted principle
+from two discovery cases. Its positive and boundary predictions matched actual
+reserved checks. All twelve main-arm tasks passed, but MindLeak's evaluation
+agents did not retrieve the principle. The notebook failed validation and was not
+published; its failures exposed a now-fixed reporting omission. This run establishes
+neither a reuse advantage nor superiority over searchable notes. Original results
+and failure evidence are preserved.
+
 MindLeak is evaluated as knowledge formation for agents. Three claims stay
 separate: evidence-backed knowledge can be formed; later agents can use it;
 and that use improves outcomes against matched controls. The measurements below
@@ -10,6 +21,172 @@ The [lab recordings](VALIDATION.md#recorded-local-run) include formation and reu
 experiments, including flat outcomes and retrieval misses. The complete reuse
 pilot and independent held-out confirmation remain unrun. No general compounding
 advantage or 100,000-to-200 compression result is claimed.
+
+## Lab 1 Sharing Check: 2026-09-18
+
+The user-run optional-sharing report `c0bd7c21-62ed-42f6-907d-b1a0befe1a71`
+passed its code checks but recorded only Orion's publication and zero memory
+lookups or cross-agent handoffs. The old prompt explicitly permitted that outcome;
+the report and its original results remain unchanged.
+
+The verified-handoff v3 check `5888a949-c276-4e37-bbfc-3e7329397fae`
+used the real MCP server, a disposable database and the unchanged Session Desk
+fixture. Atlas, Iris and Nova used GPT-6 Astra; Vega and Orion used Claude Opus 5,
+with two concurrent agents, 20 steps, low reasoning, 180 seconds per session and
+at most two attempts. This check used model-free sentence decomposition and
+keyword retrieval rather than the live lab's optional GLM extraction.
+
+- All five agents published one verified component finding, in addition to the
+	initial task brief: six stored memory records, not six independent discoveries.
+- All six declared dependency handoffs were actually read through MCP: Atlas to
+	Nova and Vega, Iris to Nova and Orion, and Nova and Vega to Orion.
+- All five components and all 18 immutable integration checks passed. The generated
+	application also passed 18 browser smoke checks across desktop and mobile.
+- Agent usage was 211,801 input and 7,434 output tokens across 45 tool calls;
+	elapsed time was about 99.6 seconds on a shared host. No priced-cost claim is made.
+
+This validates publication and source delivery, not that memory caused better
+code or reduced cost. The real check ran the five-agent memory team only; isolated
+matched controls and failed/stale-publication behavior are covered by deterministic
+regressions. It is not a new comparative benchmark. The initial browser preflight
+attempt stopped before model work because the installed Chromium path was omitted;
+the successful check supplied the existing executable explicitly.
+
+The report, replay, generated application, candidate files and executed-module
+hashes are retained under ignored
+`target/lab1-verified-sharing-2026-09-18T06-29-43.998Z`.
+
+## Principle Binding Check: 2026-09-21
+
+The full v7 run `93d41bbc-f28d-4f11-8958-e792d613296a` completed Iris and Nova's
+guide synthesis on their first attempts, but stopped at Vega. Both Vega attempts
+passed all seven technical checks and correctly reported `not_shipped`. The
+initial queries delivered case chains only; verification incorrectly froze an
+empty application binding. Subsequent `apply_guide` calls failed even when a
+principle was retrieved later. No matched comparison round started.
+
+Rehearsal `8a614f13-ac71-4f39-bb77-5cbf9a7707f6` loaded the exact retained source
+text, fragments and documents into disposable real MCP storage using deterministic
+fixture loading and fresh IDs. The three seed assessments were rechecked in
+Podman. A fresh Claude Opus 5 session received Vega's original query and current
+case, not a previous answer or conversation. Its 24-step, 600-second ceiling and
+low reasoning setting matched the original assessment configuration.
+
+The original `branch-kit upgrade export report` query still returned case chains
+and no principle. Claude followed the explicit principle pointer, inspected two
+original supporting sources before its probe, passed all seven assessment checks,
+and stored one guide application using the exact eligible principle ID/revision.
+All 17 tool calls succeeded; the checkpoint was ready on the first attempt.
+Recorded usage was 98,486 agent input tokens, 1,761 output tokens and 33.8 seconds.
+This demonstrates recovery of the observed application failure, not a complete
+new lab comparison, independent knowledge or a performance advantage. The original
+failed run is unchanged and the held extractor was not used. The rehearsal and
+module/source hashes remain in ignored
+`target/principle-binding-model-check-8a614f13-ac71-4f39-bb77-5cbf9a7707f6.json`.
+
+## Bounded Synthesis Check: 2026-09-18
+
+Lab 2 run `70de06f6-bd8f-4dae-8cf4-da8aa2c299ab` retained three accepted case
+chains and three accepted principles. Nova applied the stored procedure, correctly
+choosing `await-value` for its different return shape, but both subsequent guide
+sessions ended after inspection without a proposal, acceptance or no-new-learning
+decision. Its matched evaluation rounds never started.
+
+Rehearsal `7eca66ee-8972-4d9b-8937-1cd4200aae4d` copied the exact retained source
+text and fragments into a disposable real MCP database using deterministic fixture
+loading, with new IDs and remapped references. The three original assessments
+were rechecked in Podman. A fresh GPT-6 Astra guide author received one 36,735-byte
+dossier containing nine original source episodes and current knowledge documents,
+with only the three synthesis decision tools. Its unchanged verification budget
+was 20 steps, 180 seconds and low reasoning.
+
+The author completed with one `skip_learning` call and no idle continuation. Its
+reason identified that the existing principle already required return-shape
+reassessment: the different `Promise<{value:string}>` case justified applying the
+procedure, not inventing another general rule. No knowledge write or duplicate
+principle was produced. The ready checkpoint, 21,268 agent input tokens, 135
+output tokens and 13.4-second review/session time were recorded.
+
+The earlier one-dossier prototype `ce9b6aa3-ccce-4a68-aa2d-47ac3f2cbd09` still
+exposed checkpoint reads and failed to make a decision; that failed result is
+retained. The successful rehearsal demonstrates one bounded completion path,
+not guaranteed model reliability, new independent knowledge or comparative
+productivity. It did not resume or relabel the historical failed run, and used
+no changed core extractor. Both reports and source/module hashes remain under
+ignored `target/synthesis-model-check-*.json`.
+
+## Shared Startup Check: 2026-09-18
+
+Check `d782691b-0770-46c6-9243-8651da7267e4` exercised fresh Copilot sessions
+against real MCP, model-free keyword memory and an owned disposable database.
+Both GPT-6 Astra and Claude Opus 5 searched first, inspected the original source,
+read current code, called `assess_experience`, then edited and passed all three
+immutable session-expiry tests in Podman. The sessions used 20-step, 180-second
+budgets with low reasoning; neither needed a retry.
+
+| Check | Agent Input Tokens | Agent Output Tokens | Session Time |
+|---|---:|---:|---:|
+| GPT-6 Astra coding startup | 15,427 | 431 | 20.0 s |
+| Claude Opus 5 coding startup | 24,113 | 656 | 12.9 s |
+| GPT-6 Astra pending-guide recovery | 22,300 | 268 | 16.0 s |
+
+The separate guide-recovery session received a test-owned pending candidate,
+recovered its exact ID through the checkpoint, inspected both original supporting
+observations, explicitly accepted the same candidate and finished with a ready
+checkpoint. It created no duplicate principle. Fixture supports were established
+by deterministic frozen metadata checks, not attributed to real-agent discovery.
+
+This verifies startup behavior and bounded acceptance recovery, not a comparative
+performance gain, semantic extraction quality or guaranteed model compliance.
+The earlier failed Nova run `fb41dca9-54ad-408a-be46-35bded70471b` remains partial:
+its assessment passed and its guide application was stored, but its revised
+principle was left unaccepted. No historical run was resumed or relabelled.
+The bounded check's tool traces, module hashes and receipts remain in the ignored
+`target/knowledge-startup-model-check-d782691b-0770-46c6-9243-8651da7267e4.json`.
+
+## Knowledge-First Lab Check: 2026-09-18
+
+The user-run Learning v3 study `2406bbe9-fbc0-412e-a15d-6265c4166384`
+formed 18 chains and nine accepted principles, but all ten MindLeak and ten
+notebook evaluations made zero prior-knowledge calls. All three main arms passed
+10/10 tasks. That remains an optional-adoption result, not a failed retrieval
+experiment or a demonstrated reuse benefit.
+
+Protocol v5 now requires lookup and an applicability assessment before editing.
+The first real Smoke check, `74acf991-f7ff-4a1f-80a3-bed609ed0adc`, completed
+that workflow on both MindLeak tasks but recorded one keyword miss and one rejected
+changed-contract lesson. Its zero applications remain preserved. A read-only
+probe reproduced the keyword mismatch: the task's existing subject identifier
+found the principles, while the original restrictive keywords did not.
+
+The final workflow-v2 Smoke check, `f43d1495-24d9-4a1d-a87b-c8d0fc9b88ee`,
+gave both experience arms the same task-subject lookup cue and retained all
+relevance/scoring boundaries. It used GPT-6 Astra, low reasoning, 20 steps and
+120 seconds per fresh session, with model-free sentence decomposition and keyword
+MCP retrieval. No reference repair was supplied. Each arm had one near and one
+changed-contract task, with the direct arm kept diagnostic.
+
+| Arm | Correct | Lookup / Assessment | Verified Application | Rejected Lesson | Evaluation Input Tokens | Median First Fix |
+|---|---|---|---|---|---|---|
+| Fresh | 2/2 | Not applicable | Not applicable | Not applicable | 15,494 | 14.0 s |
+| Notebook | 2/2 | 2/2 / 2/2 | 1 | 1 | 38,467 | 22.1 s |
+| MindLeak | 2/2 | 2/2 / 2/2 | 1 | 1 | 33,634 | 19.3 s |
+| Direct diagnostic | 2/2 | Supplied context | 2 temporal links | Not instrumented | 20,642 | 15.3 s |
+
+MindLeak and the notebook applied prior knowledge on the matching case, rejected
+the obsolete procedure on the changed-contract case, and passed all immutable
+checks. The run retained three principles and cost 230,584 total agent input and
+7,166 output tokens across preparation, evaluation and review, about 260 seconds.
+Preparation-inclusive MindLeak input was 155,981 versus fresh's 15,494. Actual
+charges remain unknown. This verifies the intended tool workflow, **not a speed,
+cost, semantic-quality or general learning advantage**. It is one exposed
+synthetic family and a development check, not an independent held-out experiment.
+
+Both Smoke reports, candidate sources, replays and exact executed-module hashes
+are retained under the worktree's ignored `target` directory, in
+`knowledge-first-v5-smoke-2026-09-18T05-09-41.779Z` and
+`knowledge-first-v5-workflow2-2026-09-18T05-18-13.466Z`. The original Learning v3
+recording is unchanged.
 
 ## Knowledge Workflow: 2026-09-17
 

@@ -11,7 +11,31 @@ for the evidence required to make each claim.
   independent corroboration, semantic generalization or compounding improvement.
 - The full reuse pilot and separately held-out confirmation have not been run.
   Lab 2's source-linked quotations and Lab 3's direct-delivery diagnostic are
-  different evidence from optional retrieval causing a better agent outcome.
+  different evidence from knowledge causing a better agent outcome. Lab 3 v5
+  explicitly requires lookup and source-linked assessment in the experience arms;
+  its v3 optional-adoption diagnostic answers a different question. An application
+  plus passing tests is not independent proof of causal benefit or assessment truth.
+- Lab 1's verified component handoffs are an explicit collaboration workflow,
+  not automatic discovery of when memory is useful. Both teams can read their own
+  evolving files; real publication/source delivery is not evidence of a memory-only
+  speedup or independent semantic validation of the agent-authored findings.
+- Knowledge-first startup is enforced by the lab tools and requested by the
+  companion policy, not by an MCP background worker. External clients must actually
+  load the policy and have approved, scope-compatible tools. Genuine misses/errors
+  do not earn use credit; explicit independent discovery and no-memory controls
+  remain isolated. A required lookup or applicability declaration is not proof
+  that the recalled claim is true or caused a better result.
+- Lab 2 guide synthesis uses a complete source-backed dossier capped at 64 KiB,
+  followed by a read-free author decision. Oversized or changed evidence fails
+  rather than being omitted. The model can still decline or fail to complete;
+  no new principle is required when existing reviewed knowledge already covers
+  the evidence. This bounds workflow behavior, not semantic judgement or reliability.
+- The opt-in v4 investigation mechanism uses one synthetic continuation-contract
+  family. Distinct case/source IDs and different implementations provide separate
+  experiment origins, not independently sampled populations. Executable predictions
+  and pre-edit decisions do not prove every prose claim. Post-comparison revisions
+  need new validation cases; this first profile does not automatically acquire them
+  or continue exposed runs. See [the v4 protocol](VALIDATION.md#lab-3-v4-investigation-learning).
 
 - The v0.6.0 knowledge workflow supports model-assisted candidate formation,
   chains, principles, semantic retrieval, dependency review and export, not

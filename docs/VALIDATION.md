@@ -39,7 +39,7 @@ new MCP tool, service, telemetry collector, or feature of an older binary.
 The default run measures deterministic scenarios. Agent tests require explicit
 provider configuration. Real elapsed-time checkpoints are resumed on later dates.
 Unknown measurements are `null` or `not_measured`, never invented zeros.
-Current runs use **report version 2** and agent contract `untrusted-memory-tools-v2`.
+Current runs use **report version 2** and agent policy `knowledge-first-tools-v3`.
 Earlier version-1 reports remain historical evidence; changed answer contracts,
 tool access, generation budgets, and preparation criteria are not directly
 comparable with those runs. Original task text, fact labels, and scenario seeds
@@ -78,8 +78,48 @@ Lab 1 has two isolated five-agent teams building **Session Desk**. Atlas owns
 time calculations, Iris validates input, Nova builds the store, Vega builds the
 interface, and Orion integrates it. Five Daleks have matched models, roles,
 budgets, dependency order and immutable tests, but no MindLeak tools or findings.
-Each team can inspect only its own evolving project. Memory use and publication
-are optional; correctness depends on the code tests, not a handoff quota.
+Each team can inspect only its own evolving project. New memory-team runs use
+**verified-handoff v3**: each owner publishes a concise source-qualified finding
+after its component tests pass, and dependent owners read every current handoff
+through MCP before editing. Controls remain memory-free. Code correctness and
+collaboration completion are recorded separately; both must pass for a complete
+memory-team run. Historical `optional-use-v2` recordings keep their original
+policy and results.
+
+Atlas and Iris investigate independently. Nova receives Atlas and Iris, Vega
+receives Atlas, and Orion receives Nova, Vega and Iris: six declared dependency
+handoffs. The task supplies acknowledged source IDs, not memory contents or a
+reference solution. `inspect_source` retrieves each original handoff through the
+scoped MCP connection; an ID, a keyword search excerpt or reading the shared code
+alone does not satisfy delivery. Agents still check the current implementation.
+
+`write_memory` is available only after the owner's complete component check
+passes. Its bounded handoff names Session Desk and every owned module path,
+states the interface/conditions and describes the tests actually exercised. A
+successful storage receipt is required before releasing dependent work. Another
+edit invalidates that handoff until the new candidate is tested and published.
+Storage failures and missing handoffs remain incomplete rather than being hidden
+by passing code. This is a component delivery requirement, not a quota for novel
+knowledge or independent confirmations. Source wording remains agent-authored.
+
+The sharing panel reports publishing components, current dependency sources read,
+cross-agent deliveries and verified component code independently. Continued runs
+retain their earlier memory records but must read the newly verified dependency
+handoffs, not substitute an older same-author finding. The no-memory comparison
+still has identical code fixtures and checks, but no publication/delivery contract;
+this guided collaboration demonstration does not establish an adoption or speedup
+claim. Existing caller memory policy and MCP defaults are unchanged.
+
+Lab 1's network cards show acknowledged records and handoffs received from distinct
+other agents, not Lab 3's linked-task-use counter. Repeated fragments from one
+sender do not create another handoff link. The memory-network activity count covers
+its five displayed agents; control-team activity is reported separately. Character
+motion follows active inference or pending tool calls and stops on pause, completion
+or reduced motion. The memory hub and animated connectors follow the rendered
+card positions, including live model selectors, rather than fixed coordinates.
+The build stage follows coded, verified, published and shared milestones. Lab 1
+does not display an empty chain/principle graph or the unrelated reuse scorecard
+or a formation score; those belong to the knowledge experiments that measure them.
 
 Use a dedicated disposable database ending in `_test`, the native server binary,
 your existing Copilot login, local GLM, and Docker or Podman:
@@ -121,20 +161,74 @@ reopening one result. In the shared dashboard, use `--lab-one-recording`,
 `/replay`, `/report.json`, `/state` and `/events` routes under its prefix.
 Saved replays do not start inference. `--concurrency 1..5` in Lab 1
 defaults to two simultaneous model sessions per team; dependent agents start after
-their prerequisite components pass. `--attempts 1..3` defaults to two attempts
+their prerequisite components pass and the memory team's handoffs are acknowledged.
+`--attempts 1..3` defaults to two attempts
 per agent, retaining failures in the recording. The page can stop the current run.
 The problem/parameters panel and per-agent model selectors apply to the next run
 and lock during execution. The task can refine the bounded Session Desk fixture;
 it does not yet scaffold arbitrary projects or change the immutable interfaces.
 Only explicit commands from the local page can start inference. The chosen model
 providers receive the synthetic build context; event telemetry stays local.
-There is no public listener, host code execution, or production memory access.
+The default listener is loopback-only. There is no host code execution or
+production memory access.
+
+### Trusted LAN Browser Access
+
+The native Node lab has an explicit trusted-private-LAN HTTP mode with **no
+login and no TLS**. Reachable clients can read lab evidence and use Run/Stop.
+This changes only the lab listener, not PostgreSQL, MCP, or Docker ports. Do not
+port-forward this development mode or use sensitive source data.
+
+Keep the existing database, launch settings and output directory, and add:
+
+```sh
+--listen-host 0.0.0.0 --public-origin http://192.168.68.63:51722
+```
+
+Use the current `ipconfig getifaddr en0` address and the existing lab port.
+Both options are required; the public origin must be private IPv4 HTTP without
+credentials or a path. Omitting them retains loopback-only behavior. Only the
+configured LAN and localhost Host/Origin values are accepted; forwarding headers
+are rejected. Navigation, assets, events and commands remain same-origin, with
+no wildcard CORS. Browser-local reviews are separate for each browser origin.
+
+Check `/lab1/state`, `/lab2/state` and `/lab3/state` before restarting. Wait for
+active experiments, retain all reports, and reopen current recordings using the
+matching recording options. Keep one current lab process. A networking check
+does not need to start a model run.
+
+If macOS prompts, allow incoming connections for the actual Node executable;
+do not disable its firewall globally. Testing the Mac's own Wi-Fi address does
+not prove access from another computer or rule out Wi-Fi client isolation. Open
+`/lab3/` on the configured origin from that computer to confirm. No login or
+certificate installation is needed for this trusted-LAN mode.
 
 Each agent has a fresh conversation and its own editable paths. It can read the
 project and shared MCP discoveries, but can publish a finding only after its own
 component tests pass. Final integration runs eighteen immutable checks per team in a
 network-disabled container against a fingerprinted source snapshot. Coordination
 lives in this example runner; MindLeak remains the memory server.
+
+New Lab 1 runs use `knowledge-first-handoff-v5`. Every memory-enabled owner,
+including one without component dependencies, searches the task subject at startup,
+inspects a returned original source, and records an apply/adapt/reject decision
+against an exact quotation from a current file before editing. Supplied dependency
+IDs do not replace this search. A genuine miss or unavailable lookup permits local
+work after explicit assessment; current dependency-source handoffs are still
+required. Each fresh attempt performs its own check. Search and assessment counts
+are separate from publication, delivery, correctness and demonstrated benefit.
+Each current handoff pins the owner's module hashes. Before editing or publishing,
+dependents must read every listed module through `read_file`; those read hashes
+and the files still on disk must match the published hashes. An apply/adapt
+assessment of a current handoff must quote one of its actual module paths, not
+the consumer's pending stub. Missing, stale or unpublished dependency changes
+block completion. Reports distinguish original handoff delivery from checked
+dependency implementations; file access is not a proof of semantic understanding.
+
+The existing 18 named fixture checks now also require nonempty status badges on
+active and expired cards. This changes the fixture fingerprint without rewriting
+earlier results. Old v2/v3/v4 recordings retain their policy, fixture hashes and
+recorded outcomes; missing startup or file-verification measurements stay unknown.
 
 Every Run click creates a new recording directory, without overwriting or deleting
 earlier results. `run.json` records the capture ID, start time and parameters before
@@ -237,6 +331,10 @@ transfer and correctness curves. Uninstrumented mistake avoidance and hypothesis
 truth remain unmeasured. Lab 3 labels its measured time as **time to verified fix**,
 not time to a semantically correct explanation. A flat correctness curve stays
 flat when both arms pass; the weighted index is not a causal productivity claim.
+Lab 2 live source-linked use matches a passing assessment to its earlier saved
+application receipt for the same agent and case, including two inspected source
+episodes. Retrieval alone, mismatched receipts and future events do not count.
+Unmeasured index values display `--`, not a fabricated zero.
 
 Separate LLM/SLM counters and per-agent token tables sit at the bottom in the
 collapsed **Operational Costs & Telemetry** section. Agent cards show saved records
@@ -255,9 +353,31 @@ milestones. The READ, WRITE and FORM indicators follow actual pending calls.
 Server-sent events update these while a run is active, not just on completion.
 An elapsed timer or working animation is not an estimate of unreported tokens.
 
-Completed recordings automatically play and loop as **RECORDED REPLAY**, without
-model calls. Playback controls, a loop switch and **Replay activity** are beside
-the stage in both experiment and Shared Knowledge views. Future nodes are hidden
+Completed recordings automatically play and loop on experiment pages as
+**RECORDED REPLAY**, without model calls. Experiment pages retain their live agent
+stage. **Knowledge Control** instead opens on the latest recorded snapshot with
+playback paused: a review queue, principle playbook, source lineage, and human
+decision panel. Selecting evidence opens its original wording in the workspace;
+raw records and the original guide export remain available behind disclosures.
+
+**Human sign-off is browser-local**, separate from recorded agent acceptance. A
+reviewer supplies a name and note, explicitly acknowledges evidence for approval,
+then confirms approval, a revision request, or deferral. Each decision binds to
+the run, revision and exact available record/support/source snapshot. Changed
+evidence requires a new decision; unavailable or challenged support blocks approval.
+Review is locked during a live run or historical playback. The log survives reload
+in that browser origin and can be downloaded, but it is not authenticated approval,
+an MCP write, a dispatched revision task, or a gate on future agent use. Sealed
+reports and benchmark results never change. Storage errors do not report a saved
+decision; the bounded local log retains at most 200 decisions and 4 MiB per run.
+
+Below the review workspace, **Knowledge Factory** retains source-intake slips,
+chain assembly, a principle catalogue and a full-width evidence graph. Library
+controls open the complete record index. Only recorded operations and acknowledgements drive
+the factory's conveyor, rollers and arrival motion, including paired
+knowledge/storage receipts for one write.
+The shared playback controls, loop switch and **Replay activity** move between
+the stage and the assembly view without starting another run. Future nodes are hidden
 until their recorded creation; revisions do not add another node. The displayed
 document text remains the latest retained version, not a complete historical
 document reconstruction. Full acceptance and outcome tables remain report-level
@@ -322,9 +442,61 @@ Memory-enabled investigators retrieve a compact accepted principle before choosi
 an approach, then follow the relevant chain and observation references as needed.
 The first two seed assessments remain independent despite receiving this orientation.
 Assessment, evidence capture and guide authoring use separate fresh sessions.
-The authoring session recovers stored case chains instead of an earlier conversation.
+Guide authoring receives stored evidence instead of an earlier conversation.
 
-Protocol **v5** permits multiple distinct principles and explicit revisions, with
+Protocol **v8** binds preparation-stage guide application to an actually delivered,
+current review-ready principle before `probe_upgrade` or `verify_assessment`.
+A search that returns only case chains no longer permits verification to freeze
+an empty guide binding. Search results and checkpoints distinguish `applicationGuides`
+from supporting case/source references. When no principle has been delivered, they
+provide explicit `principleReferences` from this run's stored catalogue; with one
+candidate, `nextAction` names its `inspect_knowledge` call. These are pointers,
+not retrieved claims or relevance guarantees. Inspection uses real scoped MCP and
+returns the same compact procedure and original-source pointers as guide search.
+Keyword queries, filters, scores and no-memory controls remain unchanged.
+
+The passing assessment and checkpoint return the exact eligible principle
+`chainId` and `revision`. `apply_guide` must use that pair, two exact conclusion
+quotations and inspected current evidence, with two distinct original supporting
+source episodes. Case-chain IDs, wrong revisions, changed review state and guides
+first retrieved after verification are rejected. A later lookup does not rewrite
+the earlier assessment's eligibility. Recovery errors identify whether a principle
+must first be inspected or the caller supplied the wrong application reference.
+Safe tool metadata retains IDs and revisions, never the quoted source bodies.
+
+The **v7** synthesis workflow separates bounded evidence preparation from the model's
+decision.
+The runner retrieves the current case chains, principle catalogue and
+every referenced original observation through MCP, deduplicating source episodes
+and repeated support documents without dropping conditions or counterevidence.
+The complete dossier, verified current assessment and pending candidate IDs fit
+within 64 KiB or the phase fails explicitly. It is supplied as untrusted reference
+context, not as instructions or an automatically validated conclusion.
+
+The fresh guide-author session has only `propose_guide`, `accept_knowledge` and
+`skip_learning`. No search, source-read or checkpoint tools remain in that phase,
+so it cannot spend the session rereading evidence. It must explicitly review and
+accept a pending candidate before proposing another, make a justified new proposal
+or revision followed by acceptance, or give an evidence-based no-new-learning
+reason. A new case-specific answer does not itself require a new general rule.
+The runner verifies the final checkpoint; the model's completion claim alone is
+insufficient. Changed catalogue revisions invalidate review. Challenged principles,
+missing sources, oversized dossiers and provider failures cannot become a skip or
+a successful guide. Model budgets and the existing bounded idle continuation are
+unchanged. Review time, source-delivery bytes and unsuccessful attempts remain in
+the measured costs. The same phase split applies to between-round guide review;
+neither evaluation arm gains write access.
+
+The startup checks introduced in **v6** still apply before `probe_upgrade`
+or `verify_assessment`: scoped guide search and inspection of two distinct original
+supporting observations when a principle is delivered. The independently assessed
+seed cases remain isolated. Guide checkpoints expose exact `pendingAcceptances`
+IDs/revisions; proposal receipts name the next acceptance action, and retries
+prioritize those candidates rather than repeating unchanged source reads. No
+candidate is accepted automatically. Exhausted or explicitly incomplete agents
+remain failures, with their verified investigation and stored evidence preserved.
+
+The multiple-principle workflow introduced in **v5** remains, with
 a bounded inventory of 32. Source selection and counterevidence requirements still
 apply. Different IDs or paraphrases are not independent knowledge. It retains the
 compact delivery introduced in v4, which removes repeated rationale, acceptance metadata and duplicated
@@ -346,9 +518,11 @@ with two exact guide-step quotations and current-case evidence. This writes a
 durable application observation containing the guide ID/revision, selected steps,
 their stated application or exception, source IDs, and the verified case decision.
 This demonstrates traceable use; it is not an independent proof that the guide
-caused a better outcome. This stricter preparation check is not imposed on either
-evaluation arm: their identical assessment checks decide correctness, while actual
-retrieval and an exact guide-step/source quotation record attributable use separately.
+caused a better outcome. Matched evaluation uses a read-only version of the startup
+check: the memory arm searches and inspects a cited original observation before
+probing or verifying; an actual miss/error permits local work. Both arms retain
+identical correctness checks and no evaluation writes. Retrieval and an exact
+guide-step/source quotation record attributable use separately from correctness.
 
 ### Matched Dalek Rounds
 
@@ -386,6 +560,16 @@ guide while retaining a separate record of every run's work and costs.
 
 ### Lab 3: Reuse Knowledge
 
+The main `smoke`, `learning`, and `pilot` profiles use **protocol v5,
+knowledge-first workflow v2**. They retain PR #41's frozen cases, multi-principle
+support and continuation, but require the experience-bearing agents to look up
+prior knowledge and assess applicability before editing. The explicit `adoption`
+profile preserves the optional-lookup v3 diagnostic on the Learning schedule.
+The separate [`mechanism` profile](#lab-3-v4-investigation-learning) remains the
+v4 formation experiment. Old recordings, their policy and scoring are never
+converted or overwritten; continuing an old study does not make its earlier
+results comparable to a new policy.
+
 Open `/lab3/`. Unlike Lab 2's bounded package-review workflow, Lab 3 uses editable
 unfamiliar code, ordinary repository docs and immutable runtime tests. Five problem
 families cover retry identity, lease expiry, pagination, batch correlation and path
@@ -401,17 +585,36 @@ gets the applicable prior procedure in its prompt, never a future solution.
 The prior lesson is agent-authored only after a changed implementation passes all
 three immutable tests. No reference repair or gold answer is exposed to any agent.
 
-The runner supplies the actual policy in each isolated session: active search mode,
-optional retrieval, one focused refinement after a miss, current-condition checks,
-and untrusted-memory boundaries. Installed skills are deliberately not discovered
-by these isolated model sessions. Initial notebook and MindLeak responses expose
-the same procedure, conditions, limits and IDs within 2,048 UTF-8 bytes. Supporting
-evidence is available on demand. No fixed read-all-files requirement, required
-lookup, quoted conclusion or note is part of correctness. Retrieval misses and
-non-use stay in the assigned arm's denominator.
+The runner supplies the actual policy in each isolated session. The main workflow
+is **retrieve, assess, apply/adapt/reject, verify**. MindLeak uses
+`recall_experience`; the notebook uses `search_notebook`. Both start with the same
+task subject already supplied to every arm, not a gold answer or a hidden family
+hint. Keyword instructions explain PostgreSQL's AND semantics; one focused
+refinement after an empty result remains available. Retrieval modes, relevance
+filters and scores are unchanged. Installed skills are deliberately not discovered
+by these isolated model sessions.
 
-Protocol **v3**, fixture **v1**, retains the separate investigation/documentation
-sessions introduced in v2. A family may now retain several distinct principles,
+Before `write_file`, both experience arms must call `assess_experience` with a
+delivered lesson ID, an applicability decision, reason and exact excerpt from a
+current file they inspected. `apply`, `adapt` and `reject` require actual delivery;
+`no_match` and `unavailable` require a real empty or failed lookup and allow local
+investigation to continue. A later lookup requires a fresh assessment before the
+next edit. No file-read quota, forced chain inspection, new note or stored feedback
+is required. Source matching verifies quotation presence, not the semantic truth
+of the agent's assessment. The fresh arm has no prior-knowledge tools; the direct
+arm remains a separate delivery diagnostic.
+
+Initial notebook and MindLeak responses expose the same procedure, conditions,
+limits and IDs within 2,048 UTF-8 bytes; supporting evidence is available on demand.
+Code correctness still comes from the immutable tests. A lookup or assessment
+alone does not earn reuse credit: the assessed applicable lesson must precede
+an actual changed candidate that passes. Rejected lessons, misses, errors and
+incomplete workflows remain explicit, with all scheduled tasks retained in the
+denominators. The `adoption` diagnostic instead keeps v3's optional retrieval and
+original temporal-use scoring.
+
+Protocol **v5**, fixture **v1**, retains the separate investigation/documentation
+sessions and multi-principle support introduced in v2/v3. A family may retain several distinct principles,
 keyed by stable principle ID rather than by family. `list_principles` exposes the
 catalogue to curators; `retain_lesson.revises` explicitly targets a refinement.
 Equivalent lessons and exact accepted source chains are reused instead of creating
@@ -439,6 +642,18 @@ second unfinished response remains incomplete. Recovery attempts appear in
 `session_resumed` events and `generation.toolOnlyIdleResumes`, not as fabricated
 answers or replayed memory writes.
 
+The integrated repair smoke run `c3f3a27f-2ec5-4f4f-b6fd-ac8d075d1681` used
+GPT-6 Astra, model-free storage and the protocol-v5 knowledge-first workflow.
+All 27 fixture checks and all three reviews completed. MindLeak retrieved and
+assessed prior knowledge on both evaluation tasks, with two verified temporal
+reuse outcomes; the notebook recorded one application and one rejection. The
+final review revised an accepted principle, and three restart checks passed.
+This is one exposed synthetic family with required consultation, not spontaneous
+adoption or a measured advantage. MindLeak used 159,201 agent input tokens
+including preparation/review versus 15,045 for the fresh control. No idle
+continuation was needed in that model run; deterministic regressions verify
+recovery and the cancellation, quota, step and deadline boundaries.
+
 The default **learning** profile covers five families, near transfer and changed
 conditions: **30 main-arm sessions**, ten diagnostics, five investigations and
 three documentation/review sessions. Its full plan and session counts are visible
@@ -448,6 +663,8 @@ diagnostics, one investigation and three documentation/review sessions.
 The explicit **pilot** profile covers five
 families, four follow-ups and two repetitions: **120 main-arm sessions**, 40
 diagnostics, five investigations and five documentation/review sessions.
+The **adoption** diagnostic uses the same five-family near/changed schedule as
+Learning, but measures optional lookup under v3. It is not the main reuse workflow.
 Repeated variants are not independent families. Inspect the full plan without
 opening a model, database or output directory:
 
@@ -462,8 +679,9 @@ and the final `notebook/*.md` retain auditable results. The guide state and raw
 synthetic source exhibits are separate from metadata-only event telemetry.
 
 Click an outcome to inspect reads, changed-candidate hashes, prior-experience
-delivery and immutable test receipts. The runner records exposure before a changed
-passing candidate, not a quoted claim of use. This is temporal behavioral linkage,
+delivery, applicability decisions and immutable test receipts. Main v5 reuse
+requires an `apply` or `adapt` assessment bound to delivered prior knowledge before
+a changed passing candidate, not only a lookup or quoted claim. This is temporal behavioral linkage,
 not proof of an individual causal effect. Direct chain inspection earns its own
 utility count; transitive principle support does not. The known-failure diagnostic
 compares failed invariant labels in distinct changed candidates within the same
@@ -477,7 +695,11 @@ inspection records adaptation. A stale-mistake flag requires the exact old
 implementation to have been repeated and failed, not just any unsuccessful task.
 Necessary revalidation is not counted as wasted work.
 
-Knowledge reuse, correctness and adaptation lead the page. The three main curves
+The workflow panel separates tasks with lookup, knowledge delivery, applicability
+assessment and verified application. An old run with zero calls says **Not
+consulted**, not that retrieval failed. Empty-result and error counts are separate;
+missing assessment telemetry stays **Not recorded**. Original numeric reuse
+results remain in the report. Formation, correctness and adaptation lead the page. The three main curves
 show observed cumulative correctness; the direct diagnostic is reported separately.
 
 The retained protocol-v3 smoke run `b13b00af-3d30-4bb1-bfe3-672c607e270c` used
@@ -502,6 +724,134 @@ Provider charges are unavailable, so financial break-even and the proposed 20%
 cost-reduction threshold are **not measured**. The threshold is not an expected
 result, and a broader benefit claim requires separately held-out families.
 
+### Lab 3 v4: Investigation Learning
+
+This opt-in mechanism experiment asks what an investigation establishes for the
+next agent, including when the original task is unfinished. It reuses the real
+MCP tools, sandbox, fresh-session runner, journals and replay UI. It introduces
+no server-side learner, extra MCP tool, database table or mandatory helper model.
+
+```sh
+node examples/swarm-demo.mjs --plan --rediscovery-profile mechanism
+node examples/swarm-demo.mjs --lab 3 --rediscovery-profile mechanism --memory-model off --binary target/debug/mindleak-light --code-engine podman --port 54586 --output-dir target/investigation-learning
+```
+
+The second command requires the same explicit disposable `_test` database,
+approved agent provider and sandbox prerequisites as the other labs. It starts
+an idle lab; the page starts a run only on an explicit command. `--once` runs
+and exits. The v4 profile refuses continuation from old or exposed runs. It is
+available from a source build, not an added feature of published v0.6.0 packages.
+
+#### Separate Phases
+
+1. Two fresh discovery sessions investigate different continuation implementations
+   and source groups. They can capture an executed failing probe or a successful
+   behavior check while an unrelated identity check remains unresolved.
+2. A fresh MindLeak author inspects the retained sources, proposes one conditional
+   chain per investigation, explicitly validates those narrow claims, then proposes
+   a principle supported by both current accepted chains. Two files from one case
+   cannot satisfy the two-case requirement. Source labels do not prove independence.
+3. A separate notebook author receives the same discovery observations and the
+   same model/budget, but writes its own bounded procedure and Markdown sources.
+   It does not receive MindLeak's completed principle. Both arms get one formation,
+   two reserved validation, and one explicit acceptance/publication session.
+4. Each fresh validator sees one reserved case and the frozen executable procedure.
+   It records applicability and expected pass/fail before executing the checks.
+   Predictions cannot be replaced. The positive case must pass; the boundary case
+   must be correctly rejected or handled by the unchanged procedure. A failed
+   boundary is retained as explicit counterevidence, not erased from the principle.
+5. Four different evaluation cases cover near transfer, a different implementation,
+   a changed completion contract, and an unrelated identity fault. The three main
+   arms produce **12 matched sessions**; four direct-delivery diagnostics are
+   separate. All start from the same case code and immutable tests with the same
+   model and budgets. Retrieval is optional; misses and non-use remain in the denominator.
+6. Knowledge remains frozen across all comparisons. Only afterward does each
+   experience-bearing arm review its own outcomes. A reviewer can probe the unchanged
+   rule on a new case, explicitly retain a measured exception, revise it, or save
+   nothing. A changed principle stays a candidate needing fresh validation cases;
+   already exposed cases cannot validate that new revision.
+
+The discovery, reserved validation and evaluation fixtures have separate identities
+and hashes frozen before inference. They remain **one synthetic problem family**,
+not eight independent populations or a production holdout. Each observation keeps
+its original source, complete probe receipt, source fingerprint, case origin,
+overall task-completion flag and stated uncertainty. Quotes establish source
+presence; probe results establish tested behavior. English causal explanations and
+generalizations remain attributed claims, not independently adjudicated truth.
+
+#### Outcomes and Costs
+
+The v4 evidence view follows PR #41's unchanged live learning stage with checked discoveries, unfinished investigations
+with findings, prospective predictions, supported pre-edit decisions, boundary
+decisions, and retained exceptions. Decisions require an inspected source quote and
+are recorded before editing; the evaluator checks the diagnosis and completion
+signal against the frozen case. Later task completion is reported separately.
+Neither a quotation nor a retrieval call earns behavioral reuse credit by itself.
+
+No single intelligence or compounding score is introduced. The principle's executable
+hypothesis is assessed separately from whether a later agent receives and uses it.
+Direct delivery helps diagnose retrieval failure but never enters main-arm totals.
+Optional non-use and no accepted principle are valid results, not missing successes.
+All four planned reserved cases remain in the prediction denominator. A procedure
+that cannot execute the complete test set records `execution_failed`, not a correct
+prediction of behavioral failure. No-candidate and not-executed cases remain explicit.
+
+Actual run token totals count each session once. Counterfactual arm totals allocate
+shared discovery to each experience-bearing arm, then add that arm's own formation,
+validation, final review, failed attempts and evaluation. MCP readback/freeze costs
+are retained separately and included for knowledge-bearing arms. Provider-reported
+memory usage remains separate; absent prices and bills remain unknown. These
+allocations do not claim an independently measured notebook discovery process.
+
+The fixed tests exercise partial captures, unknown/forged proof rejection, source
+isolation, prospective prediction order, explicit acceptance, counterexample
+preservation, frozen comparisons, twelve main evaluations and complete accounting
+through actual MCP processes and network-disabled containers. A deterministic test
+agent proves protocol behavior, not model reasoning quality or a learning advantage.
+Real-model findings must be recorded separately with the exact protocol, model,
+fixture and binary identity. Broader claims require fresh held-out families.
+
+#### Initial Real-Model Trial
+
+This pre-integration trial used the provisional investigation version 3. The
+integrated experiment is version 4 to avoid a collision with PR #41's existing
+multi-principle protocol 3. The report keeps its original identity and results;
+the frontend selects investigation evidence by the `mechanism` profile, not by
+interpreting every protocol-3 report as this experiment. PR #41's CSS, live-stage
+layout, growing graph, autoplay/loop, pause/reduced-motion behavior, visible
+profile/continuation controls, and default Learning profile remain the baseline.
+
+Run `7626806b-c826-4bbb-9ca1-8080666a69dc` on 2026-09-18 used GPT-6 Astra through
+the official Copilot SDK, low reasoning effort, 24 steps and a 120-second deadline
+per fresh session. Storage was model-free. Both discovery tasks ultimately passed,
+with eight retained observations, two chains, and one accepted principle.
+The MindLeak validator recorded and matched the positive-case prediction and
+the boundary-case failure prediction before executing them.
+
+All twelve main evaluations and four direct diagnostics passed their task tests.
+Each arm recorded three of four rubric-matched pre-edit decisions. The MindLeak
+evaluation agents did not use optional retrieval, so no behavioral reuse advantage
+was observed. The direct arm recorded prior exposure for three decisions; this is
+diagnostic evidence, not a main-arm gain or individual causal attribution.
+
+The notebook author produced a note, but its two validation executions failed
+before complete test receipts were obtained. The note was not published, and its
+review session was incomplete. This is not a valid demonstration that principles
+outperform good notes. The original report omitted those two failed validation rows;
+that reporting defect was reproduced with an invalid executable hypothesis and
+fixed. Current reports retain failures and the full four-case denominator. The
+original report and journals remain unchanged, not relabeled as a corrected rerun.
+
+Reported total agent usage was 521,965 input and 13,310 output tokens across 296
+tool calls, with elapsed time about 630 seconds. These are descriptive totals on
+a shared host, not controlled latency or a bill. The original binary SHA-256 was
+`a4cba2bdd1693a2333aee4bec6bf102cac0a351c3a5fde568a22293072b4092c`.
+The ignored run directory is `target/investigation-real-v3/2026-09-18T01-04-00.499Z-d63167b8`;
+its original source/binary identity and later final-newline-only formatting record
+are retained separately. Later report-field/accounting fixes have deterministic
+real-MCP coverage, not a second model-result claim. This single exposed-family
+trial supports formation feasibility, not learning benefit or generalization quality.
+
 ### Durable Learnings Page
 
 Open `/lab2/learnings` or `/lab3/learnings`, or use **Durable Learnings** from the
@@ -512,6 +862,21 @@ counts unique logical records, not replayed receipts or extra revisions. Verifie
 reuse/transfer is displayed separately from growth in stored evidence.
 The graph is a latest-recorded snapshot; it is not a live SQL browser or a
 historical graph for every replay position.
+The **Knowledge taking shape** section brings the selected conclusion, applicability
+and assumptions forward. Switch between all recorded principles, replay a rule's
+formation, and inspect its supporting chains and original source episodes. Direct
+and inherited counterexamples stay visible; missing or changed support revisions
+are marked unavailable, not substituted. The text is explicitly the latest recorded
+wording while the state and visible records follow the replay position.
+
+Lab 3 adds a case board within the existing live stage: discovery, formation,
+reserved prediction checks where recorded, new cases, and later review. Chapter
+buttons and the next-finding control seek recorded events only. Each case shows
+the actual arm states and prior-evidence delivery; no artificial race, success,
+or reuse is inferred. A predicted behavioral failure can match its check without
+becoming a successful task. These additions preserve PR #41's live stage, graph,
+autoplay, loop, pause and reduced-motion controls. Labs 1 and 2 keep their stage
+layout; the case board appears only for Lab 3.
 Candidates and accepted revisions remain distinct. The storage ledger lists
 every acknowledged write with its ID, author, operation, revision, and receipt
 timestamp; restart panels show which records were recovered by a new MCP process.
