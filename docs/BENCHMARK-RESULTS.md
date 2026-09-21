@@ -84,6 +84,71 @@ failed run is unchanged and the held extractor was not used. The rehearsal and
 module/source hashes remain in ignored
 `target/principle-binding-model-check-8a614f13-ac71-4f39-bb77-5cbf9a7707f6.json`.
 
+## Lab 3 Review Rehearsal
+
+Learning study `881c1dbe-71d2-4b31-b34c-cbfd8a18f52a` passed all 135 coding
+checks across five preparation tasks and 40 evaluations. All three main arms and
+the separate direct diagnostic passed their ten tasks. None of the three learning
+reviews completed; the run remains partial. Equal scores on these small fixtures
+do not establish equal solution quality or a comparative knowledge benefit.
+MindLeak recorded seven applications/adaptations, one source-backed rejection of
+a changed contract, and two misses after retry-identity lesson retention failed.
+The justified rejection is meaningful decision evidence, not a negative outcome
+merely because it earns no application credit.
+
+Rehearsal `e07e6a05-f2e7-4ad9-96fa-05d5e52d337e` tested the bounded Lab 3
+reviewer against an isolated database snapshot preserving the original IDs, text,
+fragments and knowledge. All 15 recorded memory-side candidates were re-executed
+in Podman: 45/45 repaired checks passed, with original fixture, baseline and
+candidate hashes verified. The three source packets were 66,470, 69,903 and
+70,123 UTF-8 bytes. Fresh GPT-6 Astra sessions received only retain/skip tools,
+using the original 20-turn, 300-second, low-reasoning, 30-credit configuration.
+The core binary was unchanged. The rehearsal was later found to omit
+`decomposition-reasoning-effort: none`, which the live lab already supplied.
+Its configuration equality check missed this because reasoning was absent from
+`report.configuration`. It was therefore not a matched test of the live settings.
+
+The reviewers made four explicit no-new-learning decisions and three retention
+attempts, with no read loop or idle continuation. All three writes failed with
+`provider_request_failed` after about 240 seconds. No lesson was retained and
+zero of three reviews completed. The earlier interpretation of this as a confirmed
+live provider-retention blocker was incorrect. Exact-live-configuration previews
+and writes succeeded once the rehearsal supplied the existing reasoning setting.
+New report configurations record it explicitly; this is not a live model switch or
+evidence that disabling reasoning universally improves extraction quality.
+
+The original partial study and all three live report/profile hashes remained
+unchanged. The rehearsal database was dropped after confirming zero connections.
+Source hashes, costs, explicit decisions and failures remain in ignored
+`target/lab3-review-rehearsal-e07e6a05-f2e7-4ad9-96fa-05d5e52d337e.json`.
+Corrected incremental-review run `d2a6e61d-566a-450e-98d3-bdacfbd7f618`
+retained knowledge but still left cases undecided. Batched-tool prototypes completed
+some phases but repeatedly encountered an SDK `query` error before the changed-case
+handler ran. Both dynamic-object and fixed-array tool schemas exhibited that failure;
+no underlying SDK repair is claimed. A tool-free decision-document prototype also
+returned one invalid answer, refused before any write. All those failures remain
+under ignored `target/lab3-review-rehearsal-*.json`.
+
+The document-based changed-case rehearsal `6d7a8e20-b3ad-4f05-9ab2-7c005cacc477`
+completed all five decisions and six requested retentions, with verified persistence
+after a real MCP restart. The subsequent three-phase run
+`d2a952c6-b5db-4b8c-9b31-38fb05f4b1be` completed all three reviews, all 15 case
+decisions and seven lesson retentions. It reverified 45/45 candidate checks, recorded
+57 memory-provider calls without errors, and verified 37 records after restart.
+The near-transfer review explicitly retained nothing; the changed-contract review
+recorded five revisions. Model identities, 20-turn/300-second/30-credit author limits,
+GLM reasoning `none` and the held core were preserved. No original coding outcome
+was retroactively credited to the newly formed knowledge.
+
+That three-phase receipt deliberately remains `verification_failed`: its final
+source-hash guard detected concurrent edits to the two shared adapters and the lab
+entrypoint. Individual completed review receipts and restart proof remain valid
+observations, but the overall run is not presented as a clean source-identity pass.
+The original study, binary and all live report/profile hashes were unchanged and
+the isolated database was removed. Later deterministic gates cover the combined
+source plus deadline propagation and rejection of every failed requested retention.
+This is review-workflow recovery evidence, not a new controlled quality study.
+
 ## Bounded Synthesis Check: 2026-09-18
 
 Lab 2 run `70de06f6-bd8f-4dae-8cf4-da8aa2c299ab` retained three accepted case

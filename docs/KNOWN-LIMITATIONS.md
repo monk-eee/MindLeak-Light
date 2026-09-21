@@ -30,6 +30,14 @@ for the evidence required to make each claim.
   rather than being omitted. The model can still decline or fail to complete;
   no new principle is required when existing reviewed knowledge already covers
   the evidence. This bounds workflow behavior, not semantic judgement or reliability.
+- Lab 3 case review uses a complete packet capped at 128 KiB and explicit source-backed
+  decisions for every verified memory-side case. The tool-free author returns a
+  complete document that is validated before persistence. Invalid documents and
+  failed persistence remain incomplete; another successful write cannot hide them.
+  A completed review is not independent validation of its prose or a guarantee of
+  model reliability. The [review evidence](BENCHMARK-RESULTS.md#lab-3-review-rehearsal)
+  distinguishes a reasoning-mismatched early test, SDK dispatch failures and later
+  completed phases. No fallback, extraction repair or general quality gain is claimed.
 - The opt-in v4 investigation mechanism uses one synthetic continuation-contract
   family. Distinct case/source IDs and different implementations provide separate
   experiment origins, not independently sampled populations. Executable predictions

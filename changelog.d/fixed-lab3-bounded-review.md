@@ -1,0 +1,4 @@
+- Bound Lab 3 case review to one complete source packet and a tool-free decision document. Validate every case and exact source quotation before executing explicit retention choices; preserve justified rejection separately from application.
+- Require successful receipts for every requested retention as well as a complete author decision. Preserve failed or rejected proposals and acknowledged partial writes, with one deadline across authoring and MCP persistence. Keep frozen comparisons and historical reports unchanged.
+- Record model reasoning controls in report configurations so omitted and explicit `none` settings cannot appear identical. Preserve the existing live configuration and held extractor.
+- Share bounded, value-free answer-schema diagnostics between both agent adapters and distinguish SDK query-dispatch errors from executed tool failures, without adding retries or logging private provider content.

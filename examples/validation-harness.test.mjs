@@ -208,7 +208,7 @@ test("Lab 3 v4 replay preserves the live stage and separates learning evidence f
   const { parseHTML } = await import("linkedom");
   const page = parseHTML(await renderDemoPage({ report })).document;
   assert.ok(page.querySelector("option[value=mechanism]"));
-  assert.deepEqual([...page.querySelectorAll("#rediscovery-profile-select option")].map(option => option.value), ["smoke", "learning", "pilot", "adoption", "mechanism"]);
+  assert.deepEqual([...page.querySelectorAll("#rediscovery-profile-select option")].map(option => option.value), ["smoke", "learning", "pilot", "adoption", "mechanism", "quality"]);
   for (const id of ["live-stage", "stage-roster", "stage-graph", "stage-feed", "stage-run-controls", "stage-playback", "replay-loop"]) assert.ok(page.querySelector(`#${id}`));
   const evidence = page.querySelector("#investigation-template").content;
   for (const id of ["investigation-discoveries", "investigation-unfinished", "investigation-predictions", "investigation-decisions", "investigation-validations"]) assert.ok(evidence.querySelector(`#${id}`));
@@ -407,6 +407,457 @@ test("Lab 3 v4 fixtures separate partial discovery from complete task success", 
       assert.equal((await workspace.test()).passed, true, entry.id);
     } finally { await workspace.close(); }
   }
+});
+
+test("Lab 3 quality comparison freezes distinct knowledge versions and unseen outcome cases", async () => {
+  const { investigationPlan } = await import("./investigation-lab.mjs");
+  const plan = investigationPlan({ profile: "quality" });
+  assert.equal(plan.profile, "quality");
+  assert.equal(plan.protocolVersion, 6);
+  assert.deepEqual(plan.arms, ["fresh", "notebook", "original", "mindleak"]);
+  assert.equal(plan.diagnosticSessions, 0);
+  const groups = [plan.discovery, plan.validation, plan.exceptions, plan.revisionValidation, plan.evaluation];
+  assert.ok(groups.every(group => group.length >= 2));
+  const cases = groups.flat();
+  assert.equal(new Set(cases.map(item => item.id)).size, cases.length);
+  assert.equal(new Set(cases.map(item => item.fixtureSha256)).size, cases.length);
+  for (const item of plan.evaluation) {
+    const matched = plan.sessions.filter(session => session.caseId === item.id);
+    assert.deepEqual(matched.map(session => session.arm).sort(), [...plan.arms].sort());
+    assert.equal(new Set(matched.map(session => session.fixtureSha256)).size, 1);
+    assert.ok(matched.every(session => !session.diagnostic));
+  }
+  assert.equal(plan.mainSessions, plan.evaluation.length * plan.arms.length);
+  assert.equal(plan.qualityRubric.primary, "held_out_outcome_quality");
+  assert.equal(plan.qualityRubric.correctRejection, "separate_from_application");
+  assert.equal(plan.knowledgeComparison, "original_frozen_vs_explicitly_revised");
+  assert.deepEqual(plan, investigationPlan({ profile: "quality" }));
+  assert.equal(investigationPlan().protocolVersion, 4);
+  assert.equal(investigationPlan().profile, "mechanism");
+});
+
+test("Lab 3 quality cases check boundaries and regressions without changing mechanism fixtures", async () => {
+  const { investigationCases, investigationFixture } = await import("./investigation-fixtures.mjs");
+  for (const entry of investigationCases("quality")) {
+    const fixture = investigationFixture(entry.id);
+    assert.equal(fixture.testCount, 8);
+    assert.deepEqual(fixture.testGroups, { behavior: 2, boundary: 3, regression: 3 });
+    assert.equal(fixture.testNames.length, fixture.testCount);
+    assert.equal(new Set(fixture.testNames).size, fixture.testCount);
+    assert.ok(fixture.testNames.includes("boundary/cursor cycle"));
+    assert.ok(fixture.testNames.includes("regression/source pages unchanged"));
+  }
+  for (const entry of investigationCases()) assert.equal(investigationFixture(entry.id).testCount, 3);
+});
+
+test("Lab 3 quality revisions preserve exceptions and require fresh prospective validation", async () => {
+  const { createInvestigationLedger, investigationPlan } = await import("./investigation-lab.mjs");
+  const { investigationFixture, cursorRuleImplementation, qualityRuleImplementation } = await import("./investigation-fixtures.mjs");
+  const heads = new Map();
+  const driver = { async call(name, args) {
+    assert.equal(name, "write_memory");
+    const result = { memoryId: randomUUID(), fragments: [{ fragmentId: randomUUID(), text: args.text }] };
+    if (args.chain) {
+      const previous = heads.get(args.chain.chainId);
+      Object.assign(result, { chainId: args.chain.chainId, revision: (previous?.revision ?? 0) + 1,
+        state: args.chain.operation === "accept" ? "accepted" : args.chain.operation === "challenge" ? previous.state : "candidate",
+        review: args.chain.operation === "accept" ? "reviewed" : "unreviewed" });
+      heads.set(result.chainId, result);
+    }
+    return { data: result };
+  } };
+  const plan = investigationPlan({ profile: "quality" });
+  const ledger = createInvestigationLedger({ driver, plan });
+  const document = { claim: "Continue through empty pages under the declared completion contract.", rationale: "Two distinct source cases have recorded executed probes.",
+    conclusion: "Inspect the service completion contract before following continuation cursors.", applicability: "A service declaring null-cursor completion.", assumptions: [] };
+  const supportedBy = [];
+  for (const entry of plan.discovery) {
+    const fixture = investigationFixture(entry.id);
+    const proof = { id: randomUUID(), group: "behavior", tests: 2, expectedTests: 2, passedTests: 0, passed: false,
+      sourceSha256: digest(fixture.files), files: fixture.files, inspected: fixture.files };
+    const observation = await ledger.capture({ fixture, proofs: new Map([[proof.id, proof]]), observation: { proofId: proof.id,
+      summary: "An empty intermediate page hid later records.", conditions: "The current service uses null-cursor completion.", uncertainty: "Other contracts were not evaluated.",
+      path: "docs/service-contract.md", quote: "A null next cursor marks completion." } });
+    const chain = await ledger.proposeChain({ ...document, caseId: entry.id, observationIds: [observation.memoryId] });
+    await ledger.acceptChain(chain.chainId); supportedBy.push(chain.chainId);
+  }
+  const beforeInvalid = digest(ledger.snapshot());
+  for (const implementation of ["async function collect(client) { return []; }", "```js\nexport const collect = () => [];\n```", "export async function collect(client: Client) {}"])
+    await assert.rejects(ledger.proposePrinciple({ ...document, supportedBy, implementation }), /standalone_javascript_collect_export_required/);
+  assert.equal(digest(ledger.snapshot()), beforeInvalid, "invalid executable format must fail before writing a candidate");
+  const candidate = await ledger.proposePrinciple({ ...document, supportedBy, implementation: cursorRuleImplementation });
+  const validate = async (entry, implementation) => {
+    ledger.predict(candidate.chainId, entry.id, { applicable: true, expectedPass: true, reason: "The current contract matches the declared candidate procedure." });
+    const receipt = { id: randomUUID(), tests: 2, expectedTests: 2, passedTests: 2, passed: true,
+      sourceSha256: digest([entry.id, implementation]), fixtureSha256: entry.fixtureSha256, implementationSha256: digest(implementation) };
+    assert.equal((await ledger.validatePrediction(candidate.chainId, entry.id, receipt)).correct, true);
+  };
+  for (const entry of plan.validation) await validate(entry, cursorRuleImplementation);
+  await ledger.acceptPrinciple(candidate.chainId);
+  const original = ledger.snapshot();
+  const originalHash = digest(original);
+  for (const entry of plan.exceptions) {
+    const fixture = investigationFixture(entry.id);
+    await ledger.challengePrinciple(candidate.chainId, fixture, { id: randomUUID(), group: "behavior", tests: 2, expectedTests: 2,
+      passedTests: 0, passed: false, sourceSha256: digest(fixture.files), files: { ...fixture.files, "src/scan.mjs": cursorRuleImplementation } });
+  }
+  const counters = ledger.snapshot().principles[0].document.evidence;
+  assert.equal(counters.length, 2);
+  await ledger.revisePrinciple(candidate.chainId, { ...document, applicability: "Select cursor or explicit completion according to the current client contract.", implementation: qualityRuleImplementation });
+  await assert.rejects(ledger.acceptPrinciple(candidate.chainId), /fresh_validation|reserved_validation/);
+  assert.throws(() => ledger.predict(candidate.chainId, plan.validation[0].id, { applicable: true, expectedPass: true, reason: "This case was already exposed." }), /fresh_validation/);
+  for (const entry of plan.revisionValidation) await validate(entry, qualityRuleImplementation);
+  assert.equal(ledger.snapshot().principles[0].state, "candidate", "fresh checks cannot silently accept a revision");
+  await ledger.acceptPrinciple(candidate.chainId);
+  const revised = ledger.snapshot().principles[0];
+  assert.equal(revised.state, "accepted");
+  assert.equal(revised.requiresReview, false);
+  assert.equal(revised.needsFreshValidation, false);
+  assert.deepEqual(revised.document.evidence, counters);
+  assert.deepEqual(revised.validationChecks.map(check => check.caseId), plan.revisionValidation.map(entry => entry.id));
+  assert.equal(revised.validationHistory.length, 1);
+  assert.equal(digest(original), originalHash, "the original frozen knowledge version must remain unchanged");
+});
+
+test("Lab 3 quality fixtures execute stronger checks in the sandbox", { skip: !process.env.MINDLEAK_VALIDATION_CODE_ENGINE }, async () => {
+  const { investigationCases, investigationFixture, investigationRepair, cursorRuleImplementation } = await import("./investigation-fixtures.mjs");
+  const code = await containerConfiguration(process.env.MINDLEAK_VALIDATION_CODE_ENGINE);
+  for (const entry of investigationCases("quality")) {
+    const fixture = investigationFixture(entry.id);
+    const workspace = await createCodingWorkspace("quality-fixture", code, fixture);
+    try {
+      const before = await workspace.test();
+      assert.equal(before.tests, 8);
+      assert.equal(before.passed, false);
+      await workspace.write("src/scan.mjs", investigationRepair(entry.id));
+      await workspace.write("src/identity.mjs", "export const identify = value => value;\n");
+      const after = await workspace.test();
+      assert.equal(after.tests, 8);
+      assert.equal(after.passedTests, 8);
+      assert.equal(after.passed, true);
+      await workspace.write("src/scan.mjs", cursorRuleImplementation);
+      assert.equal((await workspace.test()).passed, false, "the legacy cursor-only procedure must not satisfy the stronger quality gate");
+    } finally { await workspace.close(); }
+  }
+});
+
+test("Lab 3 quality runs original and revised knowledge through real frozen comparisons", {
+  skip: !process.env.MINDLEAK_LAB2_TEST_BINARY || !process.env.MINDLEAK_VALIDATION_CODE_ENGINE,
+}, async () => {
+  const { runInvestigationLab } = await import("./investigation-lab.mjs");
+  const { investigationCases, investigationRepair, investigationDecision, cursorRuleImplementation, qualityRuleImplementation } = await import("./investigation-fixtures.mjs");
+  const code = await containerConfiguration(process.env.MINDLEAK_VALIDATION_CODE_ENGINE);
+  const driver = await openMemoryDriver(process.env.MINDLEAK_LAB2_TEST_BINARY, benchmarkSettings({ ...process.env,
+    MINDLEAK_TEST_DATABASE_URL: process.env.MINDLEAK_LAB2_TEST_DATABASE_URL ?? process.env.MINDLEAK_TEST_DATABASE_URL }));
+  let comparing = false;
+  let calls = 0;
+  let skipReview = false;
+  const toolFailures = [];
+  const monitored = { ...driver, restart: () => driver.restart(), async call(name, args) {
+    assert.ok(!(comparing && name === "write_memory"), "quality comparison must keep all knowledge versions frozen");
+    return driver.call(name, args);
+  } };
+  const hypothesis = { claim: "Continuation safety across inspected service contracts", rationale: "Separate constructed source cases and executed checks support a conditional procedure.",
+    conclusion: "Follow continuation through empty pages until a null cursor; first inspect the service completion contract.",
+    applicability: "Services whose authoritative completion signal is a null next cursor.", assumptions: ["Explicit completion markers need a different procedure."], implementation: cursorRuleImplementation };
+  const agent = { configuration: { model: "quality-test-agent", provider: "test", maxSteps: 24, timeoutMs: 120000 }, async run(prompt, tools, context) {
+    calls += 1;
+    const entries = new Map(tools.map(tool => [tool.definition.function.name, tool]));
+    const invoke = async (name, args = {}) => {
+      try { return await entries.get(name).invoke(args); }
+      catch (error) { toolFailures.push({ tool: name, code: error.message.slice(0, 160) }); throw error; }
+    };
+    if (entries.has("capture_observation")) {
+      const contract = await invoke("read_file", { path: "docs/service-contract.md" });
+      await invoke("read_file", { path: "src/scan.mjs" });
+      const proof = await invoke("run_probe", { group: "behavior" });
+      await invoke("capture_observation", { proofId: proof.id, summary: "An empty intermediate page hid remaining records.",
+        conditions: "The current service declares null-cursor completion.", uncertainty: "Other contracts need independent verification.",
+        path: "docs/service-contract.md", quote: contract.trim() });
+      await invoke("write_file", { path: "src/scan.mjs", content: qualityRuleImplementation });
+      await invoke("write_file", { path: "src/identity.mjs", content: "export const identify = value => value;\n" });
+      assert.equal((await invoke("run_tests")).passed, true);
+    } else if (entries.has("propose_chain")) {
+      const dossier = JSON.parse(context);
+      assert.equal(dossier.view, "quality-chain-proposal");
+      assert.deepEqual([...entries.keys()], ["propose_chain", "decline_formation"]);
+      const entry = dossier.case;
+      const { implementation, ...document } = hypothesis;
+      const chain = await invoke("propose_chain", { ...document, claim: `${entry.caseId}: continue through nonterminal empty pages.`,
+        caseId: entry.caseId, observationIds: entry.observations.map(observation => observation.memoryId) });
+      assert.equal(chain.state, "candidate");
+      return { status: "completed", sessionId: randomUUID(), answer: { completed: false }, trace: [], responses: [], inputTokens: 20, outputTokens: 5, toolCalls: 1 };
+    } else if (entries.has("accept_chain")) {
+      const dossier = JSON.parse(context);
+      assert.equal(dossier.view, "quality-chain-acceptance");
+      assert.deepEqual([...entries.keys()], ["accept_chain", "decline_formation"]);
+      assert.equal(dossier.candidate.state, "candidate");
+      assert.ok(dossier.case.observations.some(source => dossier.candidate.observationIds.includes(source.memoryId)));
+      await assert.rejects(invoke("accept_chain", { chainId: randomUUID(), expectedRevision: dossier.candidate.revision }), /current_case_candidate_required/);
+      await assert.rejects(invoke("accept_chain", { chainId: dossier.candidate.chainId, expectedRevision: dossier.candidate.revision + 1 }), /current_case_candidate_required/);
+      await invoke("accept_chain", { chainId: dossier.candidate.chainId, expectedRevision: dossier.candidate.revision });
+    } else if (entries.has("propose_principle")) {
+      const dossier = JSON.parse(context);
+      assert.equal(dossier.view, "quality-principle-proposal");
+      assert.deepEqual([...entries.keys()], ["propose_principle", "decline_formation"]);
+      assert.equal(dossier.chains.length, 2);
+      assert.ok(dossier.chains.every(chain => chain.state === "accepted" && chain.review === "reviewed"));
+      await invoke("propose_principle", { ...hypothesis, supportedBy: dossier.chains.map(chain => chain.chainId) });
+    } else if (entries.has("save_note")) {
+      assert.ok(!context.includes("quality-snapshot-transfer"), "held-out evidence must be unavailable during formation");
+      assert.ok(!entries.has("list_discoveries") && !entries.has("inspect_discovery"), "formation receives a bounded source packet, not a read loop");
+      assert.ok(!prompt.includes("No new learning is legitimate."), "avoid wording that can forbid justified learning");
+      const discoveries = JSON.parse(context); const supportedBy = []; const observationIds = [];
+      assert.equal(discoveries.view, "quality-formation");
+      assert.equal(discoveries.cases.length, 2);
+      for (const entry of discoveries.cases) {
+        const ids = entry.observations.map(observation => observation.memoryId); observationIds.push(...ids);
+        if (entries.has("propose_chain")) {
+          const { implementation, ...document } = hypothesis;
+          const chain = await invoke("propose_chain", { ...document, claim: `${entry.caseId}: continue through nonterminal empty pages.`,
+            caseId: entry.caseId, observationIds: ids });
+          await invoke("accept_chain", { chainId: chain.chainId }); supportedBy.push(chain.chainId);
+        }
+      }
+      if (entries.has("propose_principle")) await invoke("propose_principle", { ...hypothesis, supportedBy });
+      else await invoke("save_note", { ...hypothesis, observationIds, conclusion: `Notebook: ${hypothesis.conclusion}` });
+    } else if (entries.has("predict")) {
+      const contract = await invoke("read_file", { path: "docs/service-contract.md" });
+      const candidate = JSON.parse(context);
+      const applicable = candidate.implementation === qualityRuleImplementation || !contract.includes("page.complete is true");
+      await invoke("predict", { applicable, expectedPass: applicable, reason: "Compare the candidate procedure with the current authoritative contract." });
+      assert.equal((await invoke("run_prediction")).predictionMatched, true);
+    } else if (entries.has("accept_principle")) await invoke("accept_principle");
+    else if (entries.has("publish_note")) await invoke("publish_note");
+    else if (JSON.parse(context || "null")?.view === "quality-review") {
+      const review = JSON.parse(context);
+      assert.ok(!context.includes("quality-snapshot-transfer"));
+      assert.equal(review.exceptions.length, 2);
+      assert.ok(review.exceptions.every(entry => entry.verification.passed === false));
+      if (skipReview) {
+        for (const entry of review.exceptions) {
+          const choice = { caseId: entry.caseId, quote: entry.contract.trim(), reason: "The retained conditions already exclude this explicit-completion boundary; no new generalization is justified." };
+          await invoke("skip_learning", choice);
+          assert.equal((await invoke("skip_learning", choice)).alreadyRecorded, true);
+        }
+        return { status: "completed", sessionId: randomUUID(), answer: { completed: false }, trace: [], responses: [], inputTokens: 20, outputTokens: 5, toolCalls: 4 };
+      }
+      const revised = { ...hypothesis, conclusion: "Check client.termination, follow nonterminal empty pages, reject cursor cycles, and use the declared completion signal.",
+        applicability: "Cursor and explicit-completion services with an inspected current client contract.", assumptions: [], implementation: qualityRuleImplementation };
+      if (entries.has("challenge_principle")) {
+        for (const entry of review.exceptions) await invoke("challenge_principle", { caseId: entry.caseId, proofId: entry.verification.id });
+        await invoke("propose_revision", revised);
+      } else await invoke("amend_note", revised);
+    } else {
+      assert.ok(entries.has("record_decision"));
+      assert.ok(![...entries.keys()].some(name => /capture|retain|propose|accept|amend/.test(name)));
+      const readme = await invoke("read_file", { path: "README.md" });
+      const entry = investigationCases("quality").find(item => readme.startsWith(`# ${item.sourceGroup}\n`));
+      const decision = investigationDecision(entry.id);
+      const contract = await invoke("read_file", { path: "docs/service-contract.md" });
+      const prior = context ? JSON.parse(context) : null;
+      const visibleTests = await invoke("read_file", { path: "tests/workflow.test.mjs" });
+      assert.ok(!visibleTests.includes("boundary/cursor cycle"), "the held-out audit must not leak through repository tools");
+      await invoke("record_decision", { cause: decision.cause, stopSignal: decision.stopSignal,
+        knowledgeDecision: !prior ? "not_needed" : entry.role === "irrelevant" ? "reject" : "adapt",
+        nextAction: "Preserve required behavior, boundary handling and source identities under the current contract.",
+        path: "docs/service-contract.md", quote: contract.trim() });
+      await invoke("write_file", { path: "src/scan.mjs", content: prior?.knowledgeVersion === "original" && entry.role !== "irrelevant"
+        ? cursorRuleImplementation : investigationRepair(entry.id) });
+      await invoke("write_file", { path: "src/identity.mjs", content: "export const identify = value => value;\n" });
+      assert.equal((await invoke("run_tests")).expectedTests, 3);
+    }
+    return { status: "completed", sessionId: randomUUID(), answer: { completed: true }, trace: [], responses: [], inputTokens: 20, outputTokens: 5, toolCalls: 5 };
+  } };
+  try {
+    const report = await runInvestigationLab({ driver: monitored, agent, code, profile: "quality",
+      onPlan: plan => { assert.equal(plan.profile, "quality"); }, onEvent: event => {
+        if (event.type === "rediscovery_round_started") comparing = true;
+        if (event.type === "rediscovery_round_finished") comparing = false;
+      } });
+    assert.equal(report.status, "completed", JSON.stringify({ failure: report.failure, toolFailures,
+      preparation: report.preparation.map(item => ({ correct: item.correct, observations: item.observationIds.length, failure: item.infrastructureFailure })),
+      phases: report.preparationWork.map(item => ({ phase: item.phase, arm: item.arm, status: item.status })),
+      validations: report.validations.map(item => ({ arm: item.arm, caseId: item.caseId, status: item.status, correct: item.correct })),
+      observations: report.knowledge.observations.length, chains: report.knowledge.chains.length, principles: report.knowledge.principles.length }));
+    assert.equal(report.plan.protocolVersion, 6);
+    assert.equal(report.plan.formationPolicyVersion, 2);
+    assert.equal(report.preparationWork.filter(work => work.phase === "chain_proposal").length, 2);
+    assert.ok(report.preparationWork.filter(work => work.phase === "chain_proposal").every(work => work.selfReportedComplete === false && work.decisionCompleted));
+    assert.equal(report.preparationWork.filter(work => work.phase === "chain_acceptance" && work.decisionCompleted).length, 2);
+    assert.equal(report.outcomes.length, 16);
+    assert.ok(report.outcomes.every(outcome => outcome.publicTests.expectedTests === 3 && outcome.finalTests.expectedTests === 8));
+    assert.deepEqual(Object.keys(report.metrics.arms).sort(), ["fresh", "mindleak", "notebook", "original"]);
+    assert.equal(report.metrics.quality.primary, "held_out_outcome_quality");
+    assert.equal(report.knowledgeVersions.original.lessons[0].id, report.knowledgeVersions.revised.lessons[0].id);
+    assert.ok(report.knowledgeVersions.revised.lessons[0].revision > report.knowledgeVersions.original.lessons[0].revision);
+    assert.equal(report.knowledgeVersions.original.principles[0].document.evidence.length, 0);
+    assert.equal(report.knowledgeVersions.revised.principles[0].document.evidence.length, 2);
+    assert.equal(report.validations.length, 8);
+    assert.ok(report.validations.every(check => check.correct));
+    assert.ok(report.rounds[0].frozenUnchanged);
+    assert.ok(report.reviews.every(review => review.completed));
+    assert.equal(report.metrics.arms.mindleak.correct, 4);
+    assert.ok(report.metrics.arms.original.quality.checksPassed < report.metrics.arms.mindleak.quality.checksPassed);
+    assert.equal(report.metrics.arms.original.quality.checksScheduled, 32);
+    assert.equal(report.metrics.arms.mindleak.quality.correctRejections, 1);
+    assert.equal(report.metrics.quality.comparativeBenefit, "not_established");
+    assert.equal(report.realModel, false, "scripted agents establish mechanics, not model quality gains");
+    assert.equal(report.inputTokens, calls * 20);
+    if (process.env.MINDLEAK_QUALITY_TEST_REPLAY_DIR) await writeDemoReplay(report, join(process.env.MINDLEAK_QUALITY_TEST_REPLAY_DIR, report.runId));
+    if (process.env.MINDLEAK_LAB_BROWSER) {
+      const { openArtifactBrowser } = await import("./demo-replay.mjs");
+      const directory = await mkdtemp(join(tmpdir(), "mindleak-quality-view-"));
+      const server = await createDemoServer({ outputDirectory: directory, initialReport: report, runBuild: async () => report });
+      const browser = await openArtifactBrowser();
+      try {
+        for (const viewport of [{ width: 1440, height: 1080 }, { width: 390, height: 844 }]) {
+          const page = await browser.newPage({ viewport, reducedMotion: "reduce" });
+          const errors = []; page.on("pageerror", error => errors.push(error.message));
+          await page.goto(server.url);
+          await page.waitForFunction(() => document.querySelectorAll("#quality-result-body tr").length === 4);
+          assert.equal(await page.locator("#quality-status").innerText(), "16 / 16 measured");
+          assert.ok((await page.locator('#quality-result-body tr[data-arm="original"]').innerText()).includes("Original Knowledge"));
+          assert.equal(await page.locator("#quality-pair-body tr").count(), 4);
+          assert.equal(await page.locator("#study-continue").isDisabled(), true);
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+          await page.locator("#quality-results").scrollIntoViewIfNeeded();
+          if (process.env.MINDLEAK_QUALITY_SCREENSHOT_DIR) await page.screenshot({ path: join(process.env.MINDLEAK_QUALITY_SCREENSHOT_DIR, `quality-${viewport.width}.png`) });
+          await page.goto(`${server.url}/learnings`);
+          await page.locator("#knowledge-page").waitFor({ state: "visible" });
+          assert.equal(await page.locator("#investigation-validations tr").count(), 8);
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+          assert.deepEqual(errors, []);
+          await page.close();
+        }
+      } finally { await browser.close(); await server.close(); await rm(directory, { recursive: true, force: true }); }
+    }
+    skipReview = true;
+    const unchanged = await runInvestigationLab({ driver: monitored, agent, code, profile: "quality" });
+    assert.equal(unchanged.status, "completed", JSON.stringify(unchanged.reviews));
+    assert.ok(unchanged.reviews.every(review => review.completed && review.outcome === "no_new_learning" && review.decisions.length === 2));
+    assert.equal(unchanged.knowledgeVersions.original.lessons[0].revision, unchanged.knowledgeVersions.revised.lessons[0].revision);
+    assert.ok(unchanged.preparationWork.filter(work => work.phase === "exception_review").every(work => work.selfReportedComplete === false && work.decisionCompleted));
+    const failedCapture = await runInvestigationLab({ driver: { ...monitored, async call(name, args) {
+      if (name === "write_memory") throw new Error("mcp_tool_failed");
+      return monitored.call(name, args);
+    } }, agent, code, profile: "quality" });
+    assert.equal(failedCapture.status, "partial");
+    assert.equal(failedCapture.failure, "quality_original_knowledge_unavailable");
+    assert.equal(failedCapture.outcomes.length, 0);
+    assert.equal(failedCapture.knowledge.observations.length, 0);
+    assert.equal(failedCapture.metrics.arms.mindleak.quality.unmeasuredTasks, 4);
+    assert.equal(failedCapture.metrics.arms.mindleak.quality.checksScheduled, 32);
+  } finally { await driver.close(); }
+});
+
+test("Lab 3 quality capture keeps exact sources and never credits failed persistence", async () => {
+  const { createInvestigationLedger, investigationPlan } = await import("./investigation-lab.mjs");
+  const { investigationFixture } = await import("./investigation-fixtures.mjs");
+  const plan = investigationPlan({ profile: "quality" });
+  const fixture = investigationFixture(plan.discovery[0].id);
+  const proof = { id: randomUUID(), group: "behavior", tests: 2, expectedTests: 2, passedTests: 0, passed: false,
+    sourceSha256: digest(fixture.files), files: fixture.files, inspected: fixture.files };
+  const calls = [];
+  let unavailable = true;
+  const ledger = createInvestigationLedger({ plan, driver: { async call(name, args) {
+    assert.equal(name, "write_memory"); calls.push(structuredClone(args));
+    if (unavailable) throw new Error("mcp_tool_failed");
+    return { data: { memoryId: randomUUID(), fragments: [{ fragmentId: randomUUID(), text: args.text }] } };
+  } } });
+  const input = { fixture, proofs: new Map([[proof.id, proof]]), taskComplete: false, observation: {
+    proofId: proof.id, summary: "The current implementation omitted records after a nonterminal empty page.",
+    conditions: "The service declares a null next cursor as completion.", uncertainty: "This observation does not validate other completion contracts.",
+    path: "docs/service-contract.md", quote: fixture.files["docs/service-contract.md"].trim(),
+  } };
+  for (const quote of ["A non-null next cursor marks completion.", "Record identities are case-insensitive.", "The scanner changes client.termination."]) {
+    await assert.rejects(ledger.capture({ ...input, observation: { ...input.observation, quote } }), /inspected_source/);
+  }
+  assert.equal(calls.length, 0, "altered subjects and conditions in quoted evidence must fail before persistence");
+  await assert.rejects(ledger.capture(input), /mcp_tool_failed/);
+  assert.equal(ledger.snapshot().observations.length, 0);
+  assert.equal(ledger.snapshot().operations.length, 0);
+  assert.equal(ledger.snapshot().principles.length, 0);
+  unavailable = false;
+  const saved = await ledger.capture(input);
+  assert.deepEqual(calls[1], calls[0], "explicit retry must retain the exact payload and request key");
+  const observation = ledger.snapshot().observations[0];
+  assert.equal(observation.memoryId, saved.memoryId);
+  assert.ok(observation.rawText.includes(input.observation.quote));
+  assert.ok(observation.rawText.includes(input.observation.uncertainty));
+  assert.equal((await ledger.capture(input)).memoryId, saved.memoryId);
+  assert.equal(calls.length, 2, "an acknowledged capture is reused rather than duplicated");
+});
+
+test("Lab 3 quality scores executed outcomes and correct rejection independently", async () => {
+  const { investigationQuality } = await import("./investigation-lab.mjs");
+  const { investigationFixture } = await import("./investigation-fixtures.mjs");
+  const fixture = investigationFixture("quality-snapshot-transfer");
+  const outcome = { correct: true, decisionCorrect: true, decisionWithPriorEvidence: true, priorKnowledgeDelivered: true,
+    decision: { knowledgeDecision: "reject" }, finalTests: { tests: 8, expectedTests: 8, passedTests: 8, passed: true,
+      failedTests: [], sourceSha256: "actual-tested-candidate" } };
+  const priorCheck = { id: randomUUID(), fixtureSha256: fixture.fixtureSha256, sourceSha256: "tested-prior-procedure", tests: 2, expectedTests: 2, passedTests: 0, passed: false };
+  const result = investigationQuality(fixture, outcome, priorCheck);
+  assert.equal(result.measured, true);
+  assert.equal(result.checksPassed, 8);
+  assert.equal(result.correctRejection, true);
+  assert.equal(investigationQuality(fixture, outcome, { ...priorCheck, passed: true, passedTests: 2 }).correctRejection, false);
+  assert.equal(investigationQuality(fixture, outcome, { passed: false }).correctRejection, false);
+  assert.equal(investigationQuality(fixture, outcome, { ...priorCheck, fixtureSha256: "another-fixture" }).correctRejection, false);
+  assert.equal(investigationQuality(fixture, { ...outcome, decisionWithPriorEvidence: false }, priorCheck).correctRejection, false);
+  assert.equal(investigationQuality(fixture, { ...outcome, finalTests: { passed: true } }).measured, false);
+  assert.equal(investigationQuality(fixture, { ...outcome, finalTests: { ...outcome.finalTests, passedTests: 7 } }).checksPassed, null);
+  const unsupported = investigationQuality(fixture, { ...outcome, priorKnowledgeDelivered: false, decision: { knowledgeDecision: "use" } });
+  assert.equal(unsupported.unsupportedUseClaim, true);
+  assert.equal(unsupported.correctRejection, false);
+});
+
+test("Lab 3 quality CLI and selector expose the frozen comparison without starting work", async () => {
+  const script = fileURLToPath(new URL("./swarm-demo.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [script, "--plan", "--rediscovery-profile", "quality"], { encoding: "utf8", env: {
+    ...process.env, MINDLEAK_TEST_DATABASE_URL: "must-not-connect", MINDLEAK_VALIDATION_AGENT_API_KEY: "must-not-read",
+  } });
+  assert.equal(result.status, 0, result.stderr);
+  const plan = JSON.parse(result.stdout);
+  assert.equal(plan.profile, "quality");
+  assert.equal(plan.mainSessions, 16);
+  assert.equal(plan.taskChecks, 8);
+  assert.equal(plan.delivery, "matched_frozen_briefs");
+  assert.ok(!result.stdout.includes("must-not-"));
+  assert.equal(selectDemoParameters(null, { rediscoveryProfile: "quality" }).rediscoveryProfile, "quality");
+  assert.throws(() => selectDemoParameters(null, { rediscoveryProfile: "quality", continueFrom: randomUUID() }), /fresh_investigation/);
+  const { parseHTML } = await import("linkedom");
+  const page = parseHTML(await renderDemoPage({ report: { kind: "rediscovery_lab", runId: "quality-ui-plan", status: "completed", plan,
+    agents: [{ id: "mindleak", name: "MindLeak" }], events: [], elapsedMs: 1 } })).document;
+  assert.ok(page.querySelector("option[value=quality]"));
+  assert.ok(page.querySelector("#quality-results"));
+  assert.ok(page.querySelector("#quality-result-body"));
+});
+
+test("Lab 3 quality display keeps missing receipts unknown and rejection distinct", async () => {
+  const { qualityComparison, labCompletion } = await import("./demo-view.mjs");
+  const { investigationPlan } = await import("./investigation-lab.mjs");
+  const plan = investigationPlan({ profile: "quality" });
+  const session = plan.sessions.find(item => item.arm === "mindleak");
+  const finished = { id: 1, type: "rediscovery_task_finished", phaseScope: "evaluation", caseId: session.id, agent: session.arm, correct: true };
+  const report = { kind: "rediscovery_lab", status: "recording", plan, events: [finished] };
+  assert.equal(qualityComparison(report).arms.mindleak.unmeasuredTasks, 4);
+  const receipt = { id: 2, type: "quality_checked", caseId: session.id, agent: session.arm, measured: true, checksScheduled: 8, checksPassed: 8,
+    sourceBackedDecision: true, correctRejection: true, dimensions: { behavior: { scheduled: 2, passed: 2 }, boundary: { scheduled: 3, passed: 3 }, regression: { scheduled: 3, passed: 3 } } };
+  report.events.push(receipt, structuredClone(receipt));
+  const quality = qualityComparison(report);
+  assert.equal(quality.arms.mindleak.correct, 1);
+  assert.equal(quality.arms.mindleak.checksPassed, 8);
+  assert.equal(quality.arms.mindleak.correctRejections, 1);
+  assert.equal(quality.arms.mindleak.unmeasuredTasks, 3);
+  assert.equal(quality.arms.original.unmeasuredTasks, 4);
+  assert.ok(quality.comparisons.every(item => item.checksDelta === null));
+  assert.equal(qualityComparison({ plan: { profile: "learning" } }), null);
+  const tests = { passed: true, tests: 8, expectedTests: 8, passedTests: 8, failedTests: [], sourceSha256: "verified-quality-artifact" };
+  const completed = { ...report, status: "completed", preparation: plan.discovery.map(item => ({ id: item.id, correct: true, status: "completed", finalTests: tests })),
+    outcomes: plan.sessions.map(item => ({ ...item, correct: true, status: "completed", finalTests: tests })) };
+  assert.equal(labCompletion(completed).requirements.status, "passed");
+  assert.equal(labCompletion(completed).requirements.scheduled, 18);
 });
 
 test("validation scenarios cover all ten categories and reproducible scale checkpoints", () => {
@@ -2138,29 +2589,37 @@ test("Lab 3 runs knowledge-first arms with misses frozen rounds and complete acc
     assert.ok(task.includes("Installed skills and earlier conversations are unavailable"));
     const entries = new Map(tools.map(tool => [tool.definition.function.name, tool]));
     const invoke = (name, args = {}) => entries.get(name).invoke(args);
-    if (entries.has("inspect_task_result")) {
+    if (!tools.length) {
       assert.ok(task.includes("memory-side"));
       assert.ok(!task.includes('"arm":"fresh"') && !task.includes('"arm":"direct"'));
+      assert.equal(schema.properties.decisions.type, "array");
+      const dossier = JSON.parse(context);
+      assert.equal(dossier.view, "rediscovery-review");
+      assert.ok(dossier.cases.every(item => item.arm === "mindleak"));
+      const decisions = Object.fromEntries(dossier.cases.map(item => [item.id, { decision: "skip",
+        reason: "The verified current contract is already covered by the retained procedure and introduces no further rule.",
+        evidence: { path: "docs/current-contract.md", quote: item.files["docs/current-contract.md"].slice(0, 80) } }]));
       if (task.includes("Review round 0.")) {
-        await invoke("inspect_task_result", { id: "prepare:retry-identity" });
-        for (const title of ["Contract-led recovery checks", "Explicit retry applicability boundaries"]) await invoke("retain_lesson", {
-          caseId: "prepare:retry-identity", title,
+        decisions["prepare:retry-identity"] = { decision: "retain", lessons: ["Contract-led recovery checks", "Explicit retry applicability boundaries"].map(title => ({
+          title,
           procedure: `${title}: compare provider key scope with the documented contract and verify an appropriate recovery path before reusing prior experience.`,
           conditions: "The current provider advertises its request-key scope.", limitations: "Changed contracts may require attempt-scoped keys.",
           evidence: [{ path: "docs/current-contract.md", quote: "The provider deduplicates committed requests by request key.", claim: "The original contract deduplicates by request key." },
             { path: "src/provider.mjs", quote: 'keyScope: "operation"', claim: "The original provider advertises operation-scoped keys." }],
-        });
-        assert.equal((await invoke("list_principles")).principles.length, 3);
+        })) };
+        assert.equal(dossier.principles.length, 1, "the prepared catalogue is fixed for this decision request");
       }
       if (sessionCount > 12 && task.includes("Review round 1.")) {
         const caseId = "retry-identity:near:1:mindleak";
-        const recovered = await invoke("inspect_task_result", { id: caseId });
-        await invoke("retain_lesson", { caseId, title: "Consumer-side recovery contract checks",
+        const recovered = dossier.cases.find(item => item.id === caseId);
+        decisions[caseId] = { decision: "retain", lessons: [{ title: "Consumer-side recovery contract checks",
           procedure: "Check the consumer contract and provider key scope together before adapting retry ownership in a different calling module.",
           conditions: "The current consumer has passed its immutable retry checks.", limitations: "Different source files do not establish independent corroboration.",
-          evidence: ["docs/current-contract.md", "src/provider.mjs"].map(path => ({ path, quote: recovered.files[path].slice(0, 80), claim: `The verified consumer investigation inspected ${path}.` })) });
+          evidence: ["docs/current-contract.md", "src/provider.mjs"].map(path => ({ path, quote: recovered.files[path].slice(0, 80), claim: `The verified consumer investigation inspected ${path}.` })) }] };
       }
-      return { status: "completed", sessionId: randomUUID(), answer: { completed: true }, trace: [], responses: [], inputTokens: 100, outputTokens: 10, toolCalls: 0, elapsedMs: 1 };
+      return { status: "completed", sessionId: randomUUID(), answer: { completed: true,
+        decisions: Object.entries(decisions).map(([caseId, decision]) => ({ caseId, ...decision })) },
+        trace: [], responses: [], inputTokens: 100, outputTokens: 10, toolCalls: 0, elapsedMs: 1 };
     }
     const files = await invoke("list_files");
     const modulePath = files.find(path => /^src\/(worker|consumer|adapter)\.mjs$/.test(path));
@@ -2279,33 +2738,176 @@ test("Lab 3 runs knowledge-first arms with misses frozen rounds and complete acc
   } finally { await driver.close(); }
 });
 
+test("Lab 3 review authors a complete decision document before persistence", async () => {
+  const { reviewRediscoveryKnowledge } = await import("./rediscovery-lab.mjs");
+  const { rediscoveryFixture, rediscoveryFixtureRepair } = await import("./rediscovery-fixtures.mjs");
+  const fixture = rediscoveryFixture("retry-identity");
+  const evidence = { fixture, changed: true, candidateFiles: { [fixture.modulePath]: rediscoveryFixtureRepair(fixture.family) },
+    verification: { passed: true, tests: 3, expectedTests: 3, passedTests: 3, sourceSha256: "verified-candidate" },
+    baseline: { passed: false, tests: 3, expectedTests: 3, passedTests: 1, sourceSha256: "failing-baseline" } };
+  const verified = ["first-case", "second-case"].map(id => ({ id, arm: "mindleak", family: fixture.family, stage: fixture.stage, correct: true }));
+  for (const mode of ["complete", "partial", "invalid_quote", "unfinished", "cancelled", "deadline"]) {
+    const controller = new AbortController(); let writes = 0; let returned = false;
+    const store = { scope: "review-document-test", snapshot: () => ({ lessons: [], chains: [], observations: [] }), async verifyFrozen() {},
+      async retain({ signal }) { assert.equal(returned, true); assert.ok(signal instanceof AbortSignal); writes += 1; return { id: "retained-principle", revision: 2 }; } };
+    const agent = { configuration: { timeoutMs: mode === "deadline" ? 1 : 300000 }, async run(_task, tools, context, schema) {
+      assert.deepEqual(tools, [], "the review author must not depend on SDK tool dispatch");
+      assert.equal(schema.properties.decisions.type, "array");
+      assert.equal(schema.properties.decisions.minItems, verified.length);
+      assert.equal(writes, 0, "authoring has no persistence side effects");
+      const { cases } = JSON.parse(context);
+      const decisions = cases.map(item => ({ caseId: item.id, decision: "skip", reason: "The supplied case adds no further supported reusable condition.",
+        evidence: { path: "docs/current-contract.md", quote: item.files["docs/current-contract.md"].slice(0, 80) } }));
+      decisions[0] = { caseId: cases[0].id, decision: "retain", lessons: [{ title: "Operation-scoped retry identity",
+        procedure: "Check the provider key scope, retain the key across operation retries, and verify exactly-once effects.",
+        conditions: "The inspected provider deduplicates committed requests by request key.", limitations: "Attempt-scoped keys require a different procedure after checking the changed contract.",
+        evidence: ["docs/current-contract.md", "src/provider.mjs"].map(path => ({ path, quote: cases[0].files[path].slice(0, 80), claim: "The inspected source defines the current request-key contract." })) }] };
+      if (mode === "partial") decisions.pop();
+      if (mode === "invalid_quote") decisions[1].evidence.quote = "This quotation is not in the source.";
+      if (mode === "cancelled") controller.abort();
+      if (mode === "deadline") await new Promise(resolve => setTimeout(resolve, 10));
+      returned = true;
+      return { status: "completed", answer: { completed: mode !== "unfinished", decisions }, inputTokens: 10, outputTokens: 2, toolCalls: 0, trace: [], responses: [] };
+    } };
+    const result = await reviewRediscoveryKnowledge({ round: { number: 0, stage: "preparation" }, verified, signal: controller.signal,
+      caseEvidence: new Map(verified.map(outcome => [outcome.id, evidence])), store, agent, driver: {} });
+    assert.equal(result.completed, mode === "complete", mode);
+    assert.equal(writes, mode === "complete" ? 1 : 0, mode);
+    assert.equal(result.decisions.length, mode === "complete" ? 2 : 0, mode);
+    if (mode === "deadline") assert.equal(result.failure.code, "review_deadline");
+  }
+});
+
+test("Lab 3 bounded review preserves rejection evidence and refuses unsafe decisions", async () => {
+  const { reviewRediscoveryKnowledge, rediscoveryReviewPolicy } = await import("./rediscovery-lab.mjs");
+  const { rediscoveryFixture, rediscoveryFixtureRepair } = await import("./rediscovery-fixtures.mjs");
+  const fixture = rediscoveryFixture("path-boundary", "changed");
+  const verification = { passed: true, tests: 3, expectedTests: 3, passedTests: 3, sourceSha256: "verified-source" };
+  const evidence = { fixture, candidateFiles: { [fixture.modulePath]: rediscoveryFixtureRepair("path-boundary", "changed") },
+    verification, baseline: { passed: false, tests: 3, expectedTests: 3, passedTests: 1 }, changed: true };
+  for (const mode of ["skip", "unresolved", "partial", "retention_failure", "retained", "unrelated_retention", "rejected_after_success", "invalid_quote", "unknown_case", "duplicate_decision", "oversized", "control", "changed", "changed_during_preparation", "source_mismatch", "duplicate_case", "missing_evidence"]) {
+    const stored = { lessons: [], observations: [], chains: [], principles: [] };
+    let modelCalls = 0; let writes = 0;
+    const store = { scope: "bounded-review-test", snapshot() { return structuredClone(stored); },
+      async verifyFrozen() { if (mode === "changed_during_preparation") stored.lessons.push({ id: "changed-principle", revision: 3, document: {} }); }, async retain() {
+        writes += 1;
+        if (mode === "retention_failure" || mode === "unrelated_retention" && writes === 1) throw Object.assign(new Error("mcp_invalid_result"), { code: "provider_request_failed" });
+        if (mode === "rejected_after_success" && writes === 2) throw new Error("prior_lesson_brief_budget");
+        return { id: "new-principle", revision: 2, existing: mode === "unrelated_retention" };
+      } };
+    const outcome = { id: "path-boundary:changed:1:mindleak", arm: mode === "control" ? "fresh" : "mindleak", correct: true,
+      family: fixture.family, stage: "changed", priorKnowledgeDelivered: true, priorImplementationInvalidated: true,
+      trace: [{ tool: "retain_lesson", ok: false, errorCode: "mcp_invalid_result", elapsedMs: 240001 }],
+      knowledgeWorkflow: { assessment: { decision: "reject", lessonId: "earlier-principle", reason: "The inspected contract changed." } } };
+    const current = structuredClone(evidence);
+    if (mode === "oversized") current.fixture.files["docs/extra-evidence.md"] = "x".repeat(rediscoveryReviewPolicy.maximumBytes);
+    if (mode === "source_mismatch") stored.observations.push({ memoryId: "original-source", rawText: "Original evidence", fragments: [{ fragmentId: "source-fragment", text: "Original evidence" }] });
+    const agent = { async run(task, tools, context) {
+      modelCalls += 1;
+      const dossier = JSON.parse(context); const entry = dossier.cases[0];
+      assert.equal(entry.priorKnowledge.assessment.decision, "reject");
+      assert.equal(entry.priorKnowledge.priorImplementationInvalidated, true);
+      assert.deepEqual(entry.retentionFailures, [{ code: "mcp_invalid_result", elapsedMs: 240001 }], "earlier failed formation must remain visible to the reviewer");
+      assert.deepEqual(tools, []);
+      const skip = { caseId: entry.id, decision: "skip", reason: "The existing conditional procedure already directs rechecking this changed provider contract.",
+        evidence: { path: "docs/current-contract.md", quote: entry.files["docs/current-contract.md"].slice(0, 80) } };
+      const validLesson = { title: "Supported current-contract procedure",
+        procedure: "Inspect the current provider contract before selecting path semantics and verify the resulting namespace boundary.",
+        conditions: "The current verified provider supplies the resource-name contract.", limitations: "A changed provider can require different treatment of literal resource names.",
+        evidence: ["docs/current-contract.md", "src/provider.mjs"].map(path => ({ path, quote: entry.files[path].slice(0, 80), claim: "The inspected source defines the current resource-name contract." })) };
+      const decisions = [skip];
+      if (["retention_failure", "retained", "unrelated_retention", "rejected_after_success"].includes(mode)) decisions[0] = { caseId: entry.id, decision: "retain",
+        lessons: ["unrelated_retention", "rejected_after_success"].includes(mode) ? [validLesson, { ...validLesson, title: "Different supported proposal" }] : [validLesson] };
+      if (mode === "invalid_quote") skip.evidence.quote = "This quotation is not in the supplied evidence.";
+      if (mode === "unknown_case") skip.caseId = "fresh-control-case";
+      if (mode === "duplicate_decision") decisions.push(structuredClone(skip));
+      if (mode === "changed") stored.lessons.push({ id: "changed-principle", revision: 3, document: {} });
+      return { status: "completed", answer: { completed: mode !== "unresolved", decisions }, inputTokens: 10, outputTokens: 2, toolCalls: 0, trace: [], responses: [] };
+    } };
+    const verified = mode === "duplicate_case" ? [outcome, outcome] : ["partial", "duplicate_decision"].includes(mode) ? [outcome, { ...outcome, id: "second-case" }] : [outcome];
+    const result = await reviewRediscoveryKnowledge({ round: { number: 2, stage: "changed" },
+      verified, caseEvidence: new Map(mode === "missing_evidence" ? [] : verified.map(item => [item.id, current])), store, agent,
+      driver: { async call() { return { data: { memoryId: "original-source", rawText: "Replaced evidence" } }; } } });
+    assert.equal(result.completed, ["skip", "retained"].includes(mode), mode);
+    assert.equal(modelCalls, ["oversized", "control", "changed_during_preparation", "source_mismatch", "duplicate_case", "missing_evidence"].includes(mode) ? 0 : 1, mode);
+    assert.equal(writes, ["unrelated_retention", "rejected_after_success"].includes(mode) ? 2 : ["retention_failure", "retained"].includes(mode) ? 1 : 0);
+    if (mode === "partial") assert.deepEqual(result.unresolvedCaseIds, [outcome.id, "second-case"]);
+    if (["partial", "unresolved"].includes(mode)) assert.equal(result.failure.code, "review_decisions_incomplete");
+    if (["retention_failure", "unrelated_retention"].includes(mode)) {
+      assert.equal(result.experienceErrors.length, 1);
+      assert.equal(result.experienceErrors[0].cause, "provider_request_failed");
+      assert.equal(result.failure.code, "review_retention_failed");
+      assert.deepEqual(result.unresolvedCaseIds, [outcome.id]);
+    }
+    if (mode === "skip") assert.equal(result.outcome, "no_new_learning");
+    if (mode === "retained") assert.equal(result.outcome, "learning_retained");
+    if (mode === "unrelated_retention") assert.equal(result.retainedLessonIds.length, 1, "acknowledged writes survive an incomplete review");
+    if (mode === "rejected_after_success") {
+      assert.equal(result.retainedLessonIds.length, 1);
+      assert.deepEqual(result.unresolvedCaseIds, [outcome.id]);
+      assert.equal(result.experienceErrors[0].code, "review_retention_rejected");
+    }
+  }
+});
+
 test("Lab 3 cannot complete when a required learning review is unfinished", async () => {
   const { runRediscoveryLab } = await import("./rediscovery-lab.mjs");
   for (const reviewResult of [
     { status: "incomplete", answer: null, failure: { code: "runtime_idle_before_final_answer" } },
     { status: "completed", answer: { completed: false } },
     { status: "completed", answer: { completed: true } },
+    { status: "completed", answer: { completed: true }, decide: true },
   ]) {
     let processNumber = 0;
-    let repair;
     const driver = { capabilities: { knowledge: true, chains: true }, configuration: { decomposition: "sentences", retrieval: "keyword" },
       async restart() { const previous = processNumber; processNumber += 1; return { previous, current: processNumber }; },
-      async call() { assert.fail("this status-only fixture must not invent stored knowledge"); } };
-    const agent = { configuration: { model: "test-double", provider: "test" }, async run(task, tools) {
-      const reviewing = tools.some(tool => tool.definition.function.name === "inspect_task_result");
-      if (!reviewing) repair();
+      async call(name, args) {
+        assert.equal(name, "recall_memory", "this status-only fixture must not invent stored knowledge");
+        assert.equal(args.knowledge.operation, "search");
+        return { data: { kind: "knowledge", principles: [], chains: [], observations: [] } };
+      } };
+    const agent = { configuration: { model: "test-double", provider: "test" }, async run(task, tools, context) {
+      const reviewing = !tools.some(tool => tool.definition.function.name === "write_file");
+      let decisions;
+      if (reviewing) {
+        assert.deepEqual(tools, [], "review authors must not rely on another tool-dispatch loop");
+        const dossier = JSON.parse(context);
+        assert.equal(dossier.view, "rediscovery-review");
+        assert.equal(dossier.cases.length, 1);
+        assert.ok(dossier.cases.every(item => item.arm === "mindleak" && item.verification.passed));
+        assert.ok(!context.includes('"arm":"fresh"') && !context.includes('"arm":"notebook"') && !context.includes('"arm":"direct"'));
+        if (reviewResult.decide) decisions = dossier.cases.map(item => ({
+          caseId: item.id, decision: "skip", reason: "The verified fixture adds no established reusable finding beyond the supplied current contract.",
+          evidence: { path: "docs/current-contract.md", quote: item.files["docs/current-contract.md"].slice(0, 80) },
+        }));
+      }
+      if (!reviewing) {
+        const invoke = (name, args = {}) => tools.find(tool => tool.definition.function.name === name).invoke(args);
+        const search = tools.find(tool => ["recall_experience", "search_notebook"].includes(tool.definition.function.name));
+        if (search) {
+          await search.invoke({ query: "Synthetic current contract" });
+          const source = await invoke("read_file", { path: "docs/current-contract.md" });
+          await invoke("assess_experience", { decision: "no_match", lessonId: null,
+            reason: "The empty lookup requires checking the supplied current fixture contract locally.",
+            evidence: { path: "docs/current-contract.md", quote: source.slice(0, 80) } });
+        }
+        const edit = tools.find(tool => tool.definition.function.name === "write_file");
+        await edit.invoke({ path: edit.definition.function.parameters.properties.path.enum[0], content: "verified test fixture candidate" });
+      }
       return { sessionId: randomUUID(), status: "completed", answer: { completed: true }, trace: [], responses: [],
-        inputTokens: 10, outputTokens: 2, toolCalls: 0, elapsedMs: 1, ...(reviewing ? reviewResult : {}) };
+        inputTokens: 10, outputTokens: 2, toolCalls: 0, elapsedMs: 1, ...(reviewing ? reviewResult : {}),
+        ...(decisions ? { answer: { ...reviewResult.answer, decisions } } : {}) };
     } };
     const report = await runRediscoveryLab({ driver, agent, code: { engine: "test" }, profile: "smoke",
       workspaceFactory: async (_name, _code, fixture) => {
         let repaired = false;
-        repair = () => { repaired = true; };
-        return { async read(path) { return fixture.files[path]; }, async close() {}, async test() {
+        const files = { ...fixture.files };
+        return { editablePaths: fixture.editable, async read(path) { return files[path]; },
+          async write(path, content) { files[path] = content; repaired = true; return { written: true }; }, async close() {}, async test() {
           return { passed: repaired, tests: 3, expectedTests: 3, passedTests: repaired ? 3 : 0, sourceSha256: repaired ? "verified-candidate" : "failing-baseline" };
         } };
       } });
-    const completed = reviewResult.status === "completed" && reviewResult.answer.completed;
+    const completed = reviewResult.status === "completed" && reviewResult.answer.completed && Boolean(reviewResult.decide);
     assert.equal(report.finalTests.passed, true);
     assert.equal(report.metrics.arms.mindleak.correct, 2);
     assert.equal(report.metrics.arms.mindleak.knowledgeReuse.successful, 0);
@@ -2314,6 +2916,7 @@ test("Lab 3 cannot complete when a required learning review is unfinished", asyn
     assert.deepEqual(report.learningReviews, { status: completed ? "completed" : "incomplete", scheduled: 3, completed: completed ? 3 : 0, incomplete: completed ? 0 : 3 });
     assert.ok([report.preparationReview, ...report.rounds.map(round => round.learning)].every(review =>
       review.outcome === (completed ? "no_new_learning" : "review_incomplete")));
+    assert.ok([report.preparationReview, ...report.rounds.map(round => round.learning)].every(review => review.decisions.length === (completed ? 1 : 0)));
     assert.equal(report.events.at(-1).status, report.status);
     assert.equal(report.events.filter(event => event.type === "run_finished").length, 1);
   }
@@ -3570,6 +4173,36 @@ test("oversized recall results cannot be credited as agent exposure", async () =
   assert.equal(memory.observations.exposed.size, 0);
 });
 
+test("agent answer validation reports bounded constraint paths without private values", async () => {
+  const { contractViolations } = await import("./validation-agent.mjs");
+  const schema = { type: "object", additionalProperties: false, properties: { reasons: { type: "array", items: {
+    type: "object", additionalProperties: false, properties: { reason: { type: "string", maxLength: 10 } }, required: ["reason"],
+  } } }, required: ["reasons"] };
+  const content = JSON.stringify({ reasons: [{ reason: "private-rejected-value", "private-unknown-field": "private-body" }] });
+  const violations = [{ path: "$.reasons[0].reason", code: "maxLength" }, { path: "$.reasons[0]", code: "additionalProperties" }];
+  assert.deepEqual(contractViolations(JSON.parse(content), schema), violations);
+  assert.equal(contractViolations({ reasons: Array.from({ length: 100 }, () => ({ reason: "private-rejected-value" })) }, schema).length, 8);
+  assert.deepEqual(contractViolations({ reasons: [{ reason: "valid" }] }, schema), []);
+  const provider = { models: [{ id: "gpt-6-astra" }], client: { async createSession() {
+    let handler;
+    return { on(callback) { handler = callback; return () => {}; }, async abort() {}, async disconnect() {}, async sendAndWait() {
+      handler({ type: "assistant.usage", id: "safe-validation", data: { model: "gpt-6-astra", inputTokens: 1, outputTokens: 1, finishReason: "stop" } });
+      return { data: { content } };
+    } };
+  }, async deleteSession() {} } };
+  const responses = [await createCopilotAgent(provider).run("Validate the supplied schema", [], "", schema),
+    await runAgentSession({ task: "Validate the supplied schema", answerSchema: schema, complete: async () => ({
+      usage: { prompt_tokens: 1, completion_tokens: 1 }, choices: [{ finish_reason: "stop", message: { content } }],
+    }) })];
+  for (const response of responses) {
+    assert.equal(response.status, "invalid_answer");
+    assert.equal(response.answer, null);
+    assert.deepEqual(response.failure, { code: "invalid_answer_schema", violations });
+    assert.ok(!JSON.stringify(publicExecution(response)).includes("private-"));
+    assert.equal(response.responses.length, 1, "invalid output must not silently add retries");
+  }
+});
+
 test("agent sessions start fresh, count actual tool use, and do not export answer bodies", async () => {
   const requests = [];
   const complete = async request => {
@@ -3687,6 +4320,26 @@ test("agent workflow failures retain actionable knowledge-first errors without p
       : { content: '{"completed":false}' } }] };
   } });
   assert.deepEqual(result.trace.map(event => event.errorCode), codes);
+});
+
+test("frontier adapter distinguishes query dispatch failures without leaking provider diagnostics", async () => {
+  let sends = 0;
+  const provider = { models: [{ id: "gpt-6-astra" }], client: { async createSession() {
+    let handler;
+    return { on(callback) { handler = callback; return () => {}; }, async abort() {}, async disconnect() {}, async sendAndWait() {
+      sends += 1;
+      handler({ type: "assistant.usage", id: "dispatch-failure", data: { model: "gpt-6-astra", inputTokens: 10, outputTokens: 5, finishReason: "tool_calls" } });
+      handler({ type: "session.error", data: { errorType: "query", message: "private-provider-message", stack: "private-provider-stack", statusCode: 400 } });
+      return { data: { content: "private-incomplete-answer" } };
+    } };
+  }, async deleteSession() {} } };
+  const result = await createCopilotAgent(provider).run("Handle the declared task", [], "", answerSchemaFor("rediscovery_demo"));
+  assert.equal(result.status, "provider_error");
+  assert.deepEqual(result.failure, { code: "copilot_query_failed", phase: "tool_dispatch", httpStatus: 400 });
+  assert.equal(result.toolCalls, 0);
+  assert.equal(result.inputTokens, null);
+  assert.equal(sends, 1, "query failure is not a reason to resume tool-only idle");
+  assert.ok(!JSON.stringify(result).includes("private-"));
 });
 
 test("frontier adapter distinguishes unfinished tool work and explicit runtime stops", async () => {

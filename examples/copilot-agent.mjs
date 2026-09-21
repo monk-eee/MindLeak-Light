@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { matchesContract, toolEventDetails, memoryStartupInstructions, guideApplicationGuidance } from "./validation-agent.mjs";
+import { matchesContract, contractViolations, toolEventDetails, memoryStartupInstructions, guideApplicationGuidance } from "./validation-agent.mjs";
 import { digest } from "./validation-scenarios.mjs";
 
 export async function closeCopilotRuntime(client, baseDirectory) {
@@ -80,12 +80,14 @@ export function createCopilotAgent(provider, { model = "gpt-6-astra", maxSteps =
                 }
               } catch (error) {
                 const allowed = ["component_tests_required", "fixture_edit_not_allowed", "fixture_path_not_allowed", "fixture_file_unavailable",
+                  "standalone_javascript_collect_export_required",
                   "dependency_handoffs_required", "handoff_module_required", "dependency_source_files_required", "dependency_source_evidence_required",
                   "prior_experience_search_required", "experience_assessment_required", "invalid_experience_assessment", "current_source_evidence_required", "delivered_experience_required", "retrieved_experience_requires_assessment", "lookup_outcome_mismatch",
                   "agent_tool_result_budget", "empty_recall_budget", "invalid_tool_arguments", "invalid_handoff_brief", "mcp_tool_failed", "mcp_invalid_result",
                   "guide_topic_required", "own_observation_evidence_required", "current_accepted_chains_required", "retain_all_case_chains_in_guide",
                   "revise_the_existing_guide", "stale_guide_revision", "verified_current_candidate_required", "unknown_guide",
                   "guide_review_required", "guide_review_changed", "guide_review_budget", "finish_pending_principle_first", "inspect_existing_principles_first",
+                  "review_decisions_incomplete", "review_retention_unresolved", "review_source_evidence_required", "inspect_verified_case_or_review_budget",
                   "principle_required_before_assessment", "eligible_principle_reference_required",
                   "independent_assessment_first", "verified_source_quote_required", "observation_already_recorded", "case_identity_required_in_claim", "case_chain_already_stored", "assessment_required",
                   "unknown_observation", "guide_must_precede_verified_assessment", "inspect_two_guide_sources", "exact_guide_steps_and_current_evidence_required", "memory_brief_budget", "invalid_observation_kind", "invalid_upgrade_probe", "code_execution_requires_explicit_container", "control_guide_changed", "inspect_round_and_guide_first",
@@ -132,7 +134,10 @@ export function createCopilotAgent(provider, { model = "gpt-6-astra", maxSteps =
             if (usage.model !== model) { failure = { code: "unexpected_model" }; stop(); }
           } else if (event.type === "session.error") {
             const allowed = ["authentication", "authorization", "quota", "rate_limit", "context_limit"];
-            failure = { code: allowed.includes(event.data.errorType) ? event.data.errorType : "copilot_request_failed" };
+            failure = event.data.errorType === "query" ? { code: "copilot_query_failed",
+              phase: responses.at(-1)?.finishReason === "tool_calls" && trace.length === 0 ? "tool_dispatch" : "request",
+              httpStatus: Number.isInteger(event.data.statusCode) && event.data.statusCode >= 400 && event.data.statusCode <= 599 ? event.data.statusCode : null,
+            } : { code: allowed.includes(event.data.errorType) ? event.data.errorType : "copilot_request_failed" };
           } else if (event.type === "session_limits_exhausted.requested") {
             failure = { code: "budget_exceeded" };
             emit("session_stopped", { reason: failure.code, maxAiCredits: event.data.maxAiCredits,
@@ -164,9 +169,13 @@ export function createCopilotAgent(provider, { model = "gpt-6-astra", maxSteps =
             const content = result?.data?.content;
             if (typeof content !== "string" || Buffer.byteLength(content) > 32768) throw new Error();
             answer = JSON.parse(content);
-            if (!answer || typeof answer !== "object" || Array.isArray(answer) || answerSchema && !matchesContract(answer, answerSchema)) throw new Error();
+            const violations = contractViolations(answer, answerSchema ?? { type: "object" });
+            if (!answer || typeof answer !== "object" || Array.isArray(answer) || violations.length) {
+              failure = { code: "invalid_answer_schema", violations };
+              throw new Error();
+            }
             status = "completed";
-          } catch { answer = null; status = "invalid_answer"; }
+          } catch { answer = null; status = "invalid_answer"; failure ??= { code: "invalid_answer_format" }; }
         }
       } catch {
         status = signal?.aborted ? "cancelled" : ["step_limit", "cancelled", "budget_exceeded"].includes(failure?.code) ? failure.code : "provider_error";

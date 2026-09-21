@@ -58,11 +58,12 @@ export async function openMemoryDriver(binary, settings) {
     get capabilities() { return capabilities; },
     get session() { return session; },
     get restarts() { return restarts; },
-    async call(name, arguments_) {
+    async call(name, arguments_, { signal } = {}) {
       const started = performance.now();
       let response;
-      try { response = await client.callTool({ name, arguments: arguments_ }, undefined, { timeout: 660000 }); }
-      catch { throw Object.assign(new Error("mcp_tool_failed"), { code: "mcp_protocol_failure", elapsedMs: performance.now() - started }); }
+      signal?.throwIfAborted();
+      try { response = await client.callTool({ name, arguments: arguments_ }, undefined, { timeout: 660000, signal }); }
+      catch { signal?.throwIfAborted(); throw Object.assign(new Error("mcp_tool_failed"), { code: "mcp_protocol_failure", elapsedMs: performance.now() - started }); }
       if (response?.isError || response?.structuredContent === undefined) {
         const text = response?.content?.filter(block => block.type === "text").map(block => block.text).join(" ") ?? "";
         const reasons = [[/model request failed/, "provider_request_failed"], [/model returned an HTTP error/, "provider_http_error"],

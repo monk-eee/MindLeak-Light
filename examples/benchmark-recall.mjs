@@ -634,6 +634,8 @@ export function benchmarkSettings(environment, options = {}) {
     }
     serverEnvironment.MINDLEAK_EMBED_DIMENSIONS = String(embeddingDimensions);
   }
+  const reasoning = { decomposition: decompositionReasoningEffort, relevance: relevanceReasoningEffort,
+    ...(options.formation !== undefined ? { formation: formationReasoningEffort } : {}) };
   return {
     limit,
     split,
@@ -647,9 +649,8 @@ export function benchmarkSettings(environment, options = {}) {
     serverEnvironment,
     configuration: { label, decomposition, retrieval, minSimilarity, decompositionModel, embeddingModel, embeddingDimensions,
       relevance, relevanceModel, relevanceCandidates: relevanceModel ? relevanceCandidates : null, modelTimeoutSecs: timeout,
-      ...(options.formation !== undefined ? { formation, formationModel } : {}) },
-    reasoning: { decomposition: decompositionReasoningEffort, relevance: relevanceReasoningEffort,
-      ...(options.formation !== undefined ? { formation: formationReasoningEffort } : {}) },
+      ...(options.formation !== undefined ? { formation, formationModel } : {}), reasoning: { ...reasoning } },
+    reasoning,
   };
 }
 
