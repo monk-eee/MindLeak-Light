@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -31,9 +32,29 @@ export async function renderDemoPage({ report = null, live = false, profiles = n
   return template.replace(/\{\{(DATA|CLIENT|ICONS|LOGO|FONTS)\}\}/g, (_, key) => replacements[key]);
 }
 
-export async function openArtifactBrowser({ executablePath = process.env.MINDLEAK_BROWSER_EXECUTABLE } = {}) {
-  const { chromium } = await import("playwright");
-  try { return await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) }); }
+function installArtifactBrowser() {
+  return new Promise((resolveInstall, rejectInstall) => {
+    const cli = join(dirname(require.resolve("playwright/package.json")), "cli.js");
+    const child = spawn(process.execPath, [cli, "install", "chromium"], { stdio: "inherit" });
+    child.once("error", rejectInstall);
+    child.once("exit", code => code === 0 ? resolveInstall() : rejectInstall(new Error("browser_install_failed")));
+  });
+}
+
+export async function openArtifactBrowser({ executablePath = process.env.MINDLEAK_BROWSER_EXECUTABLE,
+  installMissing = false, browserType, installBrowser = installArtifactBrowser } = {}) {
+  const chromium = browserType ?? (await import("playwright")).chromium;
+  const options = { headless: true, ...(executablePath ? { executablePath } : {}) };
+  try { return await chromium.launch(options); }
+  catch (error) {
+    if (!installMissing || executablePath || !/Executable doesn't exist at /.test(error.message)) {
+      throw new Error("browser_acceptance_unavailable_run_playwright_install_chromium");
+    }
+  }
+  console.error("MindLeak lab: installing missing Playwright Chromium before startup.");
+  try { await installBrowser(); }
+  catch { throw new Error("browser_install_failed_run_playwright_install_chromium"); }
+  try { return await chromium.launch(options); }
   catch { throw new Error("browser_acceptance_unavailable_run_playwright_install_chromium"); }
 }
 

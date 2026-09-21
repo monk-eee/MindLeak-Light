@@ -180,6 +180,112 @@ test("Lab 3 v4 incomplete investigations retain only executed source-linked evid
   assert.ok(!JSON.stringify(result.probes).includes(fixture.files["src/provider.mjs"]), "public probes carry fingerprints, not source copies");
 });
 
+test("Lab 3 default plan matches the Learning profile used by lab startup", async () => {
+  const { rediscoveryPlan } = await import("./rediscovery-lab.mjs");
+  const script = fileURLToPath(new URL("./swarm-demo.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [script, "--plan"], { encoding: "utf8", timeout: 10000, env: {
+    ...process.env, MINDLEAK_TEST_DATABASE_URL: "must-not-connect", MINDLEAK_BROWSER_EXECUTABLE: "must-not-launch",
+  } });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), rediscoveryPlan({ profile: "learning", seed: 20260917, model: "gpt-6-astra" }));
+});
+
+test("lab startup rejects invalid containers before opening providers", async () => {
+  const { runLabCli } = await import("./swarm-demo.mjs");
+  let opened = 0;
+  await assert.rejects(runLabCli(["--lab", "2", "--code-engine", "invalid"], {
+    environment: { MINDLEAK_TEST_DATABASE_URL: "postgresql://test@127.0.0.1:1/mindleak_startup_test?sslmode=disable" },
+    openProvider: async () => { opened += 1; return { models: [], async close() {} }; },
+  }), /code_engine_must_be_podman_or_docker/);
+  assert.equal(opened, 0, "a local prerequisite failure must not launch a provider process");
+});
+
+test("lab startup closes its provider on model, recording and listener failures", async context => {
+  const { runLabCli } = await import("./swarm-demo.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-startup-cleanup-"));
+  try {
+    for (const failure of ["model", "recording", "listener"]) await context.test(failure, async () => {
+      let closed = 0;
+      const provider = { models: failure === "model" ? [] : [{ id: "gpt-6-astra" }, { id: "claude-opus-5" }],
+        async close() { closed += 1; } };
+      const args = ["--lab", "2", "--output-dir", directory];
+      if (failure === "recording") args.push("--recording", join(directory, "missing.json"));
+      if (failure === "listener") args.push("--port", "65536");
+      const expected = failure === "model" ? /unavailable_agent_model/ : failure === "recording" ? { code: "ENOENT" } : /invalid_demo_server_configuration/;
+      await assert.rejects(runLabCli(args, {
+        environment: { MINDLEAK_TEST_DATABASE_URL: "postgresql://test@127.0.0.1:1/mindleak_startup_test?sslmode=disable" },
+        openProvider: async () => provider,
+        configureContainer: async () => ({ engine: "test-double", image: "unit" }),
+      }), expected);
+      assert.equal(closed, 1, "an acquired provider must close when startup fails");
+    });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("lab startup requires only the model actually used by standalone Lab 3", async () => {
+  const { runLabCli } = await import("./swarm-demo.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-single-model-startup-"));
+  let runtime; let closed = 0;
+  try {
+    runtime = await runLabCli(["--lab", "3", "--port", "0", "--output-dir", directory], {
+      environment: { MINDLEAK_TEST_DATABASE_URL: "postgresql://test@127.0.0.1:1/mindleak_startup_test?sslmode=disable" },
+      openProvider: async () => ({ models: [{ id: "gpt-6-astra" }], async close() { closed += 1; } }),
+      configureContainer: async () => ({ engine: "test-double", image: "unit" }),
+    });
+    const response = await fetch(`${runtime.server.url}/state`);
+    assert.equal(response.status, 200);
+    const state = await response.json();
+    assert.equal(state.running, false);
+    assert.equal(state.report, null, "starting the dashboard must not run inference");
+    assert.deepEqual(new Set(Object.values(state.profiles.defaults.agentModels)), new Set(["gpt-6-astra"]));
+  } finally { await runtime?.close(); await rm(directory, { recursive: true, force: true }); }
+  assert.equal(closed, 1);
+});
+
+test("lab startup offers one model-free choice and releases listeners on repeated close", async () => {
+  const { runLabCli } = await import("./swarm-demo.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-model-free-startup-"));
+  const before = { interrupt: process.listeners("SIGINT"), terminate: process.listeners("SIGTERM") };
+  let runtime; let closed = 0;
+  try {
+    runtime = await runLabCli(["--lab", "2", "--memory-model", "off", "--port", "0", "--output-dir", directory], {
+      environment: { MINDLEAK_TEST_DATABASE_URL: "postgresql://test@127.0.0.1:1/mindleak_startup_test?sslmode=disable" },
+      openProvider: async () => ({ models: [{ id: "gpt-6-astra" }, { id: "claude-opus-5" }], async close() { closed += 1; } }),
+      configureContainer: async () => ({ engine: "test-double", image: "unit" }),
+    });
+    const { profiles } = runtime.server.snapshot();
+    assert.deepEqual(profiles.memory, [{ id: "off", name: "Model-free", provider: "none" }]);
+    assert.equal(profiles.defaults.memoryModel, "off");
+    const firstClose = runtime.close();
+    assert.equal(runtime.close(), firstClose, "concurrent shutdown must await the same cleanup");
+    await firstClose;
+    assert.deepEqual(process.listeners("SIGINT"), before.interrupt);
+    assert.deepEqual(process.listeners("SIGTERM"), before.terminate);
+    const replacement = createServer();
+    try {
+      replacement.listen(Number(new URL(runtime.server.url).port), "127.0.0.1");
+      await once(replacement, "listening");
+    } finally { await new Promise(resolve => replacement.close(resolve)); }
+  } finally { await runtime?.close(); await rm(directory, { recursive: true, force: true }); }
+  assert.equal(closed, 1, "a provider must be closed exactly once");
+});
+
+test("lab startup releases its provider when the requested port is already occupied", async () => {
+  const { runLabCli } = await import("./swarm-demo.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-occupied-startup-"));
+  const occupied = createServer(); let closed = 0;
+  try {
+    occupied.listen(0, "127.0.0.1"); await once(occupied, "listening");
+    await assert.rejects(runLabCli(["--lab", "2", "--port", String(occupied.address().port), "--output-dir", directory], {
+      environment: { MINDLEAK_TEST_DATABASE_URL: "postgresql://test@127.0.0.1:1/mindleak_startup_test?sslmode=disable" },
+      openProvider: async () => ({ models: [{ id: "gpt-6-astra" }, { id: "claude-opus-5" }], async close() { closed += 1; } }),
+      configureContainer: async () => ({ engine: "test-double", image: "unit" }),
+    }), { code: "EADDRINUSE" });
+    assert.equal(closed, 1);
+  } finally { await new Promise(resolve => occupied.close(resolve)); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("Lab 3 v4 mechanism profile is explicit and its plan starts no services", () => {
   const script = fileURLToPath(new URL("./swarm-demo.mjs", import.meta.url));
   const result = spawnSync(process.execPath, [script, "--plan", "--rediscovery-profile", "mechanism"], { encoding: "utf8", env: {
@@ -2962,6 +3068,107 @@ setInterval(render,100);render();
   const failed = await verifyBuildArtifacts({ kind: "swarm_build", application: { html: broken, sha256: digest(broken) } }, { executablePath: process.env.MINDLEAK_BROWSER_EXECUTABLE });
   assert.ok(failed.some(review => review.passedChecks < review.checks));
   assert.ok(failed.some(review => review.failures.length));
+});
+
+test("Lab 1 startup installs missing bundled Chromium once and verifies it launches", async () => {
+  const { openArtifactBrowser } = await import("./demo-replay.mjs");
+  let launches = 0; let installs = 0; let closed = 0;
+  const browserType = { async launch(options) {
+    assert.deepEqual(options, { headless: true }); launches += 1;
+    if (launches === 1) throw new Error("browserType.launch: Executable doesn't exist at /missing/chromium");
+    return { async close() { closed += 1; } };
+  } };
+  const browser = await openArtifactBrowser({ executablePath: "", installMissing: true, browserType,
+    installBrowser: async () => { installs += 1; } });
+  await browser.close();
+  assert.equal(installs, 1, "a fresh lab host needs the pinned browser, not only the npm package");
+  assert.equal(launches, 2, "download success must be followed by a real launch check");
+  assert.equal(closed, 1);
+});
+
+test("Lab 1 browser setup does not replace explicit browsers or reinstall on unrelated failures", async () => {
+  const { openArtifactBrowser } = await import("./demo-replay.mjs");
+  for (const [executablePath, installMissing, failure] of [
+    ["/explicit/chromium", true, "Executable doesn't exist at /explicit/chromium"],
+    ["", false, "Executable doesn't exist at /missing/chromium"],
+    ["", true, "Host system is missing dependencies to run browsers."],
+  ]) {
+    let launches = 0;
+    await assert.rejects(openArtifactBrowser({ executablePath, installMissing,
+      browserType: { async launch() { launches += 1; throw new Error(failure); } },
+      installBrowser: async () => { assert.fail("must not download for this failure"); } }),
+    /browser_acceptance_unavailable_run_playwright_install_chromium/);
+    assert.equal(launches, 1);
+  }
+});
+
+test("Lab 1 browser installation errors and failed post-install launch remain failures", async () => {
+  const { openArtifactBrowser } = await import("./demo-replay.mjs");
+  for (const installFails of [true, false]) {
+    let launches = 0; let installs = 0;
+    await assert.rejects(openArtifactBrowser({ executablePath: "", installMissing: true,
+      browserType: { async launch() { launches += 1; throw new Error("Executable doesn't exist at /missing/chromium"); } },
+      installBrowser: async () => { installs += 1; if (installFails) throw new Error("download unavailable"); } }),
+    installFails ? /browser_install_failed/ : /browser_acceptance_unavailable_run_playwright_install_chromium/);
+    assert.equal(installs, 1);
+    assert.equal(launches, installFails ? 1 : 2);
+  }
+});
+
+test("Lab 1 startup reuses an installed browser without downloading", async () => {
+  const { openArtifactBrowser } = await import("./demo-replay.mjs");
+  const expected = { async close() {} };
+  assert.equal(await openArtifactBrowser({ executablePath: "", installMissing: true,
+    browserType: { async launch() { return expected; } },
+    installBrowser: async () => { assert.fail("an installed browser must not be downloaded again"); } }), expected);
+});
+
+test("Lab 1 browser setup and startup report actionable failures before connecting agents", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "mindleak-browser-startup-"));
+  const script = fileURLToPath(new URL("./swarm-demo.mjs", import.meta.url));
+  try {
+    for (const args of [["--check-browser"], ["--lab", "1"], []]) {
+      const result = spawnSync(process.execPath, [script, ...args], { encoding: "utf8", timeout: 10000, env: {
+        ...process.env, PATH: directory, MINDLEAK_BROWSER_EXECUTABLE: join(directory, "missing-browser"),
+        MINDLEAK_TEST_DATABASE_URL: args.length === 1 ? "must-not-connect" : "postgresql://test@127.0.0.1:1/mindleak_browser_startup_test?sslmode=disable",
+      } });
+      assert.equal(result.error, undefined, "browser setup failure must not leak provider children or hang");
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /browser_acceptance_unavailable_run_playwright_install_chromium/);
+      assert.match(result.stderr, /node examples\/node_modules\/playwright\/cli.js install chromium/);
+      assert.match(result.stderr, /MINDLEAK_BROWSER_EXECUTABLE/);
+      assert.match(result.stderr, /No agents were started/);
+      assert.ok(!result.stderr.includes("must-not-connect"));
+      assert.ok(!result.stdout.includes("launch verified"));
+    }
+    const help = spawnSync(process.execPath, [script, "--help"], { encoding: "utf8", timeout: 10000, env: {
+      ...process.env, MINDLEAK_BROWSER_EXECUTABLE: join(directory, "missing-browser"), MINDLEAK_TEST_DATABASE_URL: "must-not-connect",
+    } });
+    assert.equal(help.status, 0, help.stderr);
+    assert.match(help.stdout, /--check-browser/);
+    const manifest = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
+    assert.equal(manifest.scripts["setup:browser"], "node swarm-demo.mjs --check-browser");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("Lab 1 setup documentation distinguishes host dependencies and published releases", async () => {
+  const guide = await readFile(new URL("../docs/VALIDATION.md", import.meta.url), "utf8");
+  assert.ok(guide.includes("npm ci --prefix examples --ignore-scripts"));
+  assert.ok(guide.includes("npm --prefix examples run setup:browser"));
+  assert.ok(guide.includes("node examples/node_modules/playwright/cli.js install chromium"));
+  assert.ok(guide.includes("node examples/node_modules/playwright/cli.js install-deps chromium"));
+  assert.match(guide, /Chromium launch verified/);
+  assert.match(guide, /published v0\.8\.0[\s\S]*predates this command/i);
+  assert.match(guide, /Windows PowerShell/);
+  assert.match(guide, /\$env:MINDLEAK_TEST_DATABASE_URL/);
+  assert.match(guide, /second\s+computer that only opens its dashboard/);
+  assert.match(guide, /PLAYWRIGHT_BROWSERS_PATH/);
+  assert.match(guide, /preview matches normal startup: 30 main sessions and 10 direct diagnostics/);
+  assert.match(guide, /does not require Claude availability/);
+  assert.match(guide, /provider is closed/);
+  for (const path of ["../DEVELOPERS.md", "../docs/INSTALL.md"]) {
+    assert.match(await readFile(new URL(path, import.meta.url), "utf8"), /VALIDATION\.md#lab-host-setup/);
+  }
 });
 
 test("Lab 1 preflights browser acceptance and retains failed reviews without false success", async () => {

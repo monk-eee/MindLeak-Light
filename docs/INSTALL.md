@@ -88,6 +88,15 @@ For shared HTTP instead, set `MINDLEAK_DATABASE_URL` and `MINDLEAK_HTTP_TOKEN`,
 then run `mindleak-light --transport http --listen 127.0.0.1:8088`.
 The binary uses your configured database; it does not bundle PostgreSQL.
 
+### Learning Lab Host
+
+The learning labs are separate source-based Node applications, not part of the
+MCP executable's `local setup`. Native archives and MCP images do not install
+Playwright or Chromium on your computer. Follow [lab host setup](VALIDATION.md#lab-host-setup)
+on the machine running the labs, including the browser install and launch check.
+That guide includes the manual commands required by published v0.8.0 source.
+Computers that only view the hosted dashboard need no lab dependencies.
+
 ## Companion Agent Skill
 
 The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md), version

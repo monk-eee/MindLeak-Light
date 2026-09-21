@@ -9,6 +9,7 @@
     "memory": "node agent-memory.mjs",
     "benchmark": "node benchmark-recall.mjs",
     "validate": "node validation-harness.mjs",
+    "setup:browser": "node swarm-demo.mjs --check-browser",
     "swarm": "node swarm-demo.mjs",
     "replay": "node demo-replay.mjs"
   },
