@@ -11,7 +11,7 @@ import { benchmarkSettings } from "./benchmark-recall.mjs";
 import { containerConfiguration, openMemoryDriver } from "./validation-runtime.mjs";
 import { runSwarmComparison } from "./swarm-runner.mjs";
 import { swarmFixture, swarmRoles, swarmProblem } from "./swarm-fixture.mjs";
-import { renderDemoPage, writeDemoReplay, runBuildWithAcceptance } from "./demo-replay.mjs";
+import { renderDemoPage, writeDemoReplay, runBuildWithAcceptance, openArtifactBrowser } from "./demo-replay.mjs";
 import { openCopilotProvider, createCopilotAgent } from "./copilot-agent.mjs";
 import { openMemoryUsageObserver } from "./demo-memory.mjs";
 import { normalizeRecording, labCompletion, studyProgress } from "./demo-view.mjs";
@@ -286,8 +286,10 @@ export async function createLabHub({ labs, port = 54584, listenHost = "127.0.0.1
   return { url, publicOrigin, labs: applications, close };
 }
 
-async function main() {
-  const { values } = parseArgs({ options: { help: { type: "boolean" }, binary: { type: "string" }, "output-dir": { type: "string" },
+export async function runLabCli(args = process.argv.slice(2), {
+  openProvider = openCopilotProvider, configureContainer = containerConfiguration, environment = process.env,
+} = {}) {
+  const { values } = parseArgs({ args, options: { help: { type: "boolean" }, "check-browser": { type: "boolean" }, binary: { type: "string" }, "output-dir": { type: "string" },
     port: { type: "string" }, "listen-host": { type: "string" }, "public-origin": { type: "string" }, run: { type: "boolean" }, once: { type: "boolean" }, concurrency: { type: "string" }, attempts: { type: "string" },
     "code-engine": { type: "string" }, "code-image": { type: "string" }, "agent-max-steps": { type: "string" },
     "agent-timeout-ms": { type: "string" }, "agent-reasoning-effort": { type: "string" }, "agent-max-output-tokens": { type: "string" },
@@ -296,39 +298,58 @@ async function main() {
     lab: { type: "string" }, rounds: { type: "string" }, "lab-one-recording": { type: "string" }, "lab-two-recording": { type: "string" }, "lab-three-recording": { type: "string" },
     "rediscovery-profile": { type: "string" }, "query-seed": { type: "string" }, plan: { type: "boolean" },
     "lab-one-url": { type: "string" }, "lab-two-url": { type: "string" } } });
+  if (values.help) console.log("Browser setup: --check-browser installs missing pinned Playwright Chromium and verifies a headless launch without database, container or model access. Lab 1 and the shared dashboard do this before provider startup. MINDLEAK_BROWSER_EXECUTABLE selects an existing browser and is never replaced. Standalone Labs 2/3, --help and --plan do not install a browser.");
   if (values.help) console.log("Quality v6: --lab 3 --rediscovery-profile quality compares frozen original and explicitly reviewed knowledge with notebook and fresh controls on 16 held-out tasks, eight outcome checks each. Initial discovery, exceptions and fresh revision validation are disjoint. Requires a fresh study; --plan performs no inference. Storage/provider settings remain explicit and unchanged.");
   if (values.help) { console.log("Set MINDLEAK_TEST_DATABASE_URL and use your Copilot login. Run node examples/swarm-demo.mjs --binary PATH --code-engine podman --port 54584 --output-dir target/swarm-labs. One dashboard serves /lab1, /lab2, /lab3 and /learnings. Labs 1 and 2 include five matched Dalek controls with no MindLeak access. Lab 3 compares fresh, notebook and MindLeak arms with a separate direct-lesson diagnostic; --rediscovery-profile smoke|learning|pilot|adoption|mechanism defaults to learning (five families, 30 main + 10 diagnostic), smoke covers one family (6 main + 2 diagnostic), and pilot schedules 120 main + 40 diagnostic sessions. These main profiles use v5 knowledge-first: notebook and MindLeak agents search and assess applicability before editing, then apply, adapt or reject prior knowledge and verify the fix. The adoption profile retains the v3 optional-lookup diagnostic on the Learning schedule; old recordings keep their original scoring. The v4 mechanism profile adds two discovery cases, reserved validation, 12 main + 4 diagnostic sessions and post-comparison review; it requires a fresh run. --plan prints the selected frozen Lab 3 plan without inference or database access. --rounds 1..3 controls Lab 2. --lab 1|2|3 selects a standalone lab; --run starts Lab 2 in the shared dashboard. Use --lab-one-recording, --lab-two-recording and --lab-three-recording to reopen saved reports. Lab 1/2 models default to three GPT-6 Astra and two Claude Opus 5 with matched Daleks; all Lab 3 arms use one selected model. Memory extraction defaults to local glm-4.7-flash:latest; --memory-model off uses model-free storage. Listening defaults to 127.0.0.1. Explicit trusted-LAN HTTP: --listen-host 0.0.0.0 --public-origin http://PRIVATE_LAN_IP:PORT (no authentication or TLS; exact LAN and localhost Host/Origin guards remain). Learning outcomes lead the page and recorded costs remain available."); return; }
   if (values.plan) {
     const plan = ["mechanism", "quality"].includes(values["rediscovery-profile"])
       ? investigationPlan({ seed: Number(values["query-seed"] ?? 20260918), model: values["agent-model"] ?? "gpt-6-astra", profile: values["rediscovery-profile"] })
-      : rediscoveryPlan({ profile: values["rediscovery-profile"] ?? "pilot", seed: Number(values["query-seed"] ?? 20260917), model: values["agent-model"] ?? "gpt-6-astra" });
+      : rediscoveryPlan({ profile: values["rediscovery-profile"] ?? "learning", seed: Number(values["query-seed"] ?? 20260917), model: values["agent-model"] ?? "gpt-6-astra" });
     console.log(JSON.stringify(plan, null, 2)); return;
+  }
+  if (values["check-browser"]) {
+    const browser = await openArtifactBrowser({ installMissing: true });
+    await browser.close();
+    console.log("MindLeak lab: Chromium headless launch verified.");
+    return;
   }
   const listenHost = values["listen-host"] ?? "127.0.0.1";
   const publicOrigin = values["public-origin"] ?? null;
   validateLabListener(listenHost, publicOrigin);
-  benchmarkSettings(process.env, {});
+  benchmarkSettings(environment, {});
   const selectedLab = values.lab ?? "all";
   if (!["all", "1", "2", "3"].includes(selectedLab)) throw new Error("invalid_lab");
   const labIds = selectedLab === "all" ? [1, 2, 3] : [Number(selectedLab)];
   const providerKind = values["agent-provider"] ?? "copilot";
   if (!["copilot", "openai"].includes(providerKind)) throw new Error("invalid_agent_provider");
-  const provider = providerKind === "copilot" ? await openCopilotProvider() : null;
+  if (labIds.includes(1)) {
+    const browser = await openArtifactBrowser({ installMissing: true });
+    await browser.close();
+    console.log("MindLeak lab: Chromium headless launch verified.");
+  }
+  const code = await configureContainer(values["code-engine"] ?? "podman", values["code-image"]);
+  const provider = providerKind === "copilot" ? await openProvider() : null;
+  let server; let closing;
+  const close = () => closing ??= (async () => {
+    process.removeListener("SIGINT", shutdown); process.removeListener("SIGTERM", shutdown);
+    try { await server?.close(); } finally { await provider?.close(); }
+  })();
+  const shutdown = () => { void close().catch(() => { console.error("swarm_demo_shutdown_failed"); process.exitCode = 1; }); };
+  try {
   const available = provider ? provider.models.filter(model => ["gpt-6-astra", "claude-opus-5", "mai-code-1.1-flash"].includes(model.id))
-    : [{ id: values["agent-model"] ?? process.env.MINDLEAK_VALIDATION_AGENT_MODEL, name: values["agent-model"] ?? process.env.MINDLEAK_VALIDATION_AGENT_MODEL, provider: "openai-compatible" }];
-  const memoryEndpoint = process.env.MINDLEAK_DEMO_MEMORY_URL ?? "http://127.0.0.1:11434/v1";
+    : [{ id: values["agent-model"] ?? environment.MINDLEAK_VALIDATION_AGENT_MODEL, name: values["agent-model"] ?? environment.MINDLEAK_VALIDATION_AGENT_MODEL, provider: "openai-compatible" }];
+  const memoryEndpoint = environment.MINDLEAK_DEMO_MEMORY_URL ?? "http://127.0.0.1:11434/v1";
   const memoryModel = values["memory-model"] ?? "glm-4.7-flash:latest";
-  const code = await containerConfiguration(values["code-engine"] ?? "podman", values["code-image"]);
   const binary = values.binary ?? fileURLToPath(new URL(`../target/debug/mindleak-light${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
   const output = values["output-dir"] ?? fileURLToPath(new URL("../target/swarm-labs", import.meta.url));
   const labs = [];
   for (const lab of labIds) {
   const profiles = { experiment: lab, agents: available, roles: lab === 3 ? values["rediscovery-profile"] === "quality" ? qualityArms : rediscoveryArms : [...(lab === 2 ? memoryLabRoles : swarmRoles.map(({ task, ...role }) => role)), ...controlRoles],
     navigation: { lab1: values["lab-one-url"] ?? "/lab1/", lab2: values["lab-two-url"] ?? "/lab2/" },
-    memory: [{ id: memoryModel, name: memoryModel, provider: "local", modelClass: "slm" }, { id: "off", name: "Model-free", provider: "none" }],
+    memory: [...(memoryModel === "off" ? [] : [{ id: memoryModel, name: memoryModel, provider: "local", modelClass: "slm" }]), { id: "off", name: "Model-free", provider: "none" }],
     defaults: { problem: lab === 3 ? rediscoveryProblem : lab === 2 ? memoryLabProblem : swarmProblem, concurrency: Number(values.concurrency ?? (lab >= 2 ? 1 : 2)), attempts: lab === 3 ? 1 : Number(values.attempts ?? 2), rounds: Number(values.rounds ?? (lab === 2 ? 2 : 1)), memoryModel,
   rediscoveryProfile: ["mechanism", "quality"].includes(values["rediscovery-profile"]) && lab !== 3 ? "learning" : values["rediscovery-profile"] ?? "learning", querySeed: Number(values["query-seed"] ?? (["mechanism", "quality"].includes(values["rediscovery-profile"]) ? 20260918 : 20260917)),
-      agentModels: Object.fromEntries(swarmRoles.map((role, index) => [role.id, values["agent-model"] ?? (provider ? index < 3 ? "gpt-6-astra" : "claude-opus-5" : available[0].id)])) } };
+      agentModels: Object.fromEntries(swarmRoles.map((role, index) => [role.id, values["agent-model"] ?? (provider ? lab === 3 || index < 3 ? "gpt-6-astra" : "claude-opus-5" : available[0].id)])) } };
   selectDemoParameters(profiles);
   let initialReport = null;
   const recordingPath = values[lab === 1 ? "lab-one-recording" : lab === 2 ? "lab-two-recording" : "lab-three-recording"] ?? (selectedLab === "all" ? null : values.recording);
@@ -342,10 +363,10 @@ async function main() {
       const { parameters } = options;
       const listeners = new Set();
       const observer = parameters.memoryModel === "off" ? null : await openMemoryUsageObserver({ endpoint: memoryEndpoint,
-        model: parameters.memoryModel, apiKey: process.env.MINDLEAK_DEMO_MEMORY_API_KEY ?? "", onEvent: event => { for (const listener of listeners) listener(event); } });
+        model: parameters.memoryModel, apiKey: environment.MINDLEAK_DEMO_MEMORY_API_KEY ?? "", onEvent: event => { for (const listener of listeners) listener(event); } });
       let driver;
       try {
-        const settings = benchmarkSettings({ ...process.env, MINDLEAK_MODEL_TIMEOUT_SECS: "240", ...(observer ? {
+        const settings = benchmarkSettings({ ...environment, MINDLEAK_MODEL_TIMEOUT_SECS: "240", ...(observer ? {
           MINDLEAK_LLM_URL: observer.endpoint, MINDLEAK_MODEL: parameters.memoryModel, MINDLEAK_LLM_API_KEY: observer.apiKey } : {}) },
         observer ? { decomposition: "openai", "decomposition-reasoning-effort": "none" } : {});
         driver = await openMemoryDriver(binary, settings);
@@ -355,7 +376,7 @@ async function main() {
           const selectedModel = parameters.agentModels[role.id];
           actors[role.id] = provider ? createCopilotAgent(provider, { model: selectedModel, maxSteps: Number(values["agent-max-steps"] ?? (lab === 2 ? 24 : 20)),
             timeoutMs: Number(values["agent-timeout-ms"] ?? (lab === 2 ? 600000 : 300000)), reasoningEffort: values["agent-reasoning-effort"] ?? "low" })
-            : await createAgent(agentSettings({ ...process.env, MINDLEAK_VALIDATION_AGENT_MODEL: selectedModel }, {
+            : await createAgent(agentSettings({ ...environment, MINDLEAK_VALIDATION_AGENT_MODEL: selectedModel }, {
               maxSteps: Number(values["agent-max-steps"] ?? 20), timeoutMs: Number(values["agent-timeout-ms"] ?? 120000),
               maxOutputTokens: Number(values["agent-max-output-tokens"] ?? 4096), reasoningEffort: values["agent-reasoning-effort"] ?? null }));
         }
@@ -386,20 +407,29 @@ async function main() {
       } finally { if (driver) await driver.close(); if (observer) await observer.close(); }
     } });
   }
-  const server = selectedLab === "all" ? await createLabHub({ labs, port: Number(values.port ?? 54584), listenHost, publicOrigin })
+  server = selectedLab === "all" ? await createLabHub({ labs, port: Number(values.port ?? 54584), listenHost, publicOrigin })
     : await createDemoServer({ ...labs[0], port: Number(values.port ?? 54584), listenHost, publicOrigin });
   console.log(`MindLeak Learning Labs: ${server.url}`);
   if (publicOrigin) console.log(`MindLeak trusted-LAN lab: ${publicOrigin}`);
-  let closing = false;
-  const close = async () => { if (closing) return; closing = true; try { await server.close(); } finally { if (provider) await provider.close(); } };
-  process.once("SIGINT", () => { void close(); }); process.once("SIGTERM", () => { void close(); });
+  process.once("SIGINT", shutdown); process.once("SIGTERM", shutdown);
   if (values.run || values.once) {
     const result = await (server.labs?.get(2) ?? server).startRun();
     console.log(JSON.stringify(result));
     if (values.once) { await close(); if (result.status !== "completed") process.exitCode = 1; }
   }
+  return { server, close };
+  } catch (error) {
+    try { await close(); }
+    catch { throw new Error("swarm_demo_startup_and_cleanup_failed", { cause: error }); }
+    throw error;
+  }
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
-  main().catch(() => { console.error("swarm_demo_startup_failed_check_explicit_test_database_model_and_container_settings"); process.exitCode = 1; });
+  runLabCli().catch(error => {
+    if (["browser_acceptance_unavailable_run_playwright_install_chromium", "browser_install_failed_run_playwright_install_chromium"].includes(error.message)) {
+      console.error(`${error.message}\nOn the lab host, run: node examples/node_modules/playwright/cli.js install chromium\nCheck MINDLEAK_BROWSER_EXECUTABLE if set. For Linux system dependencies, see docs/VALIDATION.md#chromium-setup-and-recovery. No agents were started.`);
+    } else console.error("swarm_demo_startup_failed_check_explicit_test_database_model_and_container_settings");
+    process.exitCode = 1;
+  });
 }

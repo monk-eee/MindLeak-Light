@@ -121,25 +121,112 @@ The build stage follows coded, verified, published and shared milestones. Lab 1
 does not display an empty chain/principle graph or the unrelated reuse scorecard
 or a formation score; those belong to the knowledge experiments that measure them.
 
-Use a dedicated disposable database ending in `_test`, the native server binary,
-your existing Copilot login, local GLM, and Docker or Podman:
+### Lab Host Setup
+
+Run setup on the computer that **executes the Node lab process**. A second
+computer that only opens its dashboard needs an ordinary web browser, not Node,
+Playwright or Chromium installed by this project. See [LAN access](#trusted-lan-browser-access).
+
+The labs run from a source checkout with Node.js 22+, Docker or Podman, a native
+MindLeak binary, your existing Copilot login and a disposable PostgreSQL/pgvector
+database ending in `_test`. The native release archive and MCP container do not
+install the Node lab dependencies or its Chromium browser. Run the following
+commands from the repository root, under the same OS account used to run the lab:
 
 ```sh
-npm ci --prefix examples
-node examples/node_modules/playwright/cli.js install chromium
-export MINDLEAK_TEST_DATABASE_URL='postgresql://USER:PASSWORD@localhost:5432/mindleak_demo_test?sslmode=disable'
-export MINDLEAK_DEMO_MEMORY_URL='http://127.0.0.1:11434/v1'
+npm ci --prefix examples --ignore-scripts
+npm --prefix examples run setup:browser
 podman pull docker.io/library/node:22-bookworm-slim
-node examples/swarm-demo.mjs --binary PATH_TO_V060_BINARY --agent-provider copilot --code-engine podman --port 54584 --output-dir target/swarm-labs
 ```
 
-Chromium is required for Lab 1's artifact acceptance checks. An existing compatible
-browser can be selected with `MINDLEAK_BROWSER_EXECUTABLE=/absolute/path/to/chromium`.
-The runner checks browser availability before starting paid model work. Lab 2 and
-Lab 3 do not require a browser to execute their code fixtures.
+`npm ci` installs the JavaScript packages, **not the Chromium executable**.
+`setup:browser` installs missing Chromium from the locked Playwright dependency,
+then launches and closes it to verify it works. It needs no database, container,
+Copilot login or model call. For published v0.8.0 source, use the manual commands
+in [Chromium setup and recovery](#chromium-setup-and-recovery) instead of
+`setup:browser`; that tag predates this command and automatic browser setup.
 
-The default roster assigns **GPT-6 Astra** to Atlas, Iris, and Nova, and
-**Claude Opus 5** to Vega and Orion. **MAI-Code 1.1 Flash** is another selector
+On macOS/Linux:
+
+```sh
+export MINDLEAK_TEST_DATABASE_URL='postgresql://USER:PASSWORD@localhost:5432/mindleak_demo_test?sslmode=disable'
+export MINDLEAK_DEMO_MEMORY_URL='http://127.0.0.1:11434/v1'
+node examples/swarm-demo.mjs --binary "PATH_TO_MINDLEAK_BINARY" --agent-provider copilot --code-engine podman --port 54584 --output-dir target/swarm-labs
+```
+
+On Windows PowerShell, use the same dependency commands above, then:
+
+```powershell
+$env:MINDLEAK_TEST_DATABASE_URL = 'postgresql://USER:PASSWORD@localhost:5432/mindleak_demo_test?sslmode=disable'
+$env:MINDLEAK_DEMO_MEMORY_URL = 'http://127.0.0.1:11434/v1'
+node examples/swarm-demo.mjs --binary "C:\path\to\mindleak-light.exe" --agent-provider copilot --code-engine podman --port 54584 --output-dir target/swarm-labs
+```
+
+Replace the connection details with an owned disposable database and the binary
+path with your installed executable. Docker users replace `podman` with `docker`
+in the pull command and `--code-engine` value. The default extraction model needs
+GLM at the configured endpoint on the lab host; use `--memory-model off` for
+model-free storage. Setup does not start a model service or install credentials.
+
+Preview the default Lab 3 Learning schedule without downloading Chromium,
+connecting to a database or opening an agent provider:
+
+```sh
+node examples/swarm-demo.mjs --plan
+```
+
+The preview matches normal startup: 30 main sessions and 10 direct diagnostics.
+Use `--rediscovery-profile pilot` explicitly for the larger 120-main/40-diagnostic
+schedule; older v0.8.0 source previews Pilot when the profile is omitted.
+Startup checks browser and container prerequisites before opening the provider.
+If later model selection, saved-recording loading or listener setup fails, the
+provider is closed. Shutdown also closes the listener and removes signal handlers.
+
+### Chromium Setup and Recovery
+
+Lab 1 needs headless Chromium for artifact acceptance. This source revision
+installs it when missing and verifies a launch before opening the shared dashboard
+or standalone Lab 1, before connecting agent providers. Downloads happen only for
+a missing managed executable, once per startup attempt. Download or launch
+failures stop startup, not validation or evidence recording midway through a run.
+Standalone `--lab 2` and `--lab 3`, `--help`, and `--plan` do not install Chromium.
+
+For published v0.8.0 and older source tags, or to install the pinned browser
+manually on the lab host, run these commands from the repository root after
+`npm ci --prefix examples --ignore-scripts`:
+
+```sh
+node examples/node_modules/playwright/cli.js install chromium
+node --input-type=module -e "import { chromium } from './examples/node_modules/playwright/index.mjs'; const browser = await chromium.launch({ headless: true }); await browser.close(); console.log('Chromium launch verified');"
+```
+
+These commands also work in PowerShell. The launch check matters: downloading
+Chromium alone does not prove that the OS can run it. On Linux, a missing shared
+library may require the separate system-dependency command below, run by the
+operator with the permissions required by that host. The lab never invokes sudo
+or installs OS packages automatically.
+
+```sh
+node examples/node_modules/playwright/cli.js install-deps chromium
+```
+
+For offline hosts, preinstall the browser while network access is available and
+run the launch check before disconnecting. Browser caches are per OS account;
+when using `PLAYWRIGHT_BROWSERS_PATH`, use the same value for setup and execution.
+Rerun setup after changing the locked Playwright version. If a download fails,
+check the host's network/proxy access and rerun the command; an installation
+failure is never treated as a passed browser check.
+
+An existing compatible browser can be selected with `MINDLEAK_BROWSER_EXECUTABLE`
+set to its absolute executable path on the **lab host**. An explicit path is
+checked as supplied and is never replaced by a download. Remove or correct stale
+paths copied from another computer. Do not copy a macOS browser cache to Windows.
+
+The default roster for **Labs 1 and 2** assigns **GPT-6 Astra** to Atlas, Iris,
+and Nova, and **Claude Opus 5** to Vega and Orion. Standalone **Lab 3** uses only
+**GPT-6 Astra** by default and does not require Claude availability. Use
+`--agent-model MODEL_ID` to select another advertised model for the lab.
+**MAI-Code 1.1 Flash** is another selector
 option when the authenticated provider advertises it. The official Copilot SDK
 exposes only the demo's bounded custom tools; built-in tools, other MCP servers,
 configuration discovery, and host-shell access are disabled. Each agent has a

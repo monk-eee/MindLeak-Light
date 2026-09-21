@@ -25,6 +25,14 @@ then `npm ci --prefix examples --ignore-scripts` and
 `pre-commit install --install-hooks` directly; repository checks are Node
 commands listed below. The hooks themselves do not require Make.
 
+`make setup` installs JavaScript dependencies, not Playwright's browser. On a
+machine hosting the learning labs, also run `npm --prefix examples run setup:browser`
+from the repository root. It installs missing pinned Chromium and verifies a
+headless launch without starting a database, container or agent. Lab 1 and shared
+dashboard startup perform the same preflight; standalone Labs 2 and 3 do not need
+Chromium. For Windows, Linux system dependencies, offline hosts and older release
+tags, follow [lab host setup](docs/VALIDATION.md#lab-host-setup).
+
 ## Local Development
 
 Use [.env.example](.env.example) for a local `.env`; never commit credentials.
@@ -113,11 +121,12 @@ The JavaScript integration example is optional and isolated from the server:
 test server by setting `MINDLEAK_MCP_URL` and `MINDLEAK_HTTP_TOKEN`, then
 `npm --prefix examples run memory`. It writes one sample memory per run.
 
-For Lab 1 artifact and replay browser regressions, install Chromium explicitly with
-`node examples/node_modules/playwright/cli.js install chromium` and set
+For Lab 1 artifact and replay browser regressions, run
+`npm --prefix examples run setup:browser` to install and verify Chromium, then set
 `MINDLEAK_LAB_BROWSER=1` before running the JavaScript suite. An existing compatible
 browser can be selected with `MINDLEAK_BROWSER_EXECUTABLE`. CI installs the browser
-and enables these checks in the isolated lab job. See the
+and Linux dependencies explicitly with the locked Playwright CLI, then enables
+these checks in the isolated lab job. Unit tests never download a browser. See the
 [lab guide](docs/VALIDATION.md#acceptance-and-continued-studies) for acceptance
 scope, retained run evidence and continued studies. An omitted browser suite is
 not a passing browser review.
