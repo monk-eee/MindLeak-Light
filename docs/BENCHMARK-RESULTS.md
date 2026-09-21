@@ -1,5 +1,28 @@
 # Learning Evidence and Benchmark Results
 
+## v0.8.0 Release Evidence
+
+The full Lab 2 v8 study `95c6e5a3-ff67-440c-b6e2-30c4fbb7d9d0` completed all
+five preparation workflows and two frozen matched-comparison rounds. All 175
+checks passed; MindLeak and no-memory controls each completed 10/10 evaluation
+tasks. Nine of ten memory-side evaluation tasks recorded source-linked guide use.
+Both between-round reviews legitimately found no new learning. This verifies the
+repaired synthesis/application workflow, not an overall quality advantage over
+the controls. Equal passing scores on these tasks do not establish equal broader
+solution quality, and required consultation is not spontaneous adoption.
+
+The Quality v6 trial `c8ac5d72-f195-46bd-b13b-f5d4fd87244c` completed explicit
+formation, reserved validation and both per-case reviews. The four MindLeak
+tasks passed their eight-check audits, but its fixed study deadline left control
+measurements unfinished. It remains cancelled, not a completed comparison, and
+the unchanged reviewed knowledge does not demonstrate a beneficial revision.
+See the [authoring repair record](../gaps.d/quality-study-authoring-completion.md).
+
+Earlier failed and partial studies below remain unchanged. Outcome quality is the
+primary question; token use and elapsed time are secondary diagnostics. Optional
+extraction still has a [source-attribution defect](../gaps.d/model-extraction-subject-attribution.md).
+No new paid study was run merely to produce release claims.
+
 ## Investigation Learning
 
 The initial [mechanism trial](VALIDATION.md#initial-real-model-trial) on

@@ -48,15 +48,22 @@ database hold the evidence and its derived knowledge. Keep your existing agent
 framework and model; agent-authored knowledge works without a server-side model.
 [Optional models](docs/MODELS.md) assist extraction, formation, and semantic search.
 
+Version 0.8.0 adds the knowledge-first agent policy, source-checked handoffs,
+complete learning reviews, and a [quality-first comparison](docs/VALIDATION.md#lab-3-quality-original-versus-reviewed-knowledge).
+Formation and source-linked reuse have been observed; a general improvement in
+outcome quality remains unproven. Optional extraction can still misattribute
+actions, so check original sources before relying on derived claims. See the
+[known boundaries](docs/KNOWN-LIMITATIONS.md).
+
 ## Quickstart
 
 **Start MindLeak -> Connect the agent -> Form and reuse knowledge.** Local trials use
 Docker/stdio: no token to generate or copy, no secret-store setup, and no OAuth
 registration. No server-side chat or embedding model is needed.
 
-The v0.7.0 native packages include the `local` launcher and `agent` instruction
-installer. [Download v0.7.0](https://github.com/monk-eee/MindLeak-Light/releases/tag/v0.7.0).
-New trials use the matching v0.7.0 server image by default.
+The v0.8.0 native packages include the `local` launcher and `agent` instruction
+installer. [Download v0.8.0](https://github.com/monk-eee/MindLeak-Light/releases/tag/v0.8.0).
+New trials use the matching v0.8.0 server image by default.
 Existing containers are never upgraded implicitly.
 
 1. Start **Docker Desktop**. [Download and verify the native package](docs/INSTALL.md#native-binary),
@@ -98,7 +105,7 @@ For Claude Code, other clients or your own application, use the
 
 The [Docker Hub image](https://hub.docker.com/r/monkeemagic/mindleak-light)
 includes MCP, PostgreSQL and pgvector. Use the versioned
-`monkeemagic/mindleak-light:0.7.0` image for an explicit deployment.
+`monkeemagic/mindleak-light:0.8.0` image for an explicit deployment.
 
 Sharing over HTTP requires a private bearer token and TLS for network access.
 Follow [shared HTTP setup](docs/INTEGRATION.md#shared-http) and

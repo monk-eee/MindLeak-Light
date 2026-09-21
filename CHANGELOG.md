@@ -5,6 +5,56 @@ sections. Unreleased entries live in [changelog.d](changelog.d/README.md).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-21
+
+### Added
+- Knowledge Factory with source-linked principles, counterevidence, recorded
+  formation activity and browser-local human review bound to exact revisions.
+  Browser review does not change MCP acceptance or sealed experiment results.
+- Investigation and Quality profiles with distinct discovery/validation cases,
+  preserved original knowledge, explicit counterexamples and fresh validation of
+  revisions. Compare original/reviewed knowledge with notebook and fresh controls.
+- A quality-first audit of required behavior, boundaries, regressions and
+  source-backed decisions, including appropriate rejection. Additional checks run
+  after candidates are frozen, outside the agent's visible repair loop.
+- Explicit trusted-private-LAN HTTP for the synthetic native lab, with loopback
+  defaults and exact Host/Origin guards. This opt-in has no authentication/TLS;
+  remote MCP and database security requirements are unchanged.
+
+### Changed
+- Companion skill **1.5.0** requests an approved scope-compatible prior-knowledge
+  check before nontrivial work, original-source inspection and current-evidence
+  assessment. No-memory controls and independent discovery keep their isolation.
+- Lab 1 handoffs bind published module hashes to actual dependency reads. Lab 2
+  uses bounded source-backed synthesis and pre-assessment principle references.
+  Lab 3's explicit knowledge-first workflow retains optional adoption separately.
+- New local trials and the all-in-one Compose default use image **0.8.0**.
+  Existing containers are not upgraded implicitly. No new database migration or
+  Rust-core behavior change is introduced relative to v0.7.0.
+
+### Fixed
+- Complete-case learning reviews validate source quotations before executing
+  explicit retention choices. Missing decisions or failed writes remain incomplete;
+  one deadline covers authoring and persistence. Earlier failed reports are retained.
+- Explicit proposal/acceptance handoffs and idempotent per-case no-change decisions
+  prevent acknowledged work from being lost behind a contradictory final answer.
+- One bounded same-session continuation handles tool-only idle without renewing
+  budgets, replaying acknowledged work or overriding cancellation/quota failures.
+- Principle application rejects case-chain IDs, stale revisions and late retrieval.
+  Live counters distinguish lookup, delivery, assessment, application and handoffs;
+  unknown measurements stay unknown. Lab 1 now checks required status badges.
+- Report actual reasoning settings and bounded value-free schema/SDK diagnostics.
+  Native archives include the new protocol and known-limitation records.
+- Read replay icon styles atomically in browser acceptance so renderer replacements
+  cannot make a detached SVG look like a missing animation.
+
+### Known Limitations
+- Optional model extraction can misattribute source actions. The experimental
+  grounding repair remains held and is not included; verify original sources.
+- Recorded formation, source-linked reuse and completed workflow checks do not
+  establish a general outcome-quality advantage. Quality studies remain experimental;
+  speed, cost and record counts are not substitutes for measured quality.
+
 ## [0.7.0] - 2026-09-18
 
 ### Added

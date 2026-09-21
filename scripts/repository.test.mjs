@@ -904,7 +904,9 @@ test("release packaging includes a pluggable binary, installation guide, brandin
   for (const name of guides) {
     writeFileSync(join(directory, "docs", name), `# ${name}\n`);
   }
-  const backupRecords = ["adr.d/0021-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md", "adr.d/0024-knowledge-formation-product.md"];
+  const backupRecords = ["adr.d/0021-encrypted-administrative-backups.md", "gaps.d/backup-platform-acceptance.md", "adr.d/0024-knowledge-formation-product.md",
+    "adr.d/0025-investigation-learning-protocol.md", "adr.d/0026-quality-first-learning-evaluation.md",
+    "gaps.d/model-extraction-subject-attribution.md", "gaps.d/quality-study-authoring-completion.md"];
   for (const name of backupRecords) {
     mkdirSync(dirname(join(directory, name)), { recursive: true });
     writeFileSync(join(directory, name), `# ${name}\n`);

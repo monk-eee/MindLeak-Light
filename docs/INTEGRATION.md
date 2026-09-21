@@ -267,7 +267,7 @@ application, include this policy in its persistent instruction context.
 
 The canonical detailed workflow is the
 [mindleak-memory companion skill](../.agents/skills/mindleak-memory/SKILL.md).
-The v0.7.0 native binary can [install its project instructions automatically](INSTALL.md#automatic-project-setup)
+The v0.8.0 native binary can [install its project instructions automatically](INSTALL.md#automatic-project-setup)
 for a selected existing connection, with an optional SDK connection check.
 Install its whole folder in each client's supported location; see
 [client setup](INSTALL.md#companion-agent-skill). It loads on demand and does not

@@ -58,6 +58,8 @@ export function packageBinary(root, target, version) {
   "docs/DOMAIN-RELATIONSHIPS.md", "docs/MIGRATIONS.md",
       "docs/VALIDATION.md", "docs/BENCHMARKS.md", "docs/BENCHMARK-RESULTS.md",
       "docs/KNOWN-LIMITATIONS.md", "docs/REVIEW-STATUS.md", "adr.d/0024-knowledge-formation-product.md",
+      "adr.d/0025-investigation-learning-protocol.md", "adr.d/0026-quality-first-learning-evaluation.md",
+      "gaps.d/model-extraction-subject-attribution.md", "gaps.d/quality-study-authoring-completion.md",
       "assets/mindleak_logo.png", "assets/mindleak_128x128.png",
       "assets/architecture.excalidraw", "assets/architecture-overview.svg",
       "assets/architecture-write.svg", "assets/architecture-recall.svg", "assets/architecture-lifecycle.svg",
