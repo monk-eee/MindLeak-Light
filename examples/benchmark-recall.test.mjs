@@ -120,6 +120,18 @@ test("empty metric populations are reported as null rather than perfect scores",
   assert.equal(negativeOnly.noAnswerAccuracy, 1);
 });
 
+test("recorded configuration distinguishes omitted and explicit provider reasoning", () => {
+  const environment = { MINDLEAK_TEST_DATABASE_URL: "postgresql://localhost/reasoning_report_test",
+    MINDLEAK_LLM_URL: "http://127.0.0.1:11434/v1", MINDLEAK_MODEL: "test-model" };
+  const automatic = benchmarkSettings(environment, { decomposition: "openai" });
+  const explicit = benchmarkSettings(environment, { decomposition: "openai", "decomposition-reasoning-effort": "none" });
+  assert.equal(automatic.serverEnvironment.MINDLEAK_LLM_REASONING_EFFORT, undefined);
+  assert.equal(explicit.serverEnvironment.MINDLEAK_LLM_REASONING_EFFORT, "none");
+  assert.notDeepEqual(automatic.configuration, explicit.configuration, "different provider requests must not claim identical recorded settings");
+  assert.deepEqual(explicit.configuration.reasoning, explicit.reasoning);
+  assert.deepEqual(automatic.configuration.reasoning, { decomposition: null, relevance: null });
+});
+
 const dataset = {
   schemaVersion: 1,
   id: "test-corpus",

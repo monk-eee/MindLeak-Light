@@ -179,6 +179,11 @@ independently accept `none`, `low`, `medium`, `high`, or `max`; unset/empty omit
 the field. Disabled chat stages ignore their settings. Check your provider and
 model support; unsupported requests fail without changing modes.
 
+New benchmark and lab reports include these controls in `configuration.reasoning`.
+An omitted setting (`null`) differs from explicit `none`; matching only the model
+name, endpoint and timeout does not establish equivalent provider requests. Older
+reports without this field do not establish which reasoning option was sent.
+
 [Ollama documents these controls](https://docs.ollama.com/api/openai-compatibility).
 Disabling thinking made the installed GLM much faster, but its relevance
 accuracy deteriorated. Do not equate speed with quality or enable this setting

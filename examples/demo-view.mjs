@@ -75,14 +75,15 @@ export function labCompletion(report = {}) {
   };
   if (report.kind === "rediscovery_lab" && report.plan) {
     const expectedPreparation = report.plan.preparationTasks ?? 0;
+    const expectedChecks = report.plan.profile === "quality" ? 8 : 3;
     for (let index = 0; index < expectedPreparation; index += 1) {
       const outcome = report.preparation?.[index];
-      add(outcome?.id ?? `preparation-${index + 1}`, outcome?.id ?? `Preparation ${index + 1}`, outcome, outcome?.finalTests, outcome?.correct, 3);
+      add(outcome?.id ?? `preparation-${index + 1}`, outcome?.id ?? `Preparation ${index + 1}`, outcome, outcome?.finalTests, outcome?.correct, expectedChecks);
     }
     const outcomes = new Map((report.outcomes ?? []).map(outcome => [outcome.id, outcome]));
     for (const planned of report.plan.sessions ?? []) {
       const outcome = outcomes.get(planned.id);
-      add(planned.id, `${planned.arm}${planned.diagnostic ? " (diagnostic)" : ""}: ${planned.id}`, outcome, outcome?.finalTests, outcome?.correct, 3);
+      add(planned.id, `${planned.arm}${planned.diagnostic ? " (diagnostic)" : ""}: ${planned.id}`, outcome, outcome?.finalTests, outcome?.correct, expectedChecks);
     }
   } else if (report.kind === "swarm_build") {
     for (const actor of report.agents ?? []) {
@@ -132,6 +133,42 @@ export function labCompletion(report = {}) {
     learning: { status: observedUses ? "observed_use" : "not_established", observedUses, advantage: "not_established",
       explanation: "Observed reuse is separate from passing requirements. These synthetic runs do not establish a general learning advantage." },
     releaseReady: false, scope: "Acceptance checks for these fixtures only; not a production quality or security certification." };
+}
+
+export function qualityComparison(report = {}) {
+  if (report.plan?.profile !== "quality") return null;
+  const sessions = report.plan.sessions ?? [];
+  const planned = new Map(sessions.map(session => [session.id, session]));
+  const receipts = new Map((report.events ?? []).filter(event => event.type === "quality_checked").map(event => [event.caseId, event]));
+  const records = report.outcomes ?? (report.events ?? []).filter(event => event.type === "rediscovery_task_finished" && event.phaseScope === "evaluation")
+    .map(event => ({ ...event, id: event.caseId, arm: event.agent, quality: receipts.get(event.caseId) }));
+  const outcomes = new Map(records.filter(outcome => planned.get(outcome.id)?.arm === outcome.arm).map(outcome => [outcome.id, outcome]));
+  const groups = { behavior: 2, boundary: 3, regression: 3 };
+  const measured = outcome => outcome?.quality?.measured === true && outcome.quality.checksScheduled === 8
+    && Number.isSafeInteger(outcome.quality.checksPassed) && outcome.quality.checksPassed >= 0 && outcome.quality.checksPassed <= 8
+    && Object.entries(groups).every(([group, expected]) => outcome.quality.dimensions?.[group]?.scheduled === expected
+      && Number.isSafeInteger(outcome.quality.dimensions[group].passed) && outcome.quality.dimensions[group].passed >= 0 && outcome.quality.dimensions[group].passed <= expected)
+    && Object.keys(groups).reduce((total, group) => total + outcome.quality.dimensions[group].passed, 0) === outcome.quality.checksPassed;
+  const arms = Object.fromEntries((report.plan.arms ?? []).map(arm => {
+    const scheduled = sessions.filter(session => session.arm === arm).length;
+    const own = [...outcomes.values()].filter(outcome => outcome.arm === arm);
+    const checked = own.filter(measured);
+    return [arm, { scheduled, completed: own.length, correct: own.filter(outcome => outcome.correct).length,
+      checksPassed: checked.reduce((total, outcome) => total + outcome.quality.checksPassed, 0),
+      unmeasuredTasks: scheduled - checked.length, correctRejections: checked.filter(outcome => outcome.quality.correctRejection).length,
+      checkedDecisions: checked.filter(outcome => outcome.quality.sourceBackedDecision).length,
+      dimensions: Object.fromEntries(Object.entries(groups).map(([group, expected]) => [group, {
+        scheduled: scheduled * expected, passed: checked.reduce((total, outcome) => total + outcome.quality.dimensions[group].passed, 0),
+      }])) }];
+  }));
+  return { arms, measured: [...outcomes.values()].filter(measured).length, scheduled: sessions.length,
+    comparisons: (report.plan.evaluation ?? []).map(entry => {
+      const original = outcomes.get(`${entry.id}:original`); const revised = outcomes.get(`${entry.id}:mindleak`);
+      const originalChecks = measured(original) ? original.quality.checksPassed : null;
+      const revisedChecks = measured(revised) ? revised.quality.checksPassed : null;
+      return { caseId: entry.id, originalChecks, revisedChecks,
+        checksDelta: originalChecks !== null && revisedChecks !== null ? revisedChecks - originalChecks : null };
+    }) };
 }
 
 export function knowledgeCapital(report = {}) {
@@ -277,8 +314,9 @@ export function knowledgeMetrics(report = {}) {
       compression: { observations: observations.size, chains: chains.size, principles: principles.size, observationsPerPrinciple: principles.size ? observations.size / principles.size : null, semanticQuality: "not_measured" },
       mistakesAvoided: { rate: null, count: null, status: "known_failure_candidates_only", withMemory: memory?.knownFailureCandidates ?? null, withoutMemory: fresh?.knownFailureCandidates ?? null },
       timeToCorrectHypothesis: { medianMs: memory?.firstVerifiedFixMedianMs ?? null, status: "verified_fix_time_only" },
-      capital: knowledgeCapital(report), formation, investigation: report.plan?.profile === "mechanism" ? {
-        ...report.metrics?.learning, predictions: report.plan.validation ? report.plan.validation.length * 2 : report.metrics?.learning?.predictions,
+      capital: knowledgeCapital(report), formation, investigation: ["mechanism", "quality"].includes(report.plan?.profile) ? {
+        ...report.metrics?.learning, predictions: report.plan.profile === "quality" ? report.metrics?.learning?.predictions
+          : report.plan.validation ? report.plan.validation.length * 2 : report.metrics?.learning?.predictions,
       } : null,
       curve: (report.metrics?.curve ?? []).map(point => ({ ...point, withMemory: point.mindleak, withoutMemory: point.fresh, tasksPerArm: point.mindleakScheduled })),
       evidenceScope: report.plan ? `${report.plan.profile} / ${report.plan.mainSessions} main + ${report.plan.diagnosticSessions} diagnostic sessions` : "Frozen rediscovery protocol",
@@ -847,7 +885,7 @@ function initializeReplay() {
   }
   function configureStudyMode() {
     const report = recording?.report;
-    const investigation = report?.plan?.profile === "mechanism" || draft.rediscoveryProfile === "mechanism";
+    const investigation = ["mechanism", "quality"].includes(report?.plan?.profile) || ["mechanism", "quality"].includes(draft.rediscoveryProfile);
     const available = !investigation && report?.status === "completed" && (report.kind === "swarm_build" ? report.memoryExhibits?.length > 0
       : report.kind === "memory_lab" ? Boolean(report.guide) : report.knowledge?.lessons?.length > 0);
     if (!available && !runActive) continueLearning = false;
@@ -1313,7 +1351,7 @@ function initializeReplay() {
       byId("investigation-predictions").textContent = `${count(learning.correctPredictions)} / ${count(learning.predictions)}`;
       byId("investigation-exceptions").textContent = count(learning.exceptionsRetained);
       const decisions = byId("investigation-decisions"); decisions.replaceChildren();
-      const names = { fresh: "Fresh Agent", notebook: "Notebook", mindleak: "MindLeak", direct: "Direct / diagnostic" };
+      const names = { fresh: "Fresh Agent", notebook: "Notebook", original: "Original Knowledge", mindleak: "MindLeak", direct: "Direct / diagnostic" };
       for (const [arm, data] of Object.entries(recording?.report.metrics?.arms ?? {})) {
         const row = element("tr");
         for (const value of [names[arm], `${data.checkedDecisions} / ${data.scheduled}`, `${data.boundaryDecisions} / 2`, `${data.correct} / ${data.scheduled}`]) row.append(element("td", "", value));
@@ -1323,6 +1361,8 @@ function initializeReplay() {
       const checks = recording?.report.plan?.validation?.flatMap(entry => ["mindleak", "notebook"].map(arm =>
         recording.report.validations?.find(item => item.caseId === entry.id && item.arm === arm)
         ?? { caseId: entry.id, arm, status: "not_recorded", correct: null })) ?? recording?.report.validations ?? [];
+      if (recording?.report.plan?.profile === "quality") checks.push(...(recording.report.validations ?? [])
+        .filter(check => !recording.report.plan.validation.some(entry => entry.id === check.caseId)));
       for (const check of checks) {
         const row = element("tr");
         for (const value of [`${names[check.arm]} / ${check.caseId}`, check.prediction ? check.prediction.expectedPass ? "Pass" : "Fail" : "Not recorded",
@@ -1488,11 +1528,11 @@ function initializeReplay() {
     }
     if (following) { position = next.durationMs; playing = false; }
     else if (wasFollowing) { position = next.durationMs; playing = false; }
-    byId("project-title").textContent = next.memoryLab ? "Knowledge Formation" : next.rediscovery ? report.plan?.profile === "mechanism" ? "Investigation Learning" : "Knowledge Reuse"
+    byId("project-title").textContent = next.memoryLab ? "Knowledge Formation" : next.rediscovery ? report.plan?.profile === "quality" ? "Knowledge Quality" : report.plan?.profile === "mechanism" ? "Investigation Learning" : "Knowledge Reuse"
       : report.title ?? next.source.protocol?.title ?? "Session expiry investigation";
     byId("project-kicker").textContent = next.control ? "LEARNING TRANSFER / A + B + C" : "SHARED BUILD / FIVE AGENTS";
     if (next.memoryLab) byId("project-kicker").textContent = next.agents.some(agent => agent.control) ? "FIVE INVESTIGATORS / FIVE DALEK CONTROLS" : "DURABLE KNOWLEDGE / FIVE INVESTIGATORS";
-    if (next.rediscovery) byId("project-kicker").textContent = "REDISCOVERY / THREE MAIN ARMS + DIAGNOSTIC";
+    if (next.rediscovery) byId("project-kicker").textContent = report.plan?.profile === "quality" ? "OUTCOME QUALITY / FOUR MATCHED ARMS" : "REDISCOVERY / THREE MAIN ARMS + DIAGNOSTIC";
     byId("task-description").textContent = next.control
       ? "Investigate and fix session expiry. A and B work independently; C repeats the task with no memory, A-only memory, and A+B memory. The same immutable checks decide correctness."
       : report.problem ?? "Build a session-expiry app: create named sessions, count down their lifetime, validate inputs, remove sessions, and clear expired entries. Five owners. Eighteen fixed checks.";
@@ -1520,11 +1560,11 @@ function initializeReplay() {
     byId("study-cost-summary").classList.toggle("hidden", !history?.runs?.length);
     if (!history?.runs?.length) return;
     byId("study-status").textContent = `Study ${String(history.studyId).slice(0, 8)} / ${history.runs.length} recorded runs`;
-    byId("study-note").textContent = recording?.report.plan?.profile === "mechanism" ? "Fresh-case investigation study. Revised principles require new validation cases; this profile does not continue exposed runs."
+    byId("study-note").textContent = ["mechanism", "quality"].includes(recording?.report.plan?.profile) ? "Fresh-case investigation study. Revised principles require new validation cases; this profile does not continue exposed runs."
       : history.taskExposure === "previously_exposed"
       ? "Continued experience with fresh sessions. Repeated tasks are exposed, not independent holdouts; improvement is not guaranteed. All earlier outcomes remain recorded."
       : "Fresh study. Continue learning retains this experience for later fresh agent sessions.";
-    const names = { mindleak: "MindLeak", fresh: "Fresh agent", notebook: "Notebook", daleks: "Daleks", direct: "Direct diagnostic" };
+    const names = { mindleak: "MindLeak", original: "Original Knowledge", fresh: "Fresh agent", notebook: "Notebook", daleks: "Daleks", direct: "Direct diagnostic" };
     const body = byId("study-run-body"); body.replaceChildren();
     for (const [index, run] of history.runs.entries()) {
       const row = element("tr");
@@ -1552,22 +1592,43 @@ function initializeReplay() {
     byId("control-costs").classList.toggle("hidden", !recording?.memoryLab || !recording.report.controlExperiment);
     byId("rediscovery-results").classList.toggle("hidden", !recording?.rediscovery);
     byId("rediscovery-costs").classList.toggle("hidden", !recording?.rediscovery);
+    const quality = qualityComparison(recording?.report);
+    byId("quality-results").classList.toggle("hidden", !quality);
+    if (quality) {
+      const names = { fresh: "Fresh Agent", notebook: "Notebook", original: "Original Knowledge", mindleak: "Reviewed Knowledge" };
+      byId("quality-status").textContent = `${quality.measured} / ${quality.scheduled} measured`;
+      const body = byId("quality-result-body"); body.replaceChildren();
+      for (const [arm, values] of Object.entries(quality.arms)) {
+        const row = element("tr"); row.dataset.arm = arm;
+        for (const value of [names[arm] ?? arm, `${values.correct} / ${values.scheduled}`,
+          ...["behavior", "boundary", "regression"].map(group => `${values.dimensions[group].passed} / ${values.dimensions[group].scheduled}`),
+          `${values.checkedDecisions} / ${values.scheduled}`, values.correctRejections, values.unmeasuredTasks]) row.append(element("td", "", String(value)));
+        body.append(row);
+      }
+      const pairs = byId("quality-pair-body"); pairs.replaceChildren();
+      for (const pair of quality.comparisons) {
+        const row = element("tr");
+        for (const value of [pair.caseId, pair.originalChecks === null ? "--" : `${pair.originalChecks} / 8`,
+          pair.revisedChecks === null ? "--" : `${pair.revisedChecks} / 8`, pair.checksDelta === null ? "--" : `${pair.checksDelta > 0 ? "+" : ""}${pair.checksDelta}`]) row.append(element("td", "", value));
+        pairs.append(row);
+      }
+    }
     if (recording?.rediscovery) {
       const report = recording.report; const body = byId("rediscovery-result-body"); body.replaceChildren();
-      const names = { fresh: "Fresh Agent", notebook: "Notebook", mindleak: "MindLeak", direct: "Direct / diagnostic" };
+      const names = { fresh: "Fresh Agent", notebook: "Notebook", original: "Original Knowledge", mindleak: "MindLeak", direct: "Direct / diagnostic" };
       byId("rediscovery-protocol-status").textContent = report.plan ? `${report.plan.profile} / ${report.plan.memoryUse === "knowledge_first" ? "knowledge-first" : report.plan.memoryUse === "optional" ? "optional adoption" : "recorded policy"} / ${report.plan.mainSessions} main + ${report.plan.diagnosticSessions} diagnostic / frozen v${report.plan.protocolVersion}` : "Preparing frozen protocol";
       const results = report.outcomes ?? recording.events.filter(event => event.type === "rediscovery_task_finished" && event.phaseScope === "evaluation")
         .map(event => ({ ...event, id: event.caseId, arm: event.agent }));
       for (const outcome of results) {
         const row = element("tr"); row.tabIndex = 0;
-        const disposition = outcome.knowledgeWorkflow?.assessment?.decision ?? outcome.knowledgeWorkflow?.decision;
+        const disposition = outcome.knowledgeWorkflow?.assessment?.decision ?? outcome.knowledgeWorkflow?.decision ?? outcome.decision?.knowledgeDecision;
         for (const value of [outcome.id, names[outcome.arm], outcome.correct ? "Passed" : "Unresolved", outcome.reuseObserved ? disposition === "adapt" ? "Adapted / verified change" : "Before verified change" : ({ reject: "Rejected after assessment", no_match: "Lookup returned no match", unavailable: "Lookup failed / local fix" })[disposition] ?? (outcome.priorKnowledgeDelivered ? "Retrieved only" : "Not consulted"),
           Array.isArray(outcome.knownFailureCandidates) ? outcome.knownFailureCandidates.length : outcome.knownFailureCandidates ?? "--", Number.isFinite(outcome.firstVerifiedFixMs) ? formatElapsed(outcome.firstVerifiedFixMs) : "--"]) row.append(element("td", "", String(value)));
         const inspect = () => {
           byId("rediscovery-inspector").classList.remove("hidden");
           byId("rediscovery-inspector").textContent = JSON.stringify({ id: outcome.id, fixture: outcome.fixtureSha256, correct: outcome.correct,
             decision: outcome.decision, decisionCorrect: outcome.decisionCorrect, observationIds: outcome.observationIds,
-            knowledgeWorkflow: outcome.knowledgeWorkflow,
+            knowledgeWorkflow: outcome.knowledgeWorkflow, quality: outcome.quality, knowledgeVersion: outcome.knowledgeVersion,
             priorKnowledgeDelivered: outcome.priorKnowledgeDelivered, changedConditionAdaptation: outcome.changedConditionAdaptation,
             priorImplementationInvalidated: outcome.priorImplementationInvalidated, staleMistakeObserved: outcome.staleMistakeObserved,
             experienceAccesses: outcome.experienceAccesses, reads: outcome.reads, writes: outcome.writes, probes: outcome.probes, finalTests: outcome.finalTests,
@@ -1872,8 +1933,8 @@ function initializeReplay() {
     }
     const current = story.cases.find(item => item.id === story.currentCase) ?? story.cases[0];
     const stages = { near: "FAMILIAR PATTERN", generalization: "A NEW ANGLE", changed: "CONTRACT CHANGED", irrelevant: "A DIFFERENT FAULT" };
-    const names = { fresh: "Fresh Agent", notebook: "Notebook", mindleak: "MindLeak", direct: "Direct / diagnostic" };
-    const armColors = { fresh: "#a33b32", notebook: "#008655", mindleak: "#145ee0", direct: "#a16b00" };
+    const names = { fresh: "Fresh Agent", notebook: "Notebook", original: "Original Knowledge", mindleak: "MindLeak", direct: "Direct / diagnostic" };
+    const armColors = { fresh: "#a33b32", notebook: "#008655", original: "#a16b00", mindleak: "#145ee0", direct: "#a16b00" };
     const inCases = story.phase === "transfer" || story.phase === "finished";
     byId("lab3-case-eyebrow").textContent = inCases && current ? `${stages[current.stage] ?? "NEW CASE"} / ${story.cases.indexOf(current) + 1} OF ${story.cases.length}` : "INVESTIGATION IN PROGRESS";
     byId("lab3-case-title").textContent = inCases && current ? current.title : { discover: "Find something worth keeping", form: "Connect the evidence", validate: "Does the rule survive?", review: "What changed what we know?" }[story.phase] ?? "The investigation begins";
@@ -2138,7 +2199,7 @@ function initializeReplay() {
     stream.onopen = () => { byId("connection").dataset.connected = "true"; byId("connection").textContent = "Live connected"; };
     stream.onerror = () => { byId("connection").dataset.connected = "false"; byId("connection").textContent = "Reconnecting"; };
     stream.addEventListener("snapshot", message => { const data = JSON.parse(message.data); runActive = data.running; byId("run").disabled = data.running; byId("stop").disabled = !data.running; configureProfiles(data.profiles); if (data.report) load(data.report, data.running); });
-    stream.addEventListener("record", message => { if (!recording) return; const event = JSON.parse(message.data); if (recording.events.some(existing => existing.id === event.id)) return; if (event.type === "run_started") recording.report.runId = event.runId; recording.events.push(event); recording.report.events = recording.events; recording.durationMs = Math.max(recording.durationMs, event.atMs); if (following) position = recording.durationMs; if (["control_started", "control_arm_finished", "rediscovery_task_finished"].includes(event.type)) renderComparisons(); render(true); });
+    stream.addEventListener("record", message => { if (!recording) return; const event = JSON.parse(message.data); if (recording.events.some(existing => existing.id === event.id)) return; if (event.type === "run_started") recording.report.runId = event.runId; recording.events.push(event); recording.report.events = recording.events; recording.durationMs = Math.max(recording.durationMs, event.atMs); if (following) position = recording.durationMs; if (["control_started", "control_arm_finished", "rediscovery_task_finished", "quality_checked"].includes(event.type)) renderComparisons(); render(true); });
     stream.addEventListener("memory", message => { if (!recording) return; const record = JSON.parse(message.data); const exhibits = recording.report.memoryExhibits ??= []; if (!exhibits.some(item => item.memoryId === record.memoryId)) exhibits.push(record); render(true); });
     stream.addEventListener("tool-detail", message => { if (!recording) return; const detail = JSON.parse(message.data); const exhibits = recording.report.toolExhibits ??= []; if (!exhibits.some(item => item.toolCallId === detail.toolCallId)) exhibits.push(detail); });
     stream.addEventListener("knowledge", message => { if (!recording) return; const knowledge = JSON.parse(message.data); recording.report.knowledge = { ...recording.report.knowledge, ...knowledge }; if (knowledge.guide) recording.report.guide = knowledge.guide; renderComparisons(); render(true); });

@@ -561,7 +561,7 @@ guide while retaining a separate record of every run's work and costs.
 ### Lab 3: Reuse Knowledge
 
 The main `smoke`, `learning`, and `pilot` profiles use **protocol v5,
-knowledge-first workflow v2**. They retain PR #41's frozen cases, multi-principle
+knowledge-first workflow v2**, with **bounded review-policy v2**. They retain PR #41's frozen cases, multi-principle
 support and continuation, but require the experience-bearing agents to look up
 prior knowledge and assess applicability before editing. The explicit `adoption`
 profile preserves the optional-lookup v3 diagnostic on the Learning schedule.
@@ -616,23 +616,64 @@ original temporal-use scoring.
 Protocol **v5**, fixture **v1**, retains the separate investigation/documentation
 sessions and multi-principle support introduced in v2/v3. A family may retain several distinct principles,
 keyed by stable principle ID rather than by family. `list_principles` exposes the
-catalogue to curators; `retain_lesson.revises` explicitly targets a refinement.
+catalogue during preparation; review sessions receive it in their evidence packet.
+`retain_lesson.revises` explicitly targets a refinement.
 Equivalent lessons and exact accepted source chains are reused instead of creating
-duplicates. There is a 32-principle inventory bound and ten retention calls per
+duplicates. There is a 32-principle inventory bound and ten retention attempts per
 review, not a quota. Each rule still needs inspected source evidence and a verified
-changed implementation. A reviewer may report no new learning. Every evaluation uses a fresh session and private
+changed implementation. A reviewer may explicitly record no new learning. Every evaluation uses a fresh session and private
 workspace. A seeded randomized schedule runs one session at a time across all
 arms, including the separate diagnostic, to avoid concurrent provider congestion.
 Experience is frozen and rechecked across every round's arms and repetitions.
 Only then can a reviewer retain new evidence, a correction or an exception using
 verified memory-side cases. Control answers never enter the learning loop.
 
-A review is complete only when the agent finishes successfully with
-`completed: true`. A completed review may legitimately retain nothing. Failed,
-missing or explicitly unfinished reviews instead produce
+Review-policy v2 prepares one source-backed packet before the reviewer runs:
+verified memory-side cases, their original and changed source, recorded applicability
+decisions including rejection, prior retention errors, current principles with support
+documents, and exact original observations checked through MCP. It excludes other
+arms, future cases and the agent's redundant investigation transcript. The complete
+packet has a 128 KiB UTF-8 bound; missing, oversized or changed evidence fails rather
+than being silently omitted. Source preparation time and the packet hash are recorded.
+
+The author receives no tools and returns one complete JSON decision document.
+Its bounded `decisions` array names each case exactly once, with either explicit
+lesson/revision proposals or a no-new-learning reason and exact current-source
+quotation. The runner validates the complete document and all quotations before
+performing any requested retention. Partial, duplicate, invalid, unfinished or
+cancelled documents write nothing. This avoids both read-only loops and reliance
+on model tool dispatch for a review that needs no further investigation.
+No write quota is imposed. Correct rejection of an inapplicable lesson is meaningful
+evidence, not failed application or a reason to force reuse. Source matching still
+does not prove the reason's semantic truth.
+
+A review is complete only when these case decisions succeed, no retention remains
+unresolved, and the agent finishes successfully with `completed: true`. A final
+completion claim alone is insufficient: the document authorizes its explicit choices,
+not a claim that persistence succeeded. Every requested retention must succeed;
+another lesson cannot hide a rejected or uncertain write. Safe failure causes,
+successful receipts and unresolved case IDs remain recorded, including partial work.
+Authoring and persistence share the original model-session deadline, propagated to
+MCP requests; cancellation does not discard earlier acknowledgements. No automatic
+repair, coercion, model switch or additional retry is added. The existing model
+turn/credit limits and idle continuation policy are unchanged.
+Failed, missing or explicitly unfinished reviews instead produce
 `learning_review_incomplete` and a partial run, even when every coding check
 passes. `learningReviews` records scheduled, completed and incomplete review
-counts separately from task correctness and observed reuse.
+counts separately from task correctness and observed reuse. The `adoption` profile
+uses this reviewer without changing its optional-lookup policy; the separate v4
+mechanism is unchanged. Older reports without `plan.reviewPolicy` retain their
+original completion contract and results.
+
+The [recorded review rehearsals](BENCHMARK-RESULTS.md#lab-3-review-rehearsal)
+preserve failed prototypes and the later three completed review phases. The first
+rehearsal accidentally omitted the live lab's explicit decomposition reasoning
+setting; its timeouts were not a matched test of the live configuration. New reports
+include reasoning controls in `configuration` so omitted and explicit `none` cannot
+appear identical. The held extractor and existing live model settings are unchanged.
+Both agent adapters report invalid final documents with at most eight schema paths
+and constraint codes, never rejected values or provider bodies. Copilot query errors
+identify pre-handler dispatch separately from executed tool failures without retrying.
 
 If the Copilot SDK becomes idle after tool requests without a final answer, the
 adapter permits one continuation in the same session. It retains acknowledged
@@ -851,6 +892,81 @@ its original source/binary identity and later final-newline-only formatting reco
 are retained separately. Later report-field/accounting fixes have deterministic
 real-MCP coverage, not a second model-result claim. This single exposed-family
 trial supports formation feasibility, not learning benefit or generalization quality.
+
+### Lab 3 Quality: Original Versus Reviewed Knowledge
+
+Select **Quality v6** for an explicit outcome-quality study. The default Learning,
+optional-adoption and v4 mechanism profiles remain unchanged. Quality does not
+continue earlier runs: it needs disjoint discovery, exception, validation and
+evaluation cases. See [ADR-0026](../adr.d/0026-quality-first-learning-evaluation.md).
+
+The study uses two discovery cases, two initial reserved validation cases, two
+later exceptions, two fresh revision-validation cases and four held-out tasks.
+Each task runs in four fresh sessions: repository-only, independently authored
+notebook, original MindLeak knowledge, and reviewed MindLeak knowledge. Initial
+knowledge is verified through MCP and preserved as an immutable historical
+snapshot. Explicit challenges retain measured counterexamples; changed procedures
+must earn fresh validation and explicit acceptance. A justified no-new-learning
+decision is valid and may produce equal original/reviewed knowledge.
+
+The three knowledge arms receive equally bounded frozen briefs; no hypothesis
+implementation or reference repair is delivered. This deliberately isolates
+knowledge content, not retrieval speed, query quality or spontaneous adoption.
+No arm can change shared knowledge during comparison, and evaluation cases are
+not available to the authors or exception reviewers.
+
+Eight immutable checks cover complete records, empty-page continuation, the
+authoritative completion signal, repeated empty pages, cursor cycles, record
+identity, unchanged source pages, and preserved order/duplicates. The results
+table keeps behavior, boundary handling, regressions and source-backed decisions
+separate. It also shows correct rejection and unmeasured evidence. The original
+and reviewed columns retain gains, ties and regressions rather than presuming
+that any revision improves quality.
+
+Evaluation agents can inspect and run the ordinary three public checks. The
+additional quality audit runs in a separate sandbox only after each session
+finishes and its candidate is frozen. Agents cannot read those audit tests or
+use their results for another repair attempt. Reports retain `publicTests` and
+the complete eight-check `finalTests`; missing audit receipts stay unmeasured.
+
+```sh
+node examples/swarm-demo.mjs --plan --rediscovery-profile quality
+node examples/swarm-demo.mjs --lab 3 --rediscovery-profile quality --memory-model off --code-engine podman
+```
+
+The second command starts a dashboard; starting the experiment explicitly runs
+the configured agent model. `--memory-model off` is an explicit model-free storage
+choice, not an error fallback. It does not disable the authoring agent. Enabled
+provider failures remain failures and can leave a study partial. The unresolved
+[extraction attribution defect](../gaps.d/model-extraction-subject-attribution.md)
+and held core draft are unchanged. Exact quotations and provenance checks do not
+prove the semantic truth of every extracted or authored claim.
+
+The deterministic real-MCP regression verifies the complete original-to-revised
+workflow and its failure paths. Its intentionally obsolete original procedure
+tests the scorer; it is not a real-agent quality result. Real-model studies must
+be reported separately, with all failed reviews and missing knowledge retained.
+Latency and token use remain secondary diagnostics, not the product success gate.
+
+This profile remains experimental. Early bounded real-agent development trials
+exposed formation and review handoff bugs. Their reports remain unchanged in the
+[authoring completion record](../gaps.d/quality-study-authoring-completion.md).
+Formation now receives one bounded, source-verified packet rather than an
+inspection loop. Quality hypotheses must parse as standalone JavaScript exporting
+`collect`; parsing does not execute or silently repair model code, and successful
+parsing is not behavioral validation. Formation policy v2 separates case proposal,
+exact-ID/revision acceptance and principle proposal into bounded explicit decisions.
+The runner verifies their acknowledged state instead of relying on the model to
+carry pending acceptance between phases. No-change review decisions cover each
+exception separately, with idempotent identical retries. Missing decisions and
+unresolved writes still fail; no acceptance or quality gain is fabricated.
+
+The repaired real-agent trial `c8ac5d72-f195-46bd-b13b-f5d4fd87244c` completed
+formation and both per-case reviews. The reviews legitimately retained existing
+knowledge. All four MindLeak evaluation tasks passed their eight-check audits,
+but the study's ten-minute deadline interrupted remaining controls. Its cancelled
+status and unmeasured results are preserved; this verifies the repaired handoffs,
+not a complete comparative quality gain or a beneficial knowledge revision.
 
 ### Durable Learnings Page
 

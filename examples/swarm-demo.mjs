@@ -19,7 +19,7 @@ import { runMemoryLab, memoryLabRoles } from "./memory-lab.mjs";
 import { memoryLabProblem } from "./memory-lab-fixture.mjs";
 import { controlRoles, runMemoryControl, learnFromControlRound, combineControlReport, preparationEvent, continueMemoryPreparation } from "./memory-control.mjs";
 import { rediscoveryArms, rediscoveryPlan, rediscoveryProblem, runRediscoveryLab } from "./rediscovery-lab.mjs";
-import { investigationPlan, runInvestigationLab } from "./investigation-lab.mjs";
+import { investigationPlan, qualityArms, runInvestigationLab } from "./investigation-lab.mjs";
 
 function validateLabListener(listenHost, publicOrigin) {
   if (listenHost === "127.0.0.1" && publicOrigin === null) return;
@@ -50,11 +50,11 @@ export function selectDemoParameters(profiles, input = {}) {
     || !Number.isInteger(parameters.concurrency) || parameters.concurrency < 1 || parameters.concurrency > 5
     || !Number.isInteger(parameters.attempts) || parameters.attempts < 1 || parameters.attempts > 3
     || !Number.isInteger(parameters.rounds) || parameters.rounds < 1 || parameters.rounds > 3
-  || !["smoke", "learning", "pilot", "adoption", "mechanism"].includes(parameters.rediscoveryProfile) || !Number.isSafeInteger(parameters.querySeed) || parameters.querySeed < 0 || parameters.querySeed > 0xffffffff
+  || !["smoke", "learning", "pilot", "adoption", "mechanism", "quality"].includes(parameters.rediscoveryProfile) || !Number.isSafeInteger(parameters.querySeed) || parameters.querySeed < 0 || parameters.querySeed > 0xffffffff
     || parameters.continueFrom !== null && (typeof parameters.continueFrom !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(parameters.continueFrom))
     || !parameters.agentModels || typeof parameters.agentModels !== "object" || Array.isArray(parameters.agentModels)
     || Object.keys(parameters.agentModels).some(id => !swarmRoles.some(role => role.id === id))) throw new Error("invalid_demo_parameters");
-  if (parameters.rediscoveryProfile === "mechanism" && parameters.continueFrom !== null) throw new Error("fresh_investigation_required");
+  if (["mechanism", "quality"].includes(parameters.rediscoveryProfile) && parameters.continueFrom !== null) throw new Error("fresh_investigation_required");
   if (profiles) {
     if (profiles.experiment === 2 && parameters.concurrency !== 1) throw new Error("memory_lab_requires_sequential_stages");
     if (profiles.experiment === 3 && (parameters.concurrency !== 1 || parameters.attempts !== 1)) throw new Error("rediscovery_requires_serial_schedule");
@@ -103,13 +103,13 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
     active = run;
     const memoryLab = profiles?.experiment === 2;
     const rediscovery = profiles?.experiment === 3;
-    const planned = rediscovery ? parameters.rediscoveryProfile === "mechanism" ? investigationPlan({ seed: parameters.querySeed })
+    const planned = rediscovery ? ["mechanism", "quality"].includes(parameters.rediscoveryProfile) ? investigationPlan({ seed: parameters.querySeed, profile: parameters.rediscoveryProfile })
       : rediscoveryPlan({ profile: parameters.rediscoveryProfile, seed: parameters.querySeed }) : null;
-    const newFamilies = planned?.profile === "mechanism" ? planned.discovery.length
+    const newFamilies = planned?.discovery ? planned.discovery.length
       : planned ? new Set(planned.sessions.map(session => session.family).filter(family => !parent?.knowledge?.lessons?.some(lesson => lesson.family === family))).size : 0;
-    const roles = rediscovery ? rediscoveryArms : [...(memoryLab ? memoryLabRoles : swarmRoles), ...controlRoles];
+    const roles = rediscovery ? parameters.rediscoveryProfile === "quality" ? qualityArms : rediscoveryArms : [...(memoryLab ? memoryLabRoles : swarmRoles), ...controlRoles];
     report = { reportVersion: 1, kind: rediscovery ? "rediscovery_lab" : memoryLab ? "memory_lab" : "swarm_build", experiment: rediscovery ? 3 : memoryLab ? 2 : 1,
-  title: rediscovery ? parameters.rediscoveryProfile === "mechanism" ? "Investigation Learning" : "Rediscovery" : memoryLab ? "Memory vs Daleks" : "Session Desk / Memory vs Daleks", expectedTests: rediscovery ? (newFamilies + planned.sessions.length) * 3 : memoryLab ? (parent ? 0 : 35) + parameters.rounds * 70 : 36, runId: randomUUID(), createdAt: new Date().toISOString(),
+  title: rediscovery ? planned.name : memoryLab ? "Memory vs Daleks" : "Session Desk / Memory vs Daleks", expectedTests: rediscovery ? (newFamilies + planned.sessions.length) * (planned.taskChecks ?? 3) : memoryLab ? (parent ? 0 : 35) + parameters.rounds * 70 : 36, runId: randomUUID(), createdAt: new Date().toISOString(),
       status: "recording", agents: roles.map(({ task, ...role }) => ({ ...role, state: "queued", model: parameters.agentModels[role.pairedWith ?? role.id] ?? model })), events: [], elapsedMs: 0,
       problem: parameters.problem, parameters, memoryExhibits: [], toolExhibits: [],
       knowledgeBaseline: Object.fromEntries([["observations", "memoryId"], ["chains", "chainId"], ["principles", "chainId"]].map(([kind, key]) => [kind,
@@ -135,7 +135,7 @@ export async function createDemoServer({ runBuild, outputDirectory, port = 0, mo
           experiment: report.experiment, parameters }, null, 2), { flag: "wx", mode: 0o600 });
         const completed = await runBuild({ signal: controller.signal, parameters, parent, onPlan: async plan => {
           await writeFile(join(artifactDirectory, "frozen-plan.json"), JSON.stringify(plan, null, 2), { flag: "wx", mode: 0o600 });
-          report.plan = plan; report.expectedTests = (plan.preparationTasks + plan.sessions.length) * 3; broadcast("snapshot", snapshot());
+          report.plan = plan; report.expectedTests = (plan.preparationTasks + plan.sessions.length) * (plan.taskChecks ?? 3); broadcast("snapshot", snapshot());
         }, onEvent: event => {
           if (event.type === "run_started") report.runId = event.runId;
           report.events.push(event);
@@ -296,10 +296,11 @@ async function main() {
     lab: { type: "string" }, rounds: { type: "string" }, "lab-one-recording": { type: "string" }, "lab-two-recording": { type: "string" }, "lab-three-recording": { type: "string" },
     "rediscovery-profile": { type: "string" }, "query-seed": { type: "string" }, plan: { type: "boolean" },
     "lab-one-url": { type: "string" }, "lab-two-url": { type: "string" } } });
+  if (values.help) console.log("Quality v6: --lab 3 --rediscovery-profile quality compares frozen original and explicitly reviewed knowledge with notebook and fresh controls on 16 held-out tasks, eight outcome checks each. Initial discovery, exceptions and fresh revision validation are disjoint. Requires a fresh study; --plan performs no inference. Storage/provider settings remain explicit and unchanged.");
   if (values.help) { console.log("Set MINDLEAK_TEST_DATABASE_URL and use your Copilot login. Run node examples/swarm-demo.mjs --binary PATH --code-engine podman --port 54584 --output-dir target/swarm-labs. One dashboard serves /lab1, /lab2, /lab3 and /learnings. Labs 1 and 2 include five matched Dalek controls with no MindLeak access. Lab 3 compares fresh, notebook and MindLeak arms with a separate direct-lesson diagnostic; --rediscovery-profile smoke|learning|pilot|adoption|mechanism defaults to learning (five families, 30 main + 10 diagnostic), smoke covers one family (6 main + 2 diagnostic), and pilot schedules 120 main + 40 diagnostic sessions. These main profiles use v5 knowledge-first: notebook and MindLeak agents search and assess applicability before editing, then apply, adapt or reject prior knowledge and verify the fix. The adoption profile retains the v3 optional-lookup diagnostic on the Learning schedule; old recordings keep their original scoring. The v4 mechanism profile adds two discovery cases, reserved validation, 12 main + 4 diagnostic sessions and post-comparison review; it requires a fresh run. --plan prints the selected frozen Lab 3 plan without inference or database access. --rounds 1..3 controls Lab 2. --lab 1|2|3 selects a standalone lab; --run starts Lab 2 in the shared dashboard. Use --lab-one-recording, --lab-two-recording and --lab-three-recording to reopen saved reports. Lab 1/2 models default to three GPT-6 Astra and two Claude Opus 5 with matched Daleks; all Lab 3 arms use one selected model. Memory extraction defaults to local glm-4.7-flash:latest; --memory-model off uses model-free storage. Listening defaults to 127.0.0.1. Explicit trusted-LAN HTTP: --listen-host 0.0.0.0 --public-origin http://PRIVATE_LAN_IP:PORT (no authentication or TLS; exact LAN and localhost Host/Origin guards remain). Learning outcomes lead the page and recorded costs remain available."); return; }
   if (values.plan) {
-    const plan = values["rediscovery-profile"] === "mechanism"
-      ? investigationPlan({ seed: Number(values["query-seed"] ?? 20260918), model: values["agent-model"] ?? "gpt-6-astra" })
+    const plan = ["mechanism", "quality"].includes(values["rediscovery-profile"])
+      ? investigationPlan({ seed: Number(values["query-seed"] ?? 20260918), model: values["agent-model"] ?? "gpt-6-astra", profile: values["rediscovery-profile"] })
       : rediscoveryPlan({ profile: values["rediscovery-profile"] ?? "pilot", seed: Number(values["query-seed"] ?? 20260917), model: values["agent-model"] ?? "gpt-6-astra" });
     console.log(JSON.stringify(plan, null, 2)); return;
   }
@@ -322,11 +323,11 @@ async function main() {
   const output = values["output-dir"] ?? fileURLToPath(new URL("../target/swarm-labs", import.meta.url));
   const labs = [];
   for (const lab of labIds) {
-  const profiles = { experiment: lab, agents: available, roles: lab === 3 ? rediscoveryArms : [...(lab === 2 ? memoryLabRoles : swarmRoles.map(({ task, ...role }) => role)), ...controlRoles],
+  const profiles = { experiment: lab, agents: available, roles: lab === 3 ? values["rediscovery-profile"] === "quality" ? qualityArms : rediscoveryArms : [...(lab === 2 ? memoryLabRoles : swarmRoles.map(({ task, ...role }) => role)), ...controlRoles],
     navigation: { lab1: values["lab-one-url"] ?? "/lab1/", lab2: values["lab-two-url"] ?? "/lab2/" },
     memory: [{ id: memoryModel, name: memoryModel, provider: "local", modelClass: "slm" }, { id: "off", name: "Model-free", provider: "none" }],
     defaults: { problem: lab === 3 ? rediscoveryProblem : lab === 2 ? memoryLabProblem : swarmProblem, concurrency: Number(values.concurrency ?? (lab >= 2 ? 1 : 2)), attempts: lab === 3 ? 1 : Number(values.attempts ?? 2), rounds: Number(values.rounds ?? (lab === 2 ? 2 : 1)), memoryModel,
-  rediscoveryProfile: values["rediscovery-profile"] === "mechanism" && lab !== 3 ? "learning" : values["rediscovery-profile"] ?? "learning", querySeed: Number(values["query-seed"] ?? (values["rediscovery-profile"] === "mechanism" ? 20260918 : 20260917)),
+  rediscoveryProfile: ["mechanism", "quality"].includes(values["rediscovery-profile"]) && lab !== 3 ? "learning" : values["rediscovery-profile"] ?? "learning", querySeed: Number(values["query-seed"] ?? (["mechanism", "quality"].includes(values["rediscovery-profile"]) ? 20260918 : 20260917)),
       agentModels: Object.fromEntries(swarmRoles.map((role, index) => [role.id, values["agent-model"] ?? (provider ? index < 3 ? "gpt-6-astra" : "claude-opus-5" : available[0].id)])) } };
   selectDemoParameters(profiles);
   let initialReport = null;
@@ -358,7 +359,7 @@ async function main() {
               maxSteps: Number(values["agent-max-steps"] ?? 20), timeoutMs: Number(values["agent-timeout-ms"] ?? 120000),
               maxOutputTokens: Number(values["agent-max-output-tokens"] ?? 4096), reasoningEffort: values["agent-reasoning-effort"] ?? null }));
         }
-        const execute = lab === 3 ? parameters.rediscoveryProfile === "mechanism" ? runInvestigationLab : runRediscoveryLab : lab === 2 ? runMemoryLab : runSwarmComparison;
+        const execute = lab === 3 ? ["mechanism", "quality"].includes(parameters.rediscoveryProfile) ? runInvestigationLab : runRediscoveryLab : lab === 2 ? runMemoryLab : runSwarmComparison;
         const executionOptions = { driver, agent: actors.atlas, agentsByRole: actors, code, concurrency: parameters.concurrency,
           profile: parameters.rediscoveryProfile, seed: parameters.querySeed,
           maxAttempts: parameters.attempts, problem: parameters.problem, ...options,

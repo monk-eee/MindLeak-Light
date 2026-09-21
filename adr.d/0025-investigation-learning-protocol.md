@@ -159,6 +159,50 @@ Applications reject wrong-kind references, revision mismatch, changed review sta
 and retrospective retrieval. Existing original-source and exact-quotation checks
 remain. No retrieval query, score, filter, core tool or stored history is changed.
 
+### Bounded Lab 3 Case Reviews
+
+The five-family Learning study `881c1dbe-71d2-4b31-b34c-cbfd8a18f52a`
+passed all 135 coding checks but completed none of its three reviews. Its separate
+Lab 3 reviewer retained search/inspection tools, so the Lab 2 guide fix did not
+control that path. A final completion flag also did not require a review decision.
+
+The initial case reviewer recorded `plan.reviewPolicy` version 1 independently of the
+unchanged v5 coding workflow, fixture hashes, schedules and scoring. Prepare one
+untrusted source packet with verified memory-side cases, current principles and
+support, original observations checked through MCP, applicability decisions and
+retention failures. Fail the complete packet above 128 KiB; do not truncate away
+conditions or counterevidence. Controls and future cases never enter this review.
+
+The model then has only `retain_lesson` and source-linked `skip_learning`. Completion
+requires an explicit successful decision for every verified case, no unresolved
+persistence attempt and a successful final answer. Keep the ten-attempt retention
+bound and existing model budgets; there is no new-lesson quota or automatic retry.
+Correct rejection is useful evidence distinct from application. Exact-proposal
+retry receipts can resolve uncertain writes; unrelated successes and skips cannot.
+Pre-write validation rejection can be corrected without hiding its error history.
+
+The source-backed decision loop and successful retention are separate requirements.
+The initial three-review rehearsal failed all three provider retention requests at
+240 seconds, but subsequent investigation found it omitted the live lab's explicit
+reasoning setting. Preserve that mismatched result instead of attributing its
+failure to the unchanged live configuration. Report reasoning controls alongside
+other runtime settings so this difference cannot be hidden by configuration equality.
+
+Review-policy v2 separates side-effect-free authoring from persistence. The model
+returns a complete bounded JSON decision document without tools. The runner checks
+the full case set and all source quotations before executing explicit retention
+choices. This follows repeated pre-handler SDK query failures in batched-tool
+prototypes; changing object keys to an array did not resolve them. The design removes
+that dispatch dependency rather than claiming the SDK itself was repaired.
+
+Malformed, partial, unfinished or cancelled documents cannot start writes. Every
+requested proposal must receive a successful receipt; a successful sibling proposal
+does not conceal failure. Authoring and persistence share one deadline through an
+MCP cancellation signal, preserving earlier acknowledged writes. No repair loop,
+model substitution or extra retry is added. Shared adapter validation reports only
+bounded schema paths and constraint codes, not private output. The original core
+and operator hold remain intact.
+
 ## Consequences
 
 A failed or unfinished task can produce durable, auditable evidence without
@@ -200,6 +244,16 @@ allocation can be guaranteed.
 - Guide-application tests reproduce case-chain-only lookup, explicit principle
   inspection before verification, exact ID/revision recovery, and rejection of
   supporting-chain IDs, stale review state and post-assessment retrieval.
+- Lab 3 review regressions cover decision-only tools, exact current-source skips,
+  partial case coverage, stale or oversized packets, original-source mismatch,
+  duplicate/control IDs, failed-write attribution and exact-proposal recovery.
+  The real MCP smoke and continuation tests preserve frozen comparison and cost
+  accounting; the failed real-provider rehearsal remains separate evidence.
+- Review v2 tests require full-document validation before side effects, distinguish
+  author completion from persistence, retain successful partial receipts, reject
+  duplicate/unknown case IDs and enforce the existing deadline. Shared adapter
+  tests cover private-safe validation diagnostics and query-dispatch errors without
+  retries. Failed prototypes and concurrent source-hash guards remain in the record.
 - Existing lab/profile, replay, privacy and contract boundaries remain covered;
   `make ci` runs against a disposable `_test` database.
 - Desktop/mobile browser checks cover the versioned profile and evidence view.

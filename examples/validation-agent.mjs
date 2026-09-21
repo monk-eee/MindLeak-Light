@@ -28,22 +28,42 @@ export function agentSettings(environment, { maxSteps = 16, timeoutMs = 60000, i
     maxSteps, timeoutMs, inputPrice, outputPrice, maxOutputTokens, reasoningEffort };
 }
 
+export function contractViolations(value, schema) {
+  const violations = [];
+  const visit = (item, contract, path, depth) => {
+    if (violations.length >= 8) return;
+    const reject = code => { if (violations.length < 8) violations.push({ path, code }); };
+    if (depth > 32) { reject("depth"); return; }
+    const type = item === null ? "null" : Array.isArray(item) ? "array" : typeof item;
+    const types = Array.isArray(contract.type) ? contract.type : [contract.type];
+    if (contract.type && !types.includes(type) && !(types.includes("integer") && Number.isInteger(item))) { reject("type"); return; }
+    if (contract.enum && !contract.enum.includes(item)) reject("enum");
+    if (type === "number") {
+      if (!Number.isFinite(item)) reject("finite");
+      if (contract.minimum !== undefined && item < contract.minimum) reject("minimum");
+      if (contract.maximum !== undefined && item > contract.maximum) reject("maximum");
+    } else if (type === "string") {
+      if (contract.minLength !== undefined && item.length < contract.minLength) reject("minLength");
+      if (contract.maxLength !== undefined && item.length > contract.maxLength) reject("maxLength");
+    } else if (type === "array") {
+      if (contract.minItems !== undefined && item.length < contract.minItems) reject("minItems");
+      if (contract.maxItems !== undefined && item.length > contract.maxItems) reject("maxItems");
+      if (contract.items) for (let index = 0; index < item.length && violations.length < 8; index += 1) visit(item[index], contract.items, `${path}[${index}]`, depth + 1);
+    } else if (type === "object") {
+      for (const key of contract.required ?? []) if (!Object.hasOwn(item, key)) reject("required");
+      for (const [key, child] of Object.entries(item)) {
+        if (violations.length >= 8) break;
+        if (Object.hasOwn(contract.properties ?? {}, key)) visit(child, contract.properties[key], `${path}.${key}`, depth + 1);
+        else if (contract.additionalProperties === false) reject("additionalProperties");
+      }
+    }
+  };
+  visit(value, schema, "$", 0);
+  return violations;
+}
+
 export function matchesContract(value, schema) {
-  const type = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-  if (schema.type && !types.includes(type) && !(types.includes("integer") && Number.isInteger(value))) return false;
-  if (schema.enum && !schema.enum.includes(value)) return false;
-  if (type === "number" && (!Number.isFinite(value) || schema.minimum !== undefined && value < schema.minimum
-    || schema.maximum !== undefined && value > schema.maximum)) return false;
-  if (type === "string" && (schema.minLength !== undefined && value.length < schema.minLength
-    || schema.maxLength !== undefined && value.length > schema.maxLength)) return false;
-  if (type === "array") return (schema.maxItems === undefined || value.length <= schema.maxItems)
-    && (schema.minItems === undefined || value.length >= schema.minItems)
-    && (!schema.items || value.every(item => matchesContract(item, schema.items)));
-  if (type === "object") return (schema.required ?? []).every(key => Object.hasOwn(value, key))
-    && Object.entries(value).every(([key, item]) => Object.hasOwn(schema.properties ?? {}, key)
-      ? matchesContract(item, schema.properties[key]) : schema.additionalProperties !== false);
-  return true;
+  return contractViolations(value, schema).length === 0;
 }
 
 function providerFailure(error) {
@@ -187,9 +207,13 @@ export async function runAgentSession({ task, tools = [], context = "", complete
       try {
         if (typeof message.content !== "string" || Buffer.byteLength(message.content) > 32768) throw new Error();
         answer = JSON.parse(message.content);
-        if (!answer || typeof answer !== "object" || Array.isArray(answer) || answerSchema && !matchesContract(answer, answerSchema)) throw new Error();
+        const violations = contractViolations(answer, answerSchema ?? { type: "object" });
+        if (!answer || typeof answer !== "object" || Array.isArray(answer) || violations.length) {
+          failure = { code: "invalid_answer_schema", violations };
+          throw new Error();
+        }
         status = "completed";
-      } catch { answer = null; status = "invalid_answer"; }
+      } catch { answer = null; status = "invalid_answer"; failure ??= { code: "invalid_answer_format" }; }
       break;
     }
     if (calls.some(call => typeof call.id !== "string" || call.type !== "function"
@@ -228,8 +252,10 @@ export async function runAgentSession({ task, tools = [], context = "", complete
         }
       } catch (error) {
         const safeErrors = ["fixture_path_not_allowed", "fixture_file_unavailable", "fixture_edit_not_allowed", "invalid_search_query",
+          "standalone_javascript_collect_export_required",
           "dependency_handoffs_required", "handoff_module_required", "dependency_source_files_required", "dependency_source_evidence_required",
           "guide_review_required", "guide_review_changed", "guide_review_budget", "finish_pending_principle_first", "inspect_existing_principles_first",
+          "review_case_not_allowed", "review_decisions_incomplete", "review_retention_unresolved", "review_source_evidence_required", "inspect_verified_case_or_review_budget", "frozen_experience_changed",
           "principle_required_before_assessment", "eligible_principle_reference_required", "guide_must_precede_verified_assessment", "stale_guide_revision", "exact_guide_steps_and_current_evidence_required",
           "prior_experience_search_required", "experience_assessment_required", "invalid_experience_assessment", "current_source_evidence_required", "inspected_source_evidence_required", "delivered_experience_required", "retrieved_experience_requires_assessment", "lookup_outcome_mismatch", "inspect_two_guide_sources",
           "invalid_recall_options", "invalid_inspection_options", "invalid_recall_provenance", "invalid_inspection_provenance",

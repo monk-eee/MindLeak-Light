@@ -37,3 +37,4 @@ record when the design changes instead of silently rewriting their rationale.
 | [0023](0023-agent-learning-context.md) | Agent Learning Context and Observable Retrieval | Accepted |
 | [0024](0024-knowledge-formation-product.md) | Knowledge Formation as the Product | Accepted |
 | [0025](0025-investigation-learning-protocol.md) | Learning Across Investigations | Accepted |
+| [0026](0026-quality-first-learning-evaluation.md) | Quality-First Learning Evaluation | Accepted |
