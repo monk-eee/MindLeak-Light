@@ -72,6 +72,9 @@ for the evidence required to make each claim.
   Model extraction can lose causes, qualifiers, or attribution. Default sentence
   splitting preserves causal wording but leaves ambiguous references unresolved.
   Shorter or more numerous fragments are not a substitute for faithful meaning.
+  Recorded GLM extraction has assigned caller side effects to the called function.
+  The [attempted grounding repair](../gaps.d/model-extraction-subject-attribution.md)
+  is held and excluded from v0.8.0; inspect original sources before relying on claims.
 - Keyword recall uses English stemming and stop words, with no synonym inference.
   Natural-language questions work better with the optional embedding model.
   Dotted-identifier aliases in v0.4.0 follow PostgreSQL hostname tokenization,

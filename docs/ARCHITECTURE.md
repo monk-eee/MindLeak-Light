@@ -14,8 +14,8 @@ One executable exposes three MCP tools over one PostgreSQL database. Agent-autho
 knowledge needs no helper model. The underlying observation path preserves source
 text with sentence/list decomposition and keyword recall by default.
 
-This guide describes v0.7.0: knowledge formation, compact learning context,
-capability and cost diagnostics, domain records, bounded migrations and backups.
+This guide describes v0.8.0: source-checked learning workflows and quality-first
+evaluation over the existing knowledge, retrieval, migration and backup contracts.
 Chains/principles require v0.6.0 or newer; compact/capability controls require v0.7.0.
 See [installation](INSTALL.md) for release availability. The existing memory-engine
 diagrams are editable in the [architecture board](../assets/architecture.excalidraw);

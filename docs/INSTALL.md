@@ -10,26 +10,26 @@ embedding model; [models are a recommended optional upgrade](MODELS.md).
 
 **Start here for a local trial:** the [VS Code local guide](LOCAL.md) uses a
 native launcher with Docker/stdio and no client credentials. Its `local` commands
-are included in v0.7.0 native archives, alongside the `agent` instruction
+are included in v0.8.0 native archives, alongside the `agent` instruction
 installer. Published v0.4.0 native archives do not include those commands.
 No published image or old executable is upgraded by new settings.
 
 | Package | Best For | You Supply |
 |---|---|---|
-| Local launcher | Forming and sharing knowledge in VS Code among trusted local agents | v0.7.0 native package and Docker Desktop; no manual token |
+| Local launcher | Forming and sharing knowledge in VS Code among trusted local agents | v0.8.0 native package and Docker Desktop; no manual token |
 | Native binary | Plugging into a desktop or coding agent over stdio | PostgreSQL with pgvector |
 | All-in-one container | One container to run and back up | Docker/Podman, a persistent volume, and an HTTP token |
 | Source Compose stack | Developing MindLeak itself | Git and Docker/Podman Compose |
 
-This guide targets **v0.7.0**: agent-authored chains and principles, compact
-learning context, capability and cost diagnostics, evidence checkpoints and
-replayable learning labs. Domain relationships, verified backups and bounded
+This guide targets **v0.8.0**: the knowledge-first companion skill 1.5.0,
+source-checked learning workflows and quality-first experimental comparisons.
+Agent-authored chains and principles, compact context, domain relationships, verified backups and bounded
 migrations remain available. Existing memory calls and model-free defaults are preserved.
 Models remain optional. Download versioned
 archives from [GitHub Releases](https://github.com/monk-eee/MindLeak-Light/releases)
 or get the full all-in-one image from
 [Docker Hub](https://hub.docker.com/r/monkeemagic/mindleak-light), pinned as
-`monkeemagic/mindleak-light:0.7.0`. The
+`monkeemagic/mindleak-light:0.8.0`. The
 [publishing workflow](https://github.com/monk-eee/MindLeak-Light/actions/workflows/docker-hub.yml)
 records image verification. Older binaries do not gain features from new settings.
 
@@ -73,7 +73,7 @@ tables and waits for MCP requests; silence in a terminal is normal. See
 Each archive also includes the editable architecture board, four self-contained
 SVG previews, and the architecture guide.
 
-The v0.7.0 package includes credential-free `mcp.example.json` and
+The v0.8.0 package includes credential-free `mcp.example.json` and
 `mcp.vscode.example.json` plus the local guide. Prefer `local setup` or
 `local configure` to generate VS Code configuration with the absolute launcher
 path and immutable container ID rather than manually copying the name-based
@@ -90,8 +90,8 @@ The binary uses your configured database; it does not bundle PostgreSQL.
 
 ## Companion Agent Skill
 
-The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md) in this
-source revision is version 1.5.0 and is embedded when building the installer.
+The [mindleak-memory bundle](../.agents/skills/mindleak-memory/SKILL.md), version
+1.5.0, is included in v0.8.0 native archives and embedded in the installer.
 Published v0.7.0 native archives contain version 1.4.1; they are unchanged.
 Published v0.6.0 native archives contain version 1.2.0; they are unchanged.
 The already-published v0.4.0 archives do not include it. It works with v0.4.0 and
@@ -149,7 +149,7 @@ other projects as a side effect of this repository's setup.
 
 ### Automatic Project Setup
 
-`agent setup` and `agent check` are included in the v0.7.0 native binary, not
+`agent setup` and `agent check` are included in the v0.8.0 native binary, not
 the already-published v0.4.0 binary. Run them on the client machine,
 not inside the database container. Ordinary memory can use a v0.4.0+ server;
 chains/principles require v0.6.0+, and compact/capability controls require v0.7.0.
@@ -278,7 +278,7 @@ HTTP port is exposed. A process supervisor manages startup and shutdown.
 Pin the version tag so upgrades are deliberate:
 
 ```sh
-docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.7.0
+docker run --detach --name mindleak-light --restart unless-stopped -p 127.0.0.1:8088:8088 -e MINDLEAK_HTTP_TOKEN=mindleak-light-development-token-not-for-production -v mindleak-light-data:/var/lib/postgresql/data monkeemagic/mindleak-light:0.8.0
 ```
 
 That token is a public local-development example. For anything shared, use your
@@ -308,7 +308,7 @@ docker compose -f docker/compose.all-in-one.yml up --detach --wait
 ```
 
 This starts one container, not the two-service development stack. The file
-defaults to `monkeemagic/mindleak-light:0.7.0`. This release does not promote the
+defaults to `monkeemagic/mindleak-light:0.8.0`. This release does not promote the
 `latest` alias. Override `MINDLEAK_IMAGE` to pin a digest or another version.
 Podman may not expose embedded health metadata from published OCI images. The
 Compose template defines its own health check so `up --wait` still verifies
@@ -340,21 +340,29 @@ PostgreSQL major-version upgrades require a database upgrade procedure, not just
 changing the image tag. This single-container package is convenient for a laptop
 or small deployment, not a high-availability database service.
 
-### Upgrade from 0.6.0
+### Upgrade from 0.6.0 or 0.7.0
 
-Back up and verify a restore before replacing the binary or image with v0.7.0.
+Back up and verify a restore before replacing the binary or image with v0.8.0.
 Stop old MCP processes, retain the same database/volume and embedding settings,
-then verify the connected server advertises version 0.7.0. This release adds no
+then verify the connected server advertises version 0.8.0. This release adds no
 database migration beyond the v0.6.0 schema. Source text, fragments, vectors,
 knowledge revisions, validation history and retry receipts remain stored.
 
-New compact/capability/search-diagnostic fields are opt-in. Old calls keep their
-defaults; enabled providers still fail closed. Principle revision now rejects
+The v0.7.0 compact/capability/search-diagnostic fields remain opt-in. Old calls keep their
+defaults; enabled providers still fail closed. Since v0.7.0, principle revision rejects
 dropping counterexamples added to an old support after its pinned revision.
 Inspect changed supports, retain the counterevidence and validate the new revision.
 After replacing a local container, follow the configuration-refresh steps below.
 Review existing managed skill files before installing the new bundle; it does
 not overwrite conflicting edits or silently change the selected store.
+
+Skill 1.5.0 requests a prior-knowledge check before nontrivial work when the
+approved connection supports the configured scope. It does not grant permissions,
+start a service or make the MCP server learn on reads. Optional model extraction
+is unchanged and can misattribute source claims; the held experimental repair is
+not included. See [extraction fidelity](../gaps.d/model-extraction-subject-attribution.md).
+The source-based labs retain their historical reports and protocol versions;
+new quality studies are experimental, not evidence of a general quality advantage.
 
 ### Upgrade from 0.1.0, 0.2.0, 0.3.0, or 0.4.0
 
@@ -363,7 +371,7 @@ The same procedure also applies to **v0.5.0** stores. Follow the
 do not include the bounded migration runner.
 
 Back up and test the restore first. Stop all old MCP processes, then replace the
-binary or container with 0.7.0 using the same database or volume. Startup applies
+binary or container with 0.8.0 using the same database or volume. Startup applies
 schema phases and bounded resumable backfills under the migration advisory lock.
 Existing raw text, IDs, fragments, vectors, relationships, and embedding model
 metadata are preserved. Existing context, lifecycle states, tiers, pins,

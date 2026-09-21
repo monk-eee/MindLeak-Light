@@ -3062,14 +3062,14 @@ test("Lab 1 replay activity animates real event signals and respects pause and r
       assert.equal(await page.locator('.knowledge-hero-edge[data-active="true"]').count(), 1);
       assert.equal(await page.locator('#knowledge-machine .stage-graph-packet').count(), 1);
       assert.equal(await page.locator('#machine-chains .machine-record').getAttribute("data-pulse"), "true");
-      assert.equal(await page.locator(".factory-roller svg").first().evaluate(node => getComputedStyle(node).animationName), "stage-rotate");
+      assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".factory-roller svg")).animationName), "stage-rotate");
       const packet = await page.locator(".stage-graph-packet").evaluate(node => ({ x: node.getCTM().e, y: node.getCTM().f }));
       await page.waitForFunction(before => { const matrix = document.querySelector(".stage-graph-packet")?.getCTM(); return matrix && Math.abs(matrix.e - before.x) + Math.abs(matrix.f - before.y) > 0.2; }, packet);
       await page.locator("#play").click();
       assert.equal(await page.locator('.knowledge-hero-node[data-active="true"]').count(), 0);
       assert.equal(await page.locator(".stage-graph-packet").count(), 0);
       assert.equal(await page.locator("#knowledge-machine").getAttribute("data-active"), "false");
-      assert.equal(await page.locator(".factory-roller svg").first().evaluate(node => getComputedStyle(node).animationName), "none");
+      assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".factory-roller svg")).animationName), "none");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
       await page.locator("#nav-lab1").click();
       await page.locator("#experiment-page #play").waitFor({ state: "visible" });
