@@ -20,7 +20,7 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "esbuild": "0.28.2",
     "linkedom": "0.18.13",
-    "lucide": "1.43.0",
+    "lucide": "1.46.0",
     "minisearch": "7.2.0",
     "openai": "7.12.1",
     "playwright": "1.63.0",
