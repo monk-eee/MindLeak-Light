@@ -19,7 +19,7 @@ EXPOSE 8088
 ENTRYPOINT ["/usr/local/bin/mindleak-light"]
 CMD ["--transport", "http", "--listen", "0.0.0.0:8088"]
 
-FROM pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b AS all-in-one
+FROM pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a AS all-in-one
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl supervisor \
     && rm -rf /var/lib/apt/lists/* \
