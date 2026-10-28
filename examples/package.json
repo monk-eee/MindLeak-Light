@@ -16,7 +16,7 @@
   "dependencies": {
     "@fontsource/ibm-plex-mono": "5.3.0",
     "@fontsource/ibm-plex-sans": "5.3.0",
-    "@github/copilot-sdk": "1.0.14",
+    "@github/copilot-sdk": "1.0.26",
     "@modelcontextprotocol/sdk": "1.30.0",
     "esbuild": "0.28.2",
     "linkedom": "0.18.13",
